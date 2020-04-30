@@ -1,3 +1,12 @@
+/*
+http://www.nesdev.com/NESDoc.pdf
+http://nesdev.com/6502.txt
+http://nesdev.com/6502_cpu.txt
+http://nesdev.com/6502bugs.txt
+http://www.oxyron.de/html/opcodes02.html
+https://www.masswerk.at/6502/6502_instruction_set.html
+www.obelisk.me.uk/6502/reference.html
+*/
 #pragma once
 #include "device.h"
 #include <functional>
@@ -24,13 +33,14 @@ public:
     };
 
     static constexpr uint16_t STACK_BASE_ADDR = 0x0100;
-    uint8_t acc;
-    uint16_t x;
-    uint8_t y;
-    uint8_t p;
-    uint16_t pc;
-    uint16_t sp;
+    uint8_t A;
+    uint16_t X;
+    uint8_t Y;
+    uint8_t P;
+    uint16_t PC;
+    uint16_t SP;
     uint16_t target_address;
+    uint8_t current_op_code;
 
     uint8_t cycles_left;
 
@@ -53,7 +63,6 @@ protected:
     void JMP(); void JSR(); void RTI(); void RTS();
 
     void PHA(); void PHP(); void PLA(); void PLP();
-    void PHA_PHP(); void PLA_PLP(); // watch out!
 
     void BRK(); void NOP();
     //purely unoficial
@@ -99,6 +108,7 @@ protected:
     void push_stack(const uint8_t byte);
     uint8_t pop_stack();
     void set_flag(const FLAGS flag, const bool value);
+    bool get_flag(const FLAGS flag);
 
     using c = CPU;
     std::vector<Instruction> instruction_set = {
