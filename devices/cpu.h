@@ -36,15 +36,17 @@ public:
     };
 
     static constexpr uint16_t STACK_BASE_ADDR = 0x0100;
-    uint8_t A;
-    uint16_t X;
-    uint8_t Y;
-    uint8_t P;
-    uint16_t PC;
-    uint16_t SP;
+    struct {
+        uint8_t A;
+        uint16_t X;
+        uint8_t Y;
+        uint8_t P;
+        uint16_t PC;
+        uint16_t SP;
+    } registers;
+
     uint16_t fetched_operand;
     uint8_t current_op_code;
-
     uint8_t cycles_left;
 
 protected:
