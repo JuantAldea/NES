@@ -39,7 +39,7 @@ public:
     uint8_t P;
     uint16_t PC;
     uint16_t SP;
-    uint16_t target_address;
+    uint16_t fetched_operand;
     uint8_t current_op_code;
 
     uint8_t cycles_left;
@@ -65,6 +65,7 @@ protected:
     void PHA(); void PHP(); void PLA(); void PLP();
 
     void BRK(); void NOP();
+
     //purely unoficial
     void STP(); void SLO(); void ANC(); void RLA();
     void ARL(); void LAX(); void AXS(); void DCP();
