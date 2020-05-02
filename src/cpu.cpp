@@ -1,6 +1,18 @@
-#include "bus.h"
+#include "devices/cpu.h"
+
+uint8_t low_byte(const uint16_t twobytes)
+{
+    return static_cast<uint8_t>(twobytes);
+}
+
+uint8_t high_byte(const uint16_t twobytes)
+{
+    return static_cast<uint8_t>(twobytes >> 8);
+}
 
 CPU::CPU(Bus &b) : Device(b) {}
+
+//CPU::~CPU() {}
 
 void CPU::clock()
 {
@@ -70,65 +82,77 @@ bool CPU::get_flag(const FLAGS flag)
 uint16_t CPU::addressing_implicit()
 {
     //nothing to do here. Operand implied by the operation.
+    return 0;
 }
 
 uint16_t CPU::addressing_immediate()
 {
     //Uses the 8-bit operand itself as the value for the operation, rather than fetching a value from a memory address.
     fetched_operand = PC++;
+    return 0;
 }
 
 uint16_t CPU::addressing_zero_page()
 {
     fetched_operand = fetch_byte();
+    return 0;
 }
 
 uint16_t CPU::addressing_zero_page_X()
 {
     fetched_operand = (fetch_byte() + X) % 256;
+    return 0;
 }
 
 uint16_t CPU::addressing_zero_page_Y()
 {
     fetched_operand = (fetch_byte() + Y) % 256;
+    return 0;
 }
 
 uint16_t CPU::addressing_relative()
 {
     fetched_operand = fetch_byte();
+    return 0;
 }
 
 uint16_t CPU::addressing_absolute()
 {
     //Fetches the value from a 16-bit address anywhere in memory.
     fetched_operand = fetch_2bytes();
+    return 0;
 }
 
 uint16_t CPU::addressing_absolute_X()
 {
     fetched_operand = fetch_2bytes() + X;
+    return 0;
 }
 
 uint16_t CPU::addressing_absolute_Y()
 {
     fetched_operand = fetch_2bytes() + Y;
+    return 0;
 }
 
 uint16_t CPU::addressing_indirect()
 {
     fetched_operand = read(fetch_2bytes());
+    return 0;
 }
 
 uint16_t CPU::addressing_indexed_indirect()
 {
     const uint8_t pointer = (fetch_byte() + X) % 256;
     fetched_operand = read((pointer + 1) % 256) << 8 | read(pointer);
+    return 0;
 }
 
 uint16_t CPU::addressing_indirect_indexed()
 {
     const uint8_t pointer = fetch_byte();
     fetched_operand = (read(pointer + 1) % 256) << 8 | read(pointer) + Y;
+    return 0;
 }
 
 void CPU::ADC()
@@ -528,13 +552,3 @@ void CPU::SEI()
 void CPU::CLV() { set_flag(FLAGS::V, false); }
 
 void CPU::NOP() { ; }
-
-uint8_t low_byte(const uint16_t twobytes)
-{
-    return static_cast<uint8_t>(twobytes);
-}
-
-uint8_t high_byte(const uint16_t twobytes)
-{
-    return static_cast<uint8_t>(twobytes >> 8);
-}

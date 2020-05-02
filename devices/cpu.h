@@ -8,18 +8,22 @@ https://www.masswerk.at/6502/6502_instruction_set.html
 www.obelisk.me.uk/6502/reference.html
 */
 #pragma once
-#include "device.h"
+
 #include <functional>
+#include <vector>
+#include "device.h"
+#include "bus.h"
 
 class CPU : public Device
 {
 public:
     CPU() = delete;
     CPU(Bus &b);
-    void write(uint16_t addr, uint8_t data) { };
-    uint8_t read(uint16_t addr) {};
+    ~CPU() = default;
+    void write(const uint16_t addr, const uint8_t data);
+    uint8_t read(const uint16_t addr);
 
-    void CPU::clock();
+    void clock();
 
     enum class FLAGS {
         C = (1 << 0),  // carry bit

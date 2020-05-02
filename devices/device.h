@@ -1,7 +1,6 @@
 #pragma once
 #include <cstdint>
 #include "bus.h"
-
 struct Device
 {
     Device() = delete;
