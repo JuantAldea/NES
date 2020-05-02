@@ -56,8 +56,8 @@ protected:
     void AND(); void ASL(); void BIT(); void EOR(); void LSR(); void ORA();
     void ROL(); void ROR();
 
-    void CLC(); void CLD(); void CLI(); void CMP(); void CPX(); void CPY();
-    void SEC(); void SED(); void SEI();
+    void CLC(); void CLD(); void CLI();void CLV(); void CMP(); void CPX();
+    void CPY(); void SEC(); void SED(); void SEI();
 
     void ADC(); void DEC(); void DEX(); void DEY(); void INC(); void INX();
     void INY(); void SBC();
@@ -77,7 +77,7 @@ protected:
     void SAX(); void RRA(); void SRE(); void ALR();
     void ARR(); void ISC(); void AHX(); void SHX();
     void SHY(); void TAS(); void XAA(); void LAS();
-    void CLV();
+
 
     struct Instruction
     {

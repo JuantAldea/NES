@@ -1,4 +1,4 @@
-#include "devices/bus.h"
+#include "bus.h"
 Bus::Bus() :
     cpu {this},
     ram {this},

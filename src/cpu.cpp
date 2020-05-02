@@ -1,4 +1,4 @@
-#include "devices/bus.h"
+#include "bus.h"
 
 uint8_t low_byte(const uint16_t twobytes)
 {
@@ -10,7 +10,7 @@ uint8_t high_byte(const uint16_t twobytes)
     return static_cast<uint8_t>(twobytes >> 8);
 }
 
-CPU::CPU(Bus *b) : Device {b} {}
+CPU::CPU(Bus *b) : Device{b} {}
 
 void CPU::clock()
 {
@@ -77,6 +77,7 @@ bool CPU::get_flag(const FLAGS flag)
     return registers.P & static_cast<uint8_t>(flag);
 }
 
+/* OP addressing modes */
 uint16_t CPU::addressing_implicit()
 {
     //nothing to do here. Operand implied by the operation.
@@ -152,6 +153,8 @@ uint16_t CPU::addressing_indirect_indexed()
     fetched_operand = (read(pointer + 1) % 256) << 8 | read(pointer) + registers.Y;
     return 0;
 }
+
+/* Operations */
 
 void CPU::ADC()
 {
@@ -547,6 +550,30 @@ void CPU::SEI()
     set_flag(FLAGS::I, true);
 }
 
-void CPU::CLV() { set_flag(FLAGS::V, false); }
+void CPU::CLV()
+{
+    set_flag(FLAGS::V, false);
+}
 
 void CPU::NOP() { ; }
+
+void CPU::STP() {;}
+void CPU::SLO() {;}
+void CPU::ANC() {;}
+void CPU::RLA() {;}
+void CPU::ARL() {;}
+void CPU::LAX() {;}
+void CPU::AXS() {;}
+void CPU::DCP() {;}
+void CPU::SAX() {;}
+void CPU::RRA() {;}
+void CPU::SRE() {;}
+void CPU::ALR() {;}
+void CPU::ARR() {;}
+void CPU::ISC() {;}
+void CPU::AHX() {;}
+void CPU::SHX() {;}
+void CPU::SHY() {;}
+void CPU::TAS() {;}
+void CPU::XAA() {;}
+void CPU::LAS() {;}
