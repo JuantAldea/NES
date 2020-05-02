@@ -67,61 +67,68 @@ bool CPU::get_flag(const FLAGS flag)
     return P & static_cast<uint8_t>(flag);
 }
 
-uint16_t CPU::address_absolute()
+uint16_t CPU::addressing_implicit()
+{
+    //nothing to do here. Operand implied by the operation.
+}
+
+uint16_t CPU::addressing_immediate()
+{
+    //Uses the 8-bit operand itself as the value for the operation, rather than fetching a value from a memory address.
+    fetched_operand = PC++;
+}
+
+uint16_t CPU::addressing_zero_page()
+{
+    fetched_operand = fetch_byte();
+}
+
+uint16_t CPU::addressing_zero_page_X()
+{
+    fetched_operand = (fetch_byte() + X) % 256;
+}
+
+uint16_t CPU::addressing_zero_page_Y()
+{
+    fetched_operand = (fetch_byte() + Y) % 256;
+}
+
+uint16_t CPU::addressing_relative()
+{
+    fetched_operand = fetch_byte();
+}
+
+uint16_t CPU::addressing_absolute()
 {
     //Fetches the value from a 16-bit address anywhere in memory.
     fetched_operand = fetch_2bytes();
 }
 
-uint16_t CPU::address_immediate()
-{
-    //Uses the 8-bit operand itself as the value for the operation, rather than fetching a value from a memory address.
-    fetched_operand = fetch_byte();
-}
-
-uint16_t CPU::address_zero_page()
-{
-    fetched_operand = fetch_byte();
-}
-
-uint16_t CPU::address_zero_page_X()
-{
-    fetched_operand = (fetch_byte() + X) % 256;
-}
-
-uint16_t CPU::address_zero_page_Y()
-{
-    fetched_operand = (fetch_byte() + Y) % 256;
-}
-
-uint16_t CPU::address_relative()
-{
-    fetched_operand = fetch_byte();
-}
-
-uint16_t CPU::address_absolute_X()
+uint16_t CPU::addressing_absolute_X()
 {
     fetched_operand = fetch_2bytes() + X;
 }
 
-uint16_t CPU::address_absolute_Y()
+uint16_t CPU::addressing_absolute_Y()
 {
     fetched_operand = fetch_2bytes() + Y;
 }
 
-uint16_t CPU::address_indirect()
+uint16_t CPU::addressing_indirect()
 {
     fetched_operand = read(fetch_2bytes());
 }
 
-uint16_t CPU::address_indexed_indirect()
+uint16_t CPU::addressing_indexed_indirect()
 {
-    fetched_operand = read((fetch_byte() + X) % 256);
+    const uint8_t pointer = (fetch_byte() + X) % 256;
+    fetched_operand = read((pointer + 1) % 256) << 8 | read(pointer);
 }
 
-uint16_t CPU::address_indirect_indexed()
+uint16_t CPU::addressing_indirect_indexed()
 {
-    fetched_operand = (read(fetch_byte()) + Y) % 256;
+    const uint8_t pointer = fetch_byte();
+    fetched_operand = (read(pointer + 1) % 256) << 8 | read(pointer) + Y;
 }
 
 void CPU::ADC()
@@ -449,7 +456,7 @@ void CPU::BRK()
     push_stack(static_cast<uint8_t>(PC >> 8));
     push_stack(static_cast<uint8_t>(PC & 0xFF));
     push_stack(P);
-    PC = read(0xFFFE) | read(0xFFFF) << 8;
+    PC = read(0xFFFF) << 8 | read(0xFFFE);
     set_flag(FLAGS::B0, 1);
 }
 
