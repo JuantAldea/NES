@@ -1,4 +1,11 @@
 #include "devices/bus.h"
+Bus::Bus() :
+    cpu {this},
+    ram {this},
+    ppu {this},
+    apu {this}
+
+{ ; }
 
 const Device& Bus::get_device_from_addr(const uint16_t addr) const
 {

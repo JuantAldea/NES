@@ -7,6 +7,7 @@
 class RAM : public Device
 {
 public:
+    RAM(Bus *b) : Device {b} {};
     void write(const uint16_t addr, const uint8_t data) { memory[addr] = data; };
     uint8_t read(const uint16_t addr) { return memory[addr]; };
 
