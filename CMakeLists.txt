@@ -7,12 +7,22 @@ enable_testing()
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
+set(CMAKE_INCLUDE_CURRENT_DIR ON)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 find_package(Qt5 COMPONENTS Widgets REQUIRED)
 find_package(Qt5 COMPONENTS Core REQUIRED)
 find_package(Qt5 COMPONENTS Gui REQUIRED)
 
-add_library(libCPU src/cpu.cpp)
+
+include_directories(${Qt5Widgets_INCLUDE_DIRS})
+include_directories(${Qt5Core_INCLUDE_DIRS})
+
+add_library(libCPU
+    src/cpu.cpp
+    include/cpu.h
+)
+
 target_include_directories(libCPU
     PUBLIC
         $<INSTALL_INTERFACE:include>
@@ -20,8 +30,14 @@ target_include_directories(libCPU
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
+target_link_libraries(libCPU
+    Qt5::Core
+    ${Qt5Core_LIBRARIES}
+)
 
-add_library(libBus src/bus.cpp)
+add_library(libBus
+    src/bus.cpp
+)
 target_include_directories(libBus
     PUBLIC
         $<INSTALL_INTERFACE:include>
@@ -30,10 +46,14 @@ target_include_directories(libBus
         ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
+target_link_libraries(libBus
+    libCPU
+)
 
-
-
-add_library(libMemoryViewer src/memoryviewer.cpp)
+add_library(libMemoryViewer
+    src/memoryviewer.cpp
+    include/memoryviewer.h
+)
 
 target_link_libraries(libMemoryViewer
     Qt5::Widgets
@@ -60,6 +80,19 @@ add_executable(MV memoryw.cpp)
 
 target_link_libraries(MV
     libMemoryViewer
+    Qt5::Widgets
+    Qt5::Core
+    Qt5::Gui
+)
+
+add_subdirectory(external/QHexView)
+
+add_executable(qhex qhex.cpp
+    ${QHEXVIEW_SOURCES}
+    ${QHEXVIEW_HEADERS}
+)
+
+target_link_libraries(qhex
     Qt5::Widgets
     Qt5::Core
     Qt5::Gui

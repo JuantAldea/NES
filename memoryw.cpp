@@ -6,6 +6,7 @@
 #include <QFileDialog>
 #include <QPushButton>
 #include <QVBoxLayout>
+#include <QColor>
 
 int main(int argc, char *argv[])
 {
@@ -21,6 +22,9 @@ int main(int argc, char *argv[])
 
     w.layout()->addWidget(&btn);
     w.layout()->addWidget(&viewer);
+
+                           // Reset styling
+
     QFile file;
 
     QObject::connect(&btn, &QPushButton::clicked, [&w, &viewer, &file](){

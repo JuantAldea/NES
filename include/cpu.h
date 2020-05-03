@@ -13,9 +13,12 @@ www.obelisk.me.uk/6502/reference.html
 #include <vector>
 #include "device.h"
 #include "bus.h"
+#include <QObject>
 
-class CPU : public Device
+class CPU : public QObject, public Device
 {
+   Q_OBJECT
+
 public:
     CPU() = delete;
     CPU(Bus *b);
@@ -38,12 +41,19 @@ public:
     static constexpr uint16_t STACK_BASE_ADDR = 0x0100;
     struct {
         uint8_t A;
-        uint16_t X;
+        uint8_t X;
         uint8_t Y;
         uint8_t P;
         uint16_t PC;
         uint16_t SP;
     } registers;
+
+    uint8_t& register_A() { return registers.A; };
+    uint8_t& register_X() { return registers.X; };
+    uint8_t& register_Y() { return registers.Y; };
+    uint8_t& register_P() { return registers.P; };
+    uint16_t& register_PC() { return registers.PC; };
+    uint16_t& register_SP() { return registers.SP; };
 
     uint16_t fetched_operand;
     uint8_t current_op_code;
