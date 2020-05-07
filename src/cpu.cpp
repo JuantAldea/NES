@@ -1,4 +1,5 @@
 #include "bus.h"
+#include <iostream>
 
 uint8_t low_byte(const uint16_t twobytes)
 {
@@ -12,25 +13,61 @@ uint8_t high_byte(const uint16_t twobytes)
 
 CPU::CPU(Bus *b) : Device{b} {}
 
-void CPU::clock()
+void CPU::execute_next_instruction()
+{
+    current_op_code = read(registers.PC);
+    auto instruction = instruction_set[current_op_code];
+    auto fn_operation = instruction.operation;
+    auto fn_addresing = instruction.addressing;
+    cycles_left = instruction.cycles;
+    //std::cout << "Instruction fetched: " << instruction.name << " " << (unsigned) current_op_code << std::endl;
+    auto addr = registers.PC;
+    register_PC()++;
+
+    fn_addresing(*this);
+    fn_operation(*this);
+
+    set_flag(FLAGS::U, true);
+    //std::cout << std::endl;
+    if (registers.PC == addr) {
+        std::cout << "TRAP: " << std::hex << addr << std::endl;
+        //exit(1);
+    }
+    /*else if (registers.PC == 0x2602) {
+        std::cout << "JUMP to trap from: " << std::hex << addr << std::endl;
+    }
+    */
+    emit updated();
+}
+
+bool CPU::clock()
 {
     if (cycles_left > 0)
     {
         --cycles_left;
-        return;
+        return false;
     }
 
-    const uint8_t opcode = read(registers.PC);
-    auto instruction = instruction_set[opcode];
-    auto op_function = instruction.operation;
-    auto op_addresing = instruction.addressing;
-    cycles_left = instruction.cycles;
-    registers.PC++;
+    execute_next_instruction();
+    return true;
+}
+
+void CPU::reset()
+{
+    registers = { 0 };
+    registers.PC = 0x400;
+    registers.SP = 0xff;
+    registers.P = 0x34; //U, B & I
+    current_op_code = read(registers.PC);
+    //std::cout << *this;
+    emit updated();
 }
 
 uint8_t CPU::fetch_byte()
 {
-    return read(registers.PC++);
+    uint8_t byte = read(registers.PC++);
+    //std::cout << "fetching byte from *" << std::hex << registers.PC << ": " << std::hex << (unsigned) byte << std::endl;
+    return byte;
 }
 
 uint16_t CPU::fetch_2bytes()
@@ -48,16 +85,20 @@ uint8_t CPU::read(const uint16_t addr)
     return bus->read(addr);
 }
 
+uint8_t CPU::read(const uint16_t addr) const
+{
+    return bus->read(addr);
+}
+
+
 void CPU::push_stack(const uint8_t byte)
 {
-    write(STACK_BASE_ADDR + registers.SP, byte);
-    --registers.SP;
+    write(STACK_BASE_ADDR + (registers.SP--), byte);
 }
 
 uint8_t CPU::pop_stack()
 {
-    ++registers.SP;
-    return read(STACK_BASE_ADDR + registers.SP);
+    return read(STACK_BASE_ADDR + (++registers.SP));
 }
 
 void CPU::set_flag(const FLAGS flag, const bool value)
@@ -72,7 +113,7 @@ void CPU::set_flag(const FLAGS flag, const bool value)
     }
 }
 
-bool CPU::get_flag(const FLAGS flag)
+bool CPU::get_flag(const FLAGS flag) const
 {
     return registers.P & static_cast<uint8_t>(flag);
 }
@@ -86,8 +127,9 @@ uint16_t CPU::addressing_implicit()
 
 uint16_t CPU::addressing_immediate()
 {
+    //std::cout << "Addresing Inmediate";
     //Uses the 8-bit operand itself as the value for the operation, rather than fetching a value from a memory address.
-    fetched_operand = registers.PC++;
+    fetched_operand = register_PC()++;
     return 0;
 }
 
@@ -112,13 +154,19 @@ uint16_t CPU::addressing_zero_page_Y()
 uint16_t CPU::addressing_relative()
 {
     fetched_operand = fetch_byte();
+    if (fetched_operand & 0x80) {
+        fetched_operand |= 0xff00;
+    }
+    //std::cout << "RELATIVE ADDR: " << std::hex << static_cast<int16_t>(fetched_operand) << std::endl;
     return 0;
 }
 
 uint16_t CPU::addressing_absolute()
 {
     //Fetches the value from a 16-bit address anywhere in memory.
+
     fetched_operand = fetch_2bytes();
+    //std::cout << "addressing absoute fetched:" << std::hex << (unsigned) fetched_operand << std::endl;
     return 0;
 }
 
@@ -136,21 +184,26 @@ uint16_t CPU::addressing_absolute_Y()
 
 uint16_t CPU::addressing_indirect()
 {
-    fetched_operand = read(fetch_2bytes());
+    // only used for JMP, also buggy
+    const uint16_t ptr = fetch_2bytes();
+    const uint8_t low = read(ptr);
+    const uint8_t hi = ((ptr & 0x00FF) == 0xFF) ? read(ptr & 0xFF00) : read(ptr + 1);
+    fetched_operand = (static_cast<uint16_t>(hi) << 8) | low;
+    std::cout << "INDIRECT: (" << std::hex << ptr << ") -> " << std::hex << fetched_operand << std::endl;
     return 0;
 }
 
 uint16_t CPU::addressing_indexed_indirect()
 {
     const uint8_t pointer = (fetch_byte() + registers.X) % 256;
-    fetched_operand = read((pointer + 1) % 256) << 8 | read(pointer);
+    fetched_operand = (static_cast<uint16_t>(read((pointer + 1) % 256)) << 8) | read(pointer);
     return 0;
 }
 
 uint16_t CPU::addressing_indirect_indexed()
 {
     const uint8_t pointer = fetch_byte();
-    fetched_operand = (read(pointer + 1) % 256) << 8 | read(pointer) + registers.Y;
+    fetched_operand = (static_cast<uint16_t>(read(pointer + 1) % 256) << 8) | read(pointer) + registers.Y;
     return 0;
 }
 
@@ -220,10 +273,13 @@ void CPU::CPX()
 
 void CPU::CPY()
 {
-    uint8_t result = registers.Y - read(fetched_operand);
+    uint8_t data = read(fetched_operand);
+    std::cout << "CPY " << std::hex << (unsigned)registers.Y << ", "
+        << std::hex << (unsigned) data << "(" <<  std::hex << (unsigned)fetched_operand << ")"<< std::endl;
+    uint8_t result = registers.Y - data;
     set_flag(FLAGS::Z, !result);
     set_flag(FLAGS::N, result & 0x80);
-    set_flag(FLAGS::C, registers.Y >= read(fetched_operand));
+    set_flag(FLAGS::C, registers.Y >= data);
 }
 
 void CPU::DEC()
@@ -317,6 +373,7 @@ void CPU::ROR()
 void CPU::LDA()
 {
     registers.A = read(fetched_operand);
+    std::cout << "LDA: (" << std::hex << (unsigned)fetched_operand << ") -> " << (unsigned)registers.A << std::endl;
     set_flag(FLAGS::N, registers.A & 0x80);
     set_flag(FLAGS::Z, registers.A == 0);
 }
@@ -409,14 +466,14 @@ void CPU::PLP()
 
 void CPU::PHP()
 {
-    push_stack(registers.P | static_cast<uint8_t>(FLAGS::B0));
+    push_stack(registers.P | static_cast<uint8_t>(FLAGS::B) | static_cast<uint8_t>(FLAGS::U));
 }
 
 void CPU::BPL()
 {
-    if (!get_flag(FLAGS::V))
+    if (!get_flag(FLAGS::N))
     {
-        registers.PC += fetched_operand;
+        registers.PC += static_cast<int16_t>(fetched_operand);
     }
 }
 
@@ -424,7 +481,7 @@ void CPU::BMI()
 {
     if (get_flag(FLAGS::N))
     {
-        registers.PC += fetched_operand;
+        registers.PC += static_cast<int16_t>(fetched_operand);
     }
 }
 
@@ -432,7 +489,7 @@ void CPU::BVC()
 {
     if (!get_flag(FLAGS::V))
     {
-        registers.PC += fetched_operand;
+        registers.PC += static_cast<int16_t>(fetched_operand);
     }
 }
 
@@ -440,7 +497,7 @@ void CPU::BVS()
 {
     if (get_flag(FLAGS::V))
     {
-        registers.PC += fetched_operand;
+        registers.PC += static_cast<int16_t>(fetched_operand);
     }
 }
 
@@ -448,7 +505,7 @@ void CPU::BCC()
 {
     if (!get_flag(FLAGS::C))
     {
-        registers.PC += fetched_operand;
+        registers.PC += static_cast<int16_t>(fetched_operand);
     }
 }
 
@@ -456,7 +513,7 @@ void CPU::BCS()
 {
     if (get_flag(FLAGS::C))
     {
-        registers.PC += fetched_operand;
+        registers.PC += static_cast<int16_t>(fetched_operand);
     }
 }
 
@@ -464,7 +521,8 @@ void CPU::BNE()
 {
     if (!get_flag(FLAGS::Z))
     {
-        registers.PC += fetched_operand;
+        //std::cout << "BNE FROM " << std::hex << registers.PC << "to " << std::hex << registers.PC + static_cast<int16_t>(fetched_operand) << "+" << std::hex << static_cast<int16_t>(fetched_operand) << std::endl;
+        registers.PC += static_cast<int16_t>(fetched_operand);
     }
 }
 
@@ -472,49 +530,57 @@ void CPU::BEQ()
 {
     if (get_flag(FLAGS::Z))
     {
-        registers.PC += fetched_operand;
+        registers.PC += static_cast<int16_t>(fetched_operand);
     }
 }
 
 void CPU::BRK()
 {
+    ++registers.PC;
     push_stack(static_cast<uint8_t>(registers.PC >> 8));
     push_stack(static_cast<uint8_t>(registers.PC & 0xFF));
-    push_stack(registers.P);
-    registers.PC = read(0xFFFF) << 8 | read(0xFFFE);
-    set_flag(FLAGS::B0, 1);
+
+    push_stack(registers.P | static_cast<uint8_t>(FLAGS::B));
+    // BRK does set the interrupt-disable I flag like an IRQ does, and if you have the CMOS 6502 (65C02), it will also clear the decimal D flag.
+    set_flag(FLAGS::I, true);
+    set_flag(FLAGS::D, false);
+    registers.PC = (static_cast<uint16_t>(read(0xFFFF)) << 8) | read(0xFFFE);
+    std::cout << "BRK STACKPOINTER "
+              << std::hex << (unsigned)registers.SP
+              << " (" << std::hex << (unsigned) STACK_BASE_ADDR + registers.SP << ") P: "
+              << std::hex << (unsigned)(registers.P | static_cast<uint8_t>(FLAGS::B))
+              << std::endl;
 }
 
 void CPU::RTI()
 {
     registers.P = pop_stack();
-    registers.PC = pop_stack() | static_cast<uint16_t>(pop_stack()) << 8;
+    registers.PC = pop_stack() | (static_cast<uint16_t>(pop_stack()) << 8);
 }
 
 void CPU::JSR()
 {
-    fetched_operand = read(registers.PC);
-    ++registers.PC;
     // push return_address - 1!
-    push_stack(high_byte(registers.PC));
-    push_stack(low_byte(registers.PC));
-    registers.PC = static_cast<uint16_t>(read(registers.PC)) << 8 | fetched_operand;
+    push_stack(high_byte(registers.PC - 1));
+    push_stack(low_byte(registers.PC - 1));
+    registers.PC = fetched_operand;
 }
 
 void CPU::RTS()
 {
-    registers.PC = pop_stack() | pop_stack() << 8;
+    registers.PC = pop_stack() | (static_cast<uint16_t>(pop_stack()) << 8);
     ++registers.PC;
 }
 
 void CPU::JMP()
 {
-    registers.PC = fetch_2bytes();
+    registers.PC = fetched_operand;
+    //std::cout << "JMP " << std::hex << registers.PC;
 }
 
 void CPU::BIT()
 {
-    uint8_t value = fetch_byte();
+    uint8_t value = fetched_operand & 0xFF;
     set_flag(FLAGS::Z, registers.A & value);
     set_flag(FLAGS::N, value & 0x80);
     set_flag(FLAGS::V, value & 0x40);
@@ -543,6 +609,7 @@ void CPU::SED()
 void CPU::CLI()
 {
     set_flag(FLAGS::I, false);
+    std::cout << "CLI\n";
 }
 
 void CPU::SEI()
@@ -557,23 +624,53 @@ void CPU::CLV()
 
 void CPU::NOP() { ; }
 
-void CPU::STP() {;}
-void CPU::SLO() {;}
-void CPU::ANC() {;}
-void CPU::RLA() {;}
-void CPU::ARL() {;}
-void CPU::LAX() {;}
-void CPU::AXS() {;}
-void CPU::DCP() {;}
-void CPU::SAX() {;}
-void CPU::RRA() {;}
-void CPU::SRE() {;}
-void CPU::ALR() {;}
-void CPU::ARR() {;}
-void CPU::ISC() {;}
-void CPU::AHX() {;}
-void CPU::SHX() {;}
-void CPU::SHY() {;}
-void CPU::TAS() {;}
-void CPU::XAA() {;}
-void CPU::LAS() {;}
+void CPU::STP() { ; }
+void CPU::SLO() { ; }
+void CPU::ANC() { ; }
+void CPU::RLA() { ; }
+void CPU::ARL() { ; }
+void CPU::LAX() { ; }
+void CPU::AXS() { ; }
+void CPU::DCP() { ; }
+void CPU::SAX() { ; }
+void CPU::RRA() { ; }
+void CPU::SRE() { ; }
+void CPU::ALR() { ; }
+void CPU::ARR() { ; }
+void CPU::ISC() { ; }
+void CPU::AHX() { ; }
+void CPU::SHX() { ; }
+void CPU::SHY() { ; }
+void CPU::TAS() { ; }
+void CPU::XAA() { ; }
+void CPU::LAS() { ; }
+
+std::ostream &operator<<(std::ostream &os, const CPU &cpu)
+{
+    os << "A:" << static_cast<unsigned>(cpu.registers.A)
+        << " X:" << static_cast<unsigned>(cpu.registers.X)
+        << " Y:" << static_cast<unsigned>(cpu.registers.Y)
+        << " P:" << static_cast<unsigned>(cpu.registers.P)
+        << " PC:" << cpu.registers.PC
+        << " SP:" << cpu.registers.SP
+        << std::endl;
+
+    os << "C:" << (cpu.get_flag(CPU::FLAGS::C) ? "x" : "o")
+        << " Z:" << (cpu.get_flag(CPU::FLAGS::Z) ? "x" : "o")
+        << " I:" << (cpu.get_flag(CPU::FLAGS::I) ? "x" : "o")
+        << " D:" << (cpu.get_flag(CPU::FLAGS::D) ? "x" : "o")
+        << " B:" << (cpu.get_flag(CPU::FLAGS::B) ? "x" : "o")
+        << " U:" << (cpu.get_flag(CPU::FLAGS::U) ? "x" : "o")
+        << " V:" << (cpu.get_flag(CPU::FLAGS::V) ? "x" : "o")
+        << " N:" << (cpu.get_flag(CPU::FLAGS::N) ? "x" : "o")
+        << std::endl;
+
+    os << "Instruction : " << cpu.instruction_set[cpu.read(cpu.registers.PC)].name
+        << " Cycles left: " << static_cast<unsigned>(cpu.cycles_left) << std::endl;
+/*
+    for (int i = 0; i < 10; i++){
+        os << std::hex << static_cast<unsigned>(cpu.read(i)) <<  " ";
+    }
+    os << std::endl;
+    */return os;
+}
