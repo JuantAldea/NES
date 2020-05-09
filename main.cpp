@@ -1,4 +1,4 @@
-#include "include/bus.h"
+#include "bus.h"
 #include <vector>
 #include <fstream>
 #include <iostream>

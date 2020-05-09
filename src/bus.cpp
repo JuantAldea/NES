@@ -42,7 +42,4 @@ void Bus::write_ram(const uint16_t start_addr, const size_t n_bytes, const uint8
     ram.write(start_addr, n_bytes, bytes);
 }
 
-uint8_t Bus::read(const uint16_t addr)
-{
-    return get_device_from_addr(addr).read(addr);
-}
+auto Bus::read(const uint16_t addr) -> uint8_t { return get_device_from_addr(addr).read(addr); }

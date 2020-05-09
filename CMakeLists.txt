@@ -7,8 +7,12 @@ enable_testing()
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_INCLUDE_CURRENT_DIR ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+#[[set(CMAKE_CXX_CLANG_TIDY clang-tidy -checks=-*,modernize-*,performance-*,misc-*)]]
+
+#[[add_compile_options(-Wall -Wextra -pedantic)]]
 
 find_package(Qt5 COMPONENTS Widgets REQUIRED)
 find_package(Qt5 COMPONENTS Core REQUIRED)
@@ -35,9 +39,23 @@ target_link_libraries(libCPU
     ${Qt5Core_LIBRARIES}
 )
 
+add_library(libInstruction
+    src/instruction.cpp
+)
+
+target_include_directories(libInstruction
+    PUBLIC
+        $<INSTALL_INTERFACE:include>
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+
 add_library(libBus
     src/bus.cpp
 )
+
 target_include_directories(libBus
     PUBLIC
         $<INSTALL_INTERFACE:include>
@@ -49,7 +67,7 @@ target_include_directories(libBus
 target_link_libraries(libBus
     libCPU
 )
-
+#[[
 add_library(libMemoryViewer
     src/memoryviewer.cpp
     include/memoryviewer.h
@@ -69,13 +87,16 @@ target_include_directories(libMemoryViewer
         ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
+]]
 
 add_executable(NES main.cpp)
 target_link_libraries(NES
     libBus
     libCPU
+    libInstruction
 )
 
+#[[
 add_executable(MV memoryw.cpp)
 
 target_link_libraries(MV
@@ -84,6 +105,7 @@ target_link_libraries(MV
     Qt5::Core
     Qt5::Gui
 )
+]]
 
 add_subdirectory(external/QHexView)
 
@@ -97,6 +119,7 @@ find_package(Threads)
 target_link_libraries(qhex
     libBus
     libCPU
+    libInstruction
     Qt5::Widgets
     Qt5::Core
     Qt5::Gui

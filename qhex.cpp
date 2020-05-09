@@ -18,6 +18,8 @@
 #include "external/QHexView/qhexview.h"
 
 #include "include/bus.h"
+#include "include/instruction.h"
+
 int main(int argc, char *argv[])
 {
     QApplication a(argc, argv);
@@ -209,7 +211,7 @@ int main(int argc, char *argv[])
         flag_U.setChecked(console.cpu.get_flag(CPU::FLAGS::U));
         flag_V.setChecked(console.cpu.get_flag(CPU::FLAGS::V));
         flag_Z.setChecked(console.cpu.get_flag(CPU::FLAGS::Z));
-        instruction.setText(QString::fromStdString(console.cpu.instruction_set[console.cpu.read(console.cpu.registers.PC)].name));
+        instruction.setText(QString::fromStdString(Instruction::instruction_set[console.cpu.read(console.cpu.registers.PC)].name));
         //operand.setText(QString::number(console.cpu.fetched_operand, 16));
 
         QHexDocument *document = QHexDocument::fromMemory<QMemoryBuffer>((char*)console.ram.memory.data(), console.ram.memory.size());

@@ -1,22 +1,17 @@
 #include "bus.h"
 #include <iostream>
+#include "instruction.h"
 
-uint8_t low_byte(const uint16_t twobytes)
-{
-    return static_cast<uint8_t>(twobytes);
-}
+uint8_t low_byte(const uint16_t twobytes){ return static_cast<uint8_t>(twobytes); }
 
-uint8_t high_byte(const uint16_t twobytes)
-{
-    return static_cast<uint8_t>(twobytes >> 8);
-}
+uint8_t high_byte(const uint16_t twobytes) { return static_cast<uint8_t>(twobytes >> 8); }
 
 CPU::CPU(Bus *b) : Device{b} {}
 
 void CPU::execute_next_instruction(const bool update_debugger)
 {
     current_op_code = read(registers.PC);
-    auto instruction = instruction_set[current_op_code];
+    auto instruction = Instruction::instruction_set[current_op_code];
     auto fn_operation = instruction.operation;
     auto fn_addresing = instruction.addressing;
     cycles_left = instruction.cycles;
@@ -74,55 +69,30 @@ uint16_t CPU::fetch_2bytes()
     return fetch_byte() | (static_cast<uint16_t>(fetch_byte()) << 8);
 }
 
-void CPU::write(const uint16_t addr, const uint8_t data)
-{
-    bus->write(addr, data);
-}
+void CPU::write(const uint16_t addr, const uint8_t data) { bus->write(addr, data); }
 
-uint8_t CPU::read(const uint16_t addr)
-{
-    return bus->read(addr);
-}
+uint8_t CPU::read(const uint16_t addr) { return bus->read(addr); }
 
-uint8_t CPU::read(const uint16_t addr) const
-{
-    return bus->read(addr);
-}
+uint8_t CPU::read(const uint16_t addr) const{ return bus->read(addr); }
 
+void CPU::push_stack(const uint8_t byte){ write(STACK_BASE_ADDR + (registers.SP--), byte); }
 
-void CPU::push_stack(const uint8_t byte)
-{
-    write(STACK_BASE_ADDR + (registers.SP--), byte);
-}
-
-uint8_t CPU::pop_stack()
-{
-    return read(STACK_BASE_ADDR + (++registers.SP));
-}
+uint8_t CPU::pop_stack(){ return read(STACK_BASE_ADDR + (++registers.SP)); }
 
 void CPU::set_flag(const FLAGS flag, const bool value)
 {
-    if (value)
-    {
+    if (value) {
         registers.P |= static_cast<uint8_t>(flag);
-    }
-    else
-    {
+    } else {
         registers.P &= ~static_cast<uint8_t>(flag);
     }
 }
 
-bool CPU::get_flag(const FLAGS flag) const
-{
-    return registers.P & static_cast<uint8_t>(flag);
-}
+bool CPU::get_flag(const FLAGS flag) const { return registers.P & static_cast<uint8_t>(flag); }
 
 /* OP addressing modes */
-uint16_t CPU::addressing_implicit()
-{
-    //nothing to do here. Operand implied by the operation.
-    return 0;
-}
+//nothing to do here. Operand implied by the operation.
+uint16_t CPU::addressing_implicit() { return 0; }
 
 uint16_t CPU::addressing_immediate()
 {
@@ -210,15 +180,9 @@ uint16_t CPU::addressing_indirect_indexed()
 
 /* Operations */
 
-void CPU::ADC()
-{
-    ADC_SBC_internal(read(fetched_operand));
-}
+void CPU::ADC(){ ADC_SBC_internal(read(fetched_operand)); }
 
-void CPU::SBC()
-{
-    ADC_SBC_internal(read(fetched_operand) ^ 0xFF);
-}
+void CPU::SBC(){ ADC_SBC_internal(read(fetched_operand) ^ 0xFF); }
 
 void CPU::ADC_SBC_internal(const uint8_t value)
 {
@@ -378,7 +342,7 @@ void CPU::INY()
 
 void CPU::ASL()
 {
-    bool addressing_is_implicit =  instruction_set[current_op_code].addr_type == AddressingTypes::addressing_implicit_type;
+    bool addressing_is_implicit = Instruction::instruction_set[current_op_code].addr_type == AddressingTypes::addressing_implicit_type;
 
     uint8_t value = addressing_is_implicit ? registers.A : read(fetched_operand);
 
@@ -398,7 +362,7 @@ void CPU::ASL()
 
 void CPU::ROL()
 {
-    bool addressing_is_implicit =  instruction_set[current_op_code].addr_type == AddressingTypes::addressing_implicit_type;
+    bool addressing_is_implicit = Instruction::instruction_set[current_op_code].addr_type == AddressingTypes::addressing_implicit_type;
 
     uint8_t value = addressing_is_implicit ? registers.A : read(fetched_operand);
 
@@ -417,7 +381,7 @@ void CPU::ROL()
 }
 
 void CPU::LSR()
-{    bool addressing_is_implicit =  instruction_set[current_op_code].addr_type == AddressingTypes::addressing_implicit_type;
+{    bool addressing_is_implicit = Instruction::instruction_set[current_op_code].addr_type == AddressingTypes::addressing_implicit_type;
 
     uint8_t value = addressing_is_implicit ? registers.A : read(fetched_operand);
 
@@ -435,7 +399,7 @@ void CPU::LSR()
 
 void CPU::ROR()
 {
-    bool addressing_is_implicit =  instruction_set[current_op_code].addr_type == AddressingTypes::addressing_implicit_type;
+    bool addressing_is_implicit =  Instruction::instruction_set[current_op_code].addr_type == AddressingTypes::addressing_implicit_type;
 
     uint8_t value = addressing_is_implicit ? registers.A : read(fetched_operand);
     auto carry = get_flag(FLAGS::C);
@@ -462,10 +426,7 @@ void CPU::LDA()
     set_flag(FLAGS::Z, registers.A == 0);
 }
 
-void CPU::STA()
-{
-    write(fetched_operand, registers.A);
-}
+void CPU::STA() { write(fetched_operand, registers.A); }
 
 void CPU::LDX()
 {
@@ -474,10 +435,7 @@ void CPU::LDX()
     set_flag(FLAGS::Z, registers.X == 0);
 }
 
-void CPU::STX()
-{
-    write(fetched_operand, registers.X);
-}
+void CPU::STX() { write(fetched_operand, registers.X); }
 
 void CPU::LDY()
 {
@@ -486,10 +444,7 @@ void CPU::LDY()
     set_flag(FLAGS::Z, registers.Y == 0);
 }
 
-void CPU::STY()
-{
-    write(fetched_operand, registers.Y);
-}
+void CPU::STY() { write(fetched_operand, registers.Y); }
 
 void CPU::TAX()
 {
@@ -526,10 +481,7 @@ void CPU::TSX()
     set_flag(FLAGS::Z, registers.SP == 0);
 }
 
-void CPU::TXS()
-{
-    registers.SP = registers.X;
-}
+void CPU::TXS() { registers.SP = registers.X; }
 
 void CPU::PLA()
 {
@@ -538,20 +490,11 @@ void CPU::PLA()
     set_flag(FLAGS::Z, registers.A == 0);
 }
 
-void CPU::PHA()
-{
-    push_stack(registers.A);
-}
+void CPU::PHA() { push_stack(registers.A); }
 
-void CPU::PLP()
-{
-    registers.P = pop_stack();
-}
+void CPU::PLP() { registers.P = pop_stack(); }
 
-void CPU::PHP()
-{
-    push_stack(registers.P | static_cast<uint8_t>(FLAGS::B));
-}
+void CPU::PHP() { push_stack(registers.P | static_cast<uint8_t>(FLAGS::B)); }
 
 void CPU::BPL()
 {
@@ -653,11 +596,7 @@ void CPU::JSR()
     registers.PC = fetched_operand;
 }
 
-void CPU::RTS()
-{
-    registers.PC = pop_stack() | (static_cast<uint16_t>(pop_stack()) << 8);
-    ++registers.PC;
-}
+void CPU::RTS() {registers.PC = (pop_stack() | (static_cast<uint16_t>(pop_stack()) << 8)) + 1 ; /* ++registers.PC; */ }
 
 void CPU::JMP()
 {
@@ -674,44 +613,21 @@ void CPU::BIT()
     set_flag(FLAGS::V, value & 0x40);
 }
 
-void CPU::CLC()
-{
-    set_flag(FLAGS::C, false);
-}
+void CPU::CLC() { set_flag(FLAGS::C, false); }
 
-void CPU::SEC()
-{
-    set_flag(FLAGS::C, true);
-}
+void CPU::SEC() { set_flag(FLAGS::C, true); }
 
-void CPU::CLD()
-{
-    set_flag(FLAGS::D, false);
-}
+void CPU::CLD() { set_flag(FLAGS::D, false); }
 
-void CPU::SED()
-{
-    set_flag(FLAGS::D, true);
-}
+void CPU::SED() { set_flag(FLAGS::D, true); }
 
-void CPU::CLI()
-{
-    set_flag(FLAGS::I, false);
-    //std::cout << "CLI\n";
-}
+void CPU::CLI() { set_flag(FLAGS::I, false); }
 
-void CPU::SEI()
-{
-    set_flag(FLAGS::I, true);
-}
+void CPU::SEI() { set_flag(FLAGS::I, true); }
 
-void CPU::CLV()
-{
-    set_flag(FLAGS::V, false);
-}
+void CPU::CLV() { set_flag(FLAGS::V, false); }
 
 void CPU::NOP() { ; }
-
 void CPU::STP() { ; }
 void CPU::SLO() { ; }
 void CPU::ANC() { ; }
@@ -753,7 +669,7 @@ std::ostream &operator<<(std::ostream &os, const CPU &cpu)
         << " N:" << (cpu.get_flag(CPU::FLAGS::N) ? "x" : "o")
         << std::endl;
 
-    os << "Instruction : " << cpu.instruction_set[cpu.read(cpu.registers.PC)].name
+    os << "Instruction : " << Instruction::instruction_set[cpu.read(cpu.registers.PC)].name
         << " Cycles left: " << static_cast<unsigned>(cpu.cycles_left) << std::endl;
 /*
     for (int i = 0; i < 10; i++){

@@ -1,3 +1,5 @@
+#pragma once
+
 enum class AddressingTypes {
     addressing_absolute_type = 0,
     addressing_absolute_X_type,
