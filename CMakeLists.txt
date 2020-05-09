@@ -92,10 +92,19 @@ add_executable(qhex qhex.cpp
     ${QHEXVIEW_HEADERS}
 )
 
+find_package(Threads)
+
 target_link_libraries(qhex
+    libBus
+    libCPU
     Qt5::Widgets
     Qt5::Core
     Qt5::Gui
+    Threads::Threads
+#[[
+    -fsanitize=address
+    -fno-omit-frame-pointer
+]]
 )
 
 set(CPACK_PROJECT_NAME ${PROJECT_NAME})

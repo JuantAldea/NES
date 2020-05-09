@@ -13,7 +13,7 @@ uint8_t high_byte(const uint16_t twobytes)
 
 CPU::CPU(Bus *b) : Device{b} {}
 
-void CPU::execute_next_instruction()
+void CPU::execute_next_instruction(const bool update_debugger)
 {
     current_op_code = read(registers.PC);
     auto instruction = instruction_set[current_op_code];
@@ -22,22 +22,21 @@ void CPU::execute_next_instruction()
     cycles_left = instruction.cycles;
     //std::cout << "Instruction fetched: " << instruction.name << " " << (unsigned) current_op_code << std::endl;
     auto addr = registers.PC;
-    register_PC()++;
+    registers.PC++;
 
     fn_addresing(*this);
     fn_operation(*this);
 
     set_flag(FLAGS::U, true);
-    //std::cout << std::endl;
+
     if (registers.PC == addr) {
         std::cout << "TRAP: " << std::hex << addr << std::endl;
         //exit(1);
     }
-    /*else if (registers.PC == 0x2602) {
-        std::cout << "JUMP to trap from: " << std::hex << addr << std::endl;
+
+    if (update_debugger){
+        emit updated();
     }
-    */
-    emit updated();
 }
 
 bool CPU::clock()
@@ -48,7 +47,7 @@ bool CPU::clock()
         return false;
     }
 
-    execute_next_instruction();
+    execute_next_instruction(false);
     return true;
 }
 
@@ -173,12 +172,14 @@ uint16_t CPU::addressing_absolute()
 uint16_t CPU::addressing_absolute_X()
 {
     fetched_operand = fetch_2bytes() + registers.X;
+    //std::cout << "ABX: " << fetched_operand - registers.X << "+"<< (unsigned)registers.X << std::endl;
     return 0;
 }
 
 uint16_t CPU::addressing_absolute_Y()
 {
     fetched_operand = fetch_2bytes() + registers.Y;
+    //std::cout << "ABY: " << fetched_operand - registers.Y << "+"<< (unsigned)registers.Y << std::endl;
     return 0;
 }
 
@@ -189,21 +190,21 @@ uint16_t CPU::addressing_indirect()
     const uint8_t low = read(ptr);
     const uint8_t hi = ((ptr & 0x00FF) == 0xFF) ? read(ptr & 0xFF00) : read(ptr + 1);
     fetched_operand = (static_cast<uint16_t>(hi) << 8) | low;
-    std::cout << "INDIRECT: (" << std::hex << ptr << ") -> " << std::hex << fetched_operand << std::endl;
+    //std::cout << "INDIRECT: (" << std::hex << ptr << ") -> " << std::hex << fetched_operand << std::endl;
     return 0;
 }
 
 uint16_t CPU::addressing_indexed_indirect()
 {
-    const uint8_t pointer = (fetch_byte() + registers.X) % 256;
-    fetched_operand = (static_cast<uint16_t>(read((pointer + 1) % 256)) << 8) | read(pointer);
+    const uint16_t pointer = fetch_byte() + registers.X;
+    fetched_operand = read((pointer + 1) % 256) * 256 + read(pointer % 256);
     return 0;
 }
 
 uint16_t CPU::addressing_indirect_indexed()
 {
-    const uint8_t pointer = fetch_byte();
-    fetched_operand = (static_cast<uint16_t>(read(pointer + 1) % 256) << 8) | read(pointer) + registers.Y;
+    const uint16_t pointer = fetch_byte();
+    fetched_operand = (read(pointer + 1) % 256) * 256 + read(pointer) + registers.Y;
     return 0;
 }
 
@@ -211,7 +212,16 @@ uint16_t CPU::addressing_indirect_indexed()
 
 void CPU::ADC()
 {
-    const uint8_t value = read(fetched_operand);
+    ADC_SBC_internal(read(fetched_operand));
+}
+
+void CPU::SBC()
+{
+    ADC_SBC_internal(read(fetched_operand) ^ 0xFF);
+}
+
+void CPU::ADC_SBC_internal(const uint8_t value)
+{
     const uint16_t temp = static_cast<uint16_t>(registers.A) + value + get_flag(FLAGS::C);
     const uint8_t result = temp & 0xFF;
     set_flag(FLAGS::N, result & 0x80);
@@ -221,18 +231,57 @@ void CPU::ADC()
     registers.A = result;
 }
 
+/*
+void CPU::ADC()
+{
+    const uint8_t value = read(fetched_operand);
+    uint16_t temp = static_cast<uint16_t>(registers.A) + value + get_flag(FLAGS::C);
+
+    if (get_flag(FLAGS::D)) {
+        if (((registers.A & 0xF) + (value & 0xF) + (get_flag(FLAGS::C) ? 1 : 0)) > 9) {
+            temp += 0x6;
+        }
+
+		if (temp > 0x99) {
+			temp += 0x60;
+		}
+
+		set_flag(FLAGS::C, temp > 0x99);
+    } else {
+        set_flag(FLAGS::C, temp > 0xFF);
+    }
+
+    const uint8_t result = temp & 0xFF;
+    set_flag(FLAGS::Z, !result);
+    set_flag(FLAGS::V, (registers.A ^ result) & (value ^ result) & 0x80);
+    set_flag(FLAGS::N, result & 0x80);
+    registers.A = result;
+}
+
 void CPU::SBC()
 {
     const uint8_t value = read(fetched_operand) ^ 0xFF;
     //same as ADC
-    const uint16_t temp = static_cast<uint16_t>(registers.A) + value + get_flag(FLAGS::C);
+    uint16_t temp = static_cast<uint16_t>(registers.A) + value + get_flag(FLAGS::C);
     const uint8_t result = temp & 0xFF;
     set_flag(FLAGS::N, result & 0x80);
     set_flag(FLAGS::Z, !result);
     set_flag(FLAGS::C, temp > 0xFF);
     set_flag(FLAGS::V, (registers.A ^ result) & (value ^ result) & 0x80);
-    registers.A = result;
+
+	if (get_flag(FLAGS::D))
+	{
+		if (((registers.A & 0x0F) - (get_flag(FLAGS::C) ? 1 : 0)) < (value & 0x0F)) {
+            temp -= 0x6;
+		if (temp > 0x99)
+		{
+			temp -= 0x60;
+		}
+	}
+
+    registers.A = temp & 0xFF;
 }
+*/
 
 void CPU::AND()
 {
@@ -258,6 +307,7 @@ void CPU::EOR()
 void CPU::CMP()
 {
     uint8_t result = registers.A - read(fetched_operand);
+    //std::cout << "CMP " << std::hex << (unsigned) registers.A << ", " << (unsigned)read(fetched_operand) << "(" << fetched_operand << ")\n";
     set_flag(FLAGS::Z, !result);
     set_flag(FLAGS::N, result & 0x80);
     set_flag(FLAGS::C, registers.A >= read(fetched_operand));
@@ -274,8 +324,8 @@ void CPU::CPX()
 void CPU::CPY()
 {
     uint8_t data = read(fetched_operand);
-    std::cout << "CPY " << std::hex << (unsigned)registers.Y << ", "
-        << std::hex << (unsigned) data << "(" <<  std::hex << (unsigned)fetched_operand << ")"<< std::endl;
+    //std::cout << "CPY " << std::hex << (unsigned)registers.Y << ", "
+    //    << std::hex << (unsigned) data << "(" <<  std::hex << (unsigned)fetched_operand << ")"<< std::endl;
     uint8_t result = registers.Y - data;
     set_flag(FLAGS::Z, !result);
     set_flag(FLAGS::N, result & 0x80);
@@ -328,52 +378,86 @@ void CPU::INY()
 
 void CPU::ASL()
 {
-    auto value = read(fetched_operand);
+    bool addressing_is_implicit =  instruction_set[current_op_code].addr_type == AddressingTypes::addressing_implicit_type;
+
+    uint8_t value = addressing_is_implicit ? registers.A : read(fetched_operand);
+
+    //std::cout << "ASL: (" << std::hex << (unsigned)fetched_operand << ") -> " << (unsigned)value << std::endl;
     set_flag(FLAGS::C, value & 0x80);
     value <<= 1;
     set_flag(FLAGS::N, value & 0x80);
     set_flag(FLAGS::Z, value == 0);
-    write(fetched_operand, value);
+
+    if (addressing_is_implicit){
+        registers.A = value;
+    } else {
+        write(fetched_operand, value);
+    }
 }
+
 
 void CPU::ROL()
 {
-    auto value = read(fetched_operand);
+    bool addressing_is_implicit =  instruction_set[current_op_code].addr_type == AddressingTypes::addressing_implicit_type;
+
+    uint8_t value = addressing_is_implicit ? registers.A : read(fetched_operand);
+
     auto carry = get_flag(FLAGS::C);
     set_flag(FLAGS::C, value & 0x80);
     value <<= 1;
     value |= carry;
     set_flag(FLAGS::N, value & 0x80);
     set_flag(FLAGS::Z, value == 0);
-    write(fetched_operand, value);
+
+    if (addressing_is_implicit){
+        registers.A = value;
+    } else {
+        write(fetched_operand, value);
+    }
 }
 
 void CPU::LSR()
-{
-    auto value = read(fetched_operand);
+{    bool addressing_is_implicit =  instruction_set[current_op_code].addr_type == AddressingTypes::addressing_implicit_type;
+
+    uint8_t value = addressing_is_implicit ? registers.A : read(fetched_operand);
+
     set_flag(FLAGS::C, value & 0x1);
     value >>= 1;
     set_flag(FLAGS::N, false);
     set_flag(FLAGS::Z, value == 0);
-    write(fetched_operand, value);
+
+    if (addressing_is_implicit){
+        registers.A = value;
+    } else {
+        write(fetched_operand, value);
+    }
 }
 
 void CPU::ROR()
 {
-    auto value = read(fetched_operand);
+    bool addressing_is_implicit =  instruction_set[current_op_code].addr_type == AddressingTypes::addressing_implicit_type;
+
+    uint8_t value = addressing_is_implicit ? registers.A : read(fetched_operand);
     auto carry = get_flag(FLAGS::C);
     set_flag(FLAGS::C, value & 0x1);
     value >>= 1;
     value |= (carry << 7);
     set_flag(FLAGS::N, value & 0x80);
     set_flag(FLAGS::Z, value == 0);
-    write(fetched_operand, value);
+
+    if (addressing_is_implicit){
+        registers.A = value;
+    } else {
+        write(fetched_operand, value);
+    }
 }
 
 void CPU::LDA()
 {
     registers.A = read(fetched_operand);
-    std::cout << "LDA: (" << std::hex << (unsigned)fetched_operand << ") -> " << (unsigned)registers.A << std::endl;
+    if (fetched_operand == 0xe) {
+        //std::cout << "LDA: (" << std::hex << (unsigned)fetched_operand << ") -> " << (unsigned)registers.A << std::endl;
+    }
     set_flag(FLAGS::N, registers.A & 0x80);
     set_flag(FLAGS::Z, registers.A == 0);
 }
@@ -466,7 +550,7 @@ void CPU::PLP()
 
 void CPU::PHP()
 {
-    push_stack(registers.P | static_cast<uint8_t>(FLAGS::B) | static_cast<uint8_t>(FLAGS::U));
+    push_stack(registers.P | static_cast<uint8_t>(FLAGS::B));
 }
 
 void CPU::BPL()
@@ -542,14 +626,17 @@ void CPU::BRK()
 
     push_stack(registers.P | static_cast<uint8_t>(FLAGS::B));
     // BRK does set the interrupt-disable I flag like an IRQ does, and if you have the CMOS 6502 (65C02), it will also clear the decimal D flag.
+    //TODO D flag & BRK: contradictorial information
     set_flag(FLAGS::I, true);
     set_flag(FLAGS::D, false);
     registers.PC = (static_cast<uint16_t>(read(0xFFFF)) << 8) | read(0xFFFE);
+    /*
     std::cout << "BRK STACKPOINTER "
               << std::hex << (unsigned)registers.SP
               << " (" << std::hex << (unsigned) STACK_BASE_ADDR + registers.SP << ") P: "
               << std::hex << (unsigned)(registers.P | static_cast<uint8_t>(FLAGS::B))
               << std::endl;
+              */
 }
 
 void CPU::RTI()
@@ -580,8 +667,9 @@ void CPU::JMP()
 
 void CPU::BIT()
 {
-    uint8_t value = fetched_operand & 0xFF;
-    set_flag(FLAGS::Z, registers.A & value);
+    uint8_t value = read(fetched_operand);
+    //std::cout << "BIT: (" << std::hex << fetched_operand << ") " << std::hex << (unsigned)value << "|" << std::hex << (unsigned) (registers.A & value) << std::endl;
+    set_flag(FLAGS::Z, !(registers.A & value));
     set_flag(FLAGS::N, value & 0x80);
     set_flag(FLAGS::V, value & 0x40);
 }
@@ -609,7 +697,7 @@ void CPU::SED()
 void CPU::CLI()
 {
     set_flag(FLAGS::I, false);
-    std::cout << "CLI\n";
+    //std::cout << "CLI\n";
 }
 
 void CPU::SEI()
