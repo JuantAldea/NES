@@ -10,6 +10,7 @@ set(CMAKE_AUTOUIC ON)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_INCLUDE_CURRENT_DIR ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
 #[[set(CMAKE_CXX_CLANG_TIDY clang-tidy -checks=-*,modernize-*,performance-*,misc-*)]]
 
 add_compile_options(-Wall -Wextra -pedantic -Wno-unused-parameter)
@@ -67,27 +68,6 @@ target_include_directories(libBus
 target_link_libraries(libBus
     libCPU
 )
-#[[
-add_library(libMemoryViewer
-    src/memoryviewer.cpp
-    include/memoryviewer.h
-)
-
-target_link_libraries(libMemoryViewer
-    Qt5::Widgets
-    Qt5::Core
-    Qt5::Gui
-)
-
-target_include_directories(libMemoryViewer
-    PUBLIC
-        $<INSTALL_INTERFACE:include>
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-    PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/src
-)
-
-]]
 
 add_executable(NES main.cpp)
 target_link_libraries(NES
@@ -95,17 +75,6 @@ target_link_libraries(NES
     libCPU
     libInstruction
 )
-
-#[[
-add_executable(MV memoryw.cpp)
-
-target_link_libraries(MV
-    libMemoryViewer
-    Qt5::Widgets
-    Qt5::Core
-    Qt5::Gui
-)
-]]
 
 add_subdirectory(external/QHexView)
 
