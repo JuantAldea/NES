@@ -1,8 +1,10 @@
-cmake_minimum_required(VERSION 3.0.0)
+cmake_minimum_required(VERSION 3.10)
 project(NES VERSION 0.1.0)
 
 include(CTest)
+
 enable_testing()
+add_subdirectory(tests)
 
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)

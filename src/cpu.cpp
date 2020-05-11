@@ -8,6 +8,16 @@ uint8_t high_byte(const uint16_t twobytes) { return static_cast<uint8_t>(twobyte
 
 CPU::CPU(Bus *b) : Device{b} {}
 
+void CPU::raise_NMI()
+{
+    nmi_requested = true;
+}
+
+void CPU::raise_IRQ()
+{
+    irq_requested = true;
+}
+
 void CPU::execute_next_instruction(const bool update_debugger)
 {
     /*
@@ -21,6 +31,17 @@ void CPU::execute_next_instruction(const bool update_debugger)
         return;
     }
     */
+
+    if (nmi_requested) {
+        nmi_requested = false;
+        NMI();
+        return;
+    } else if (!get_flag(FLAGS::I) && irq_requested) {
+        irq_requested = false;
+        IRQ();
+        return;
+    }
+
 #ifdef INTERRUPT_TEST
     uint8_t feedback_reg = read(0xbffc);
     //if ((feedback_reg & 0x2) && !nmi_pending) {
@@ -89,10 +110,6 @@ void CPU::reset()
     registers.SP = 0xff;
     registers.P = 0x34; //U, B & I << WHY B is set on reset actually it does not exist?
     current_op_code = read(registers.PC);
-
-    #ifdef INTERRUPT_TEST
-    write(0xbffc, 0x0);
-    #endif
 
     emit updated();
 }

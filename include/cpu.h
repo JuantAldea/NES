@@ -50,11 +50,12 @@ public:
         uint8_t SP = 0;
     } registers;
 
-    /*
-    int8_t interrupt_delay = 0;
-    bool nmi_pending = false;
-    bool irq_pending = false;
-    */
+
+    //int8_t interrupt_delay = 0;
+
+    void raise_NMI();
+    void raise_IRQ();
+
     void set_flag(const FLAGS flag, const bool value);
     bool get_flag(const FLAGS flag) const;
 
@@ -134,6 +135,9 @@ protected:
     uint16_t fetch_2bytes();
     void push_stack(const uint8_t byte);
     uint8_t pop_stack();
+
+    bool nmi_requested = false;
+    bool irq_requested = false;
 
 public:
     friend class Instruction;
