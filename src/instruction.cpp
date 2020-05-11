@@ -4,7 +4,7 @@
 
 
 
-
+//Aligned to 10 so that they are easier to count
 using c = CPU;
 const std::valarray<Instruction> Instruction::instruction_set {
     {"BRK", AddressingTypes::addressing_implicit_type, &c::BRK, &c::addressing_implicit, 7},

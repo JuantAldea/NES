@@ -1,11 +1,12 @@
 #include "bus.h"
 Bus::Bus() :
     cpu {this},
-    ram {this},
+    apu {this},
     ppu {this},
-    apu {this}
-
-{ ; }
+    ram {this}
+{
+    cpu.reset();
+}
 
 const Device& Bus::get_device_from_addr(const uint16_t addr) const
 {

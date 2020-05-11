@@ -10,39 +10,75 @@ CPU::CPU(Bus *b) : Device{b} {}
 
 void CPU::execute_next_instruction(const bool update_debugger)
 {
+    /*
+    if (nmi_pending  && interrupt_delay <= 0) {
+        NMI();
+        return;
+    }
+
+    if (irq_pending  && interrupt_delay <= 0) {
+        IRQ();
+        return;
+    }
+    */
+#ifdef INTERRUPT_TEST
+    uint8_t feedback_reg = read(0xbffc);
+    //if ((feedback_reg & 0x2) && !nmi_pending) {
+
+    if ((feedback_reg & 0x2)) {
+        write(0xbffc, feedback_reg & ~0x2);
+        //nmi_pending = true;
+        //interrupt_delay = 0;
+        //std::cout << "NMI detected. Interrupt will be executed in " << (unsigned)interrupt_delay << " cycles\n";
+        NMI();
+        return;
+    //} else if(!get_flag(FLAGS::I) && (feedback_reg & 0x1) && !nmi_pending) {
+    } else if(!get_flag(FLAGS::I) && (feedback_reg & 0x1)) {
+        write(0xbffc, feedback_reg & ~0x1);
+        //irq_pending = true;
+        //interrupt_delay = 0;
+        //std::cout << "IRQ detected. Interrupt will be executed in " << (unsigned) interrupt_delay << " cycles\n";
+        IRQ();
+        return;
+    }
+#endif
+    //fetch
     current_op_code = read(registers.PC);
+    registers.PC++;
+
+    //decode
     auto instruction = Instruction::instruction_set[current_op_code];
     auto fn_operation = instruction.operation;
     auto fn_addresing = instruction.addressing;
     cycles_left = instruction.cycles;
     //std::cout << "Instruction fetched: " << instruction.name << " " << (unsigned) current_op_code << std::endl;
-    auto addr = registers.PC;
-    registers.PC++;
 
+    //execute
     fn_addresing(*this);
     fn_operation(*this);
 
     set_flag(FLAGS::U, true);
 
-    if (registers.PC == addr) {
-        std::cout << "TRAP: " << std::hex << addr << std::endl;
-        //exit(1);
+    /*
+    if (nmi_pending || irq_pending) {
+        interrupt_delay -= cycles_left;
+        std::cout << "Interrupt will be executed in " << (unsigned)interrupt_delay << " cycles\n";
     }
+    */
 
     if (update_debugger){
         emit updated();
     }
 }
 
-bool CPU::clock()
+bool CPU::clock(bool trace)
 {
-    if (cycles_left > 0)
-    {
+    if (cycles_left > 0) {
         --cycles_left;
         return false;
     }
 
-    execute_next_instruction(false);
+    execute_next_instruction(trace);
     return true;
 }
 
@@ -51,33 +87,29 @@ void CPU::reset()
     registers = { 0 };
     registers.PC = 0x400;
     registers.SP = 0xff;
-    registers.P = 0x34; //U, B & I
+    registers.P = 0x34; //U, B & I << WHY B is set on reset actually it does not exist?
     current_op_code = read(registers.PC);
-    //std::cout << *this;
+
+    #ifdef INTERRUPT_TEST
+    write(0xbffc, 0x0);
+    #endif
+
     emit updated();
 }
 
-uint8_t CPU::fetch_byte()
-{
-    uint8_t byte = read(registers.PC++);
-    //std::cout << "fetching byte from *" << std::hex << registers.PC << ": " << std::hex << (unsigned) byte << std::endl;
-    return byte;
-}
+uint8_t CPU::fetch_byte() { return read(registers.PC++); }
 
-uint16_t CPU::fetch_2bytes()
-{
-    return fetch_byte() | (static_cast<uint16_t>(fetch_byte()) << 8);
-}
+uint16_t CPU::fetch_2bytes() { return fetch_byte() | (static_cast<uint16_t>(fetch_byte()) << 8); }
 
 void CPU::write(const uint16_t addr, const uint8_t data) { bus->write(addr, data); }
 
 uint8_t CPU::read(const uint16_t addr) { return bus->read(addr); }
 
-uint8_t CPU::read(const uint16_t addr) const{ return bus->read(addr); }
+uint8_t CPU::read(const uint16_t addr) const { return bus->read(addr); }
 
-void CPU::push_stack(const uint8_t byte){ write(STACK_BASE_ADDR + (registers.SP--), byte); }
+void CPU::push_stack(const uint8_t byte) { write(STACK_BASE_ADDR + (registers.SP--), byte); }
 
-uint8_t CPU::pop_stack(){ return read(STACK_BASE_ADDR + (++registers.SP)); }
+uint8_t CPU::pop_stack() { return read(STACK_BASE_ADDR + (++registers.SP)); }
 
 void CPU::set_flag(const FLAGS flag, const bool value)
 {
@@ -92,90 +124,70 @@ bool CPU::get_flag(const FLAGS flag) const { return registers.P & static_cast<ui
 
 /* OP addressing modes */
 //nothing to do here. Operand implied by the operation.
-uint16_t CPU::addressing_implicit() { return 0; }
+void CPU::addressing_implicit() { /* NOP */ }
 
-uint16_t CPU::addressing_immediate()
-{
-    //std::cout << "Addresing Inmediate";
-    //Uses the 8-bit operand itself as the value for the operation, rather than fetching a value from a memory address.
-    fetched_operand = register_PC()++;
-    return 0;
-}
+void CPU::addressing_immediate() { fetched_operand = register_PC()++; }
 
-uint16_t CPU::addressing_zero_page()
-{
-    fetched_operand = fetch_byte();
-    return 0;
-}
+void CPU::addressing_zero_page() { fetched_operand = fetch_byte(); }
 
-uint16_t CPU::addressing_zero_page_X()
-{
-    fetched_operand = (fetch_byte() + registers.X) % 256;
-    return 0;
-}
+void CPU::addressing_zero_page_X() { fetched_operand = (fetch_byte() + registers.X) % 256; }
 
-uint16_t CPU::addressing_zero_page_Y()
-{
-    fetched_operand = (fetch_byte() + registers.Y) % 256;
-    return 0;
-}
+void CPU::addressing_zero_page_Y() { fetched_operand = (fetch_byte() + registers.Y) % 256; }
 
-uint16_t CPU::addressing_relative()
+void CPU::addressing_relative()
 {
     fetched_operand = fetch_byte();
     if (fetched_operand & 0x80) {
         fetched_operand |= 0xff00;
     }
-    //std::cout << "RELATIVE ADDR: " << std::hex << static_cast<int16_t>(fetched_operand) << std::endl;
-    return 0;
 }
 
-uint16_t CPU::addressing_absolute()
+void CPU::addressing_absolute() { fetched_operand = fetch_2bytes(); }
+
+void CPU::addressing_absolute_X()
 {
-    //Fetches the value from a 16-bit address anywhere in memory.
+    uint16_t base_ptr = fetch_2bytes();
+    fetched_operand = base_ptr + registers.X;
 
-    fetched_operand = fetch_2bytes();
-    //std::cout << "addressing absoute fetched:" << std::hex << (unsigned) fetched_operand << std::endl;
-    return 0;
+    if ((fetched_operand & 0xFF00) != (base_ptr & 0xFF00)){
+        cycles_left += 1;
+    }
 }
 
-uint16_t CPU::addressing_absolute_X()
+void CPU::addressing_absolute_Y()
 {
-    fetched_operand = fetch_2bytes() + registers.X;
-    //std::cout << "ABX: " << fetched_operand - registers.X << "+"<< (unsigned)registers.X << std::endl;
-    return 0;
+    uint16_t base_ptr = fetch_2bytes();
+    fetched_operand = base_ptr + registers.Y;
+
+    if ((fetched_operand & 0xFF00) != (base_ptr & 0xFF00)){
+        cycles_left += 1;
+    }
 }
 
-uint16_t CPU::addressing_absolute_Y()
-{
-    fetched_operand = fetch_2bytes() + registers.Y;
-    //std::cout << "ABY: " << fetched_operand - registers.Y << "+"<< (unsigned)registers.Y << std::endl;
-    return 0;
-}
-
-uint16_t CPU::addressing_indirect()
+void CPU::addressing_indirect()
 {
     // only used for JMP, also buggy
     const uint16_t ptr = fetch_2bytes();
     const uint8_t low = read(ptr);
     const uint8_t hi = ((ptr & 0x00FF) == 0xFF) ? read(ptr & 0xFF00) : read(ptr + 1);
     fetched_operand = (static_cast<uint16_t>(hi) << 8) | low;
-    //std::cout << "INDIRECT: (" << std::hex << ptr << ") -> " << std::hex << fetched_operand << std::endl;
-    return 0;
 }
 
-uint16_t CPU::addressing_indexed_indirect()
+void CPU::addressing_indexed_indirect()
 {
     const uint16_t pointer = fetch_byte() + registers.X;
     fetched_operand = read((pointer + 1) % 256) * 256 + read(pointer % 256);
-    return 0;
 }
 
-uint16_t CPU::addressing_indirect_indexed()
+void CPU::addressing_indirect_indexed()
 {
     const uint16_t pointer = fetch_byte();
-    fetched_operand = (read(pointer + 1) % 256) * 256 + read(pointer) + registers.Y;
-    return 0;
+    const uint16_t base_ptr = (read(pointer + 1) % 256) * 256 + read(pointer);
+    fetched_operand = base_ptr + registers.Y;
+
+    if ((fetched_operand & 0xFF00) != (base_ptr & 0xFF00)){
+        cycles_left += 1;
+    }
 }
 
 /* Operations */
@@ -271,7 +283,6 @@ void CPU::EOR()
 void CPU::CMP()
 {
     uint8_t result = registers.A - read(fetched_operand);
-    //std::cout << "CMP " << std::hex << (unsigned) registers.A << ", " << (unsigned)read(fetched_operand) << "(" << fetched_operand << ")\n";
     set_flag(FLAGS::Z, !result);
     set_flag(FLAGS::N, result & 0x80);
     set_flag(FLAGS::C, registers.A >= read(fetched_operand));
@@ -288,8 +299,6 @@ void CPU::CPX()
 void CPU::CPY()
 {
     uint8_t data = read(fetched_operand);
-    //std::cout << "CPY " << std::hex << (unsigned)registers.Y << ", "
-    //    << std::hex << (unsigned) data << "(" <<  std::hex << (unsigned)fetched_operand << ")"<< std::endl;
     uint8_t result = registers.Y - data;
     set_flag(FLAGS::Z, !result);
     set_flag(FLAGS::N, result & 0x80);
@@ -345,8 +354,6 @@ void CPU::ASL()
     bool addressing_is_implicit = Instruction::instruction_set[current_op_code].addr_type == AddressingTypes::addressing_implicit_type;
 
     uint8_t value = addressing_is_implicit ? registers.A : read(fetched_operand);
-
-    //std::cout << "ASL: (" << std::hex << (unsigned)fetched_operand << ") -> " << (unsigned)value << std::endl;
     set_flag(FLAGS::C, value & 0x80);
     value <<= 1;
     set_flag(FLAGS::N, value & 0x80);
@@ -381,7 +388,8 @@ void CPU::ROL()
 }
 
 void CPU::LSR()
-{    bool addressing_is_implicit = Instruction::instruction_set[current_op_code].addr_type == AddressingTypes::addressing_implicit_type;
+{
+    bool addressing_is_implicit = Instruction::instruction_set[current_op_code].addr_type == AddressingTypes::addressing_implicit_type;
 
     uint8_t value = addressing_is_implicit ? registers.A : read(fetched_operand);
 
@@ -402,6 +410,7 @@ void CPU::ROR()
     bool addressing_is_implicit =  Instruction::instruction_set[current_op_code].addr_type == AddressingTypes::addressing_implicit_type;
 
     uint8_t value = addressing_is_implicit ? registers.A : read(fetched_operand);
+
     auto carry = get_flag(FLAGS::C);
     set_flag(FLAGS::C, value & 0x1);
     value >>= 1;
@@ -419,9 +428,6 @@ void CPU::ROR()
 void CPU::LDA()
 {
     registers.A = read(fetched_operand);
-    if (fetched_operand == 0xe) {
-        //std::cout << "LDA: (" << std::hex << (unsigned)fetched_operand << ") -> " << (unsigned)registers.A << std::endl;
-    }
     set_flag(FLAGS::N, registers.A & 0x80);
     set_flag(FLAGS::Z, registers.A == 0);
 }
@@ -492,71 +498,62 @@ void CPU::PLA()
 
 void CPU::PHA() { push_stack(registers.A); }
 
-void CPU::PLP() { registers.P = pop_stack(); }
+void CPU::PLP() { registers.P = (pop_stack() & ~static_cast<uint8_t>(FLAGS::B)); }
 
-void CPU::PHP() { push_stack(registers.P | static_cast<uint8_t>(FLAGS::B)); }
+void CPU::PHP() { push_stack(registers.P | static_cast<uint8_t>(FLAGS::B) ); }
 
 void CPU::BPL()
 {
-    if (!get_flag(FLAGS::N))
-    {
+    if (!get_flag(FLAGS::N)) {
         registers.PC += static_cast<int16_t>(fetched_operand);
     }
 }
 
 void CPU::BMI()
 {
-    if (get_flag(FLAGS::N))
-    {
+    if (get_flag(FLAGS::N)) {
         registers.PC += static_cast<int16_t>(fetched_operand);
     }
 }
 
 void CPU::BVC()
 {
-    if (!get_flag(FLAGS::V))
-    {
+    if (!get_flag(FLAGS::V)) {
         registers.PC += static_cast<int16_t>(fetched_operand);
     }
 }
 
 void CPU::BVS()
 {
-    if (get_flag(FLAGS::V))
-    {
+    if (get_flag(FLAGS::V)) {
         registers.PC += static_cast<int16_t>(fetched_operand);
     }
 }
 
 void CPU::BCC()
 {
-    if (!get_flag(FLAGS::C))
-    {
+    if (!get_flag(FLAGS::C)) {
         registers.PC += static_cast<int16_t>(fetched_operand);
     }
 }
 
 void CPU::BCS()
 {
-    if (get_flag(FLAGS::C))
-    {
+    if (get_flag(FLAGS::C)) {
         registers.PC += static_cast<int16_t>(fetched_operand);
     }
 }
 
 void CPU::BNE()
 {
-    if (!get_flag(FLAGS::Z))
-    {
-        //std::cout << "BNE FROM " << std::hex << registers.PC << "to " << std::hex << registers.PC + static_cast<int16_t>(fetched_operand) << "+" << std::hex << static_cast<int16_t>(fetched_operand) << std::endl;
-        registers.PC += static_cast<int16_t>(fetched_operand);
+    if (!get_flag(FLAGS::Z)) {
+       registers.PC += static_cast<int16_t>(fetched_operand);
     }
 }
 
 void CPU::BEQ()
 {
-    if (get_flag(FLAGS::Z))
-    {
+    if (get_flag(FLAGS::Z)) {
         registers.PC += static_cast<int16_t>(fetched_operand);
     }
 }
@@ -567,19 +564,42 @@ void CPU::BRK()
     push_stack(static_cast<uint8_t>(registers.PC >> 8));
     push_stack(static_cast<uint8_t>(registers.PC & 0xFF));
 
+    //Flag B only exists in the STACK, when pushed by BRK or PHP
     push_stack(registers.P | static_cast<uint8_t>(FLAGS::B));
+
     // BRK does set the interrupt-disable I flag like an IRQ does, and if you have the CMOS 6502 (65C02), it will also clear the decimal D flag.
-    //TODO D flag & BRK: contradictorial information
     set_flag(FLAGS::I, true);
-    set_flag(FLAGS::D, false);
+    //set_flag(FLAGS::D, false);
+
     registers.PC = (static_cast<uint16_t>(read(0xFFFF)) << 8) | read(0xFFFE);
-    /*
-    std::cout << "BRK STACKPOINTER "
-              << std::hex << (unsigned)registers.SP
-              << " (" << std::hex << (unsigned) STACK_BASE_ADDR + registers.SP << ") P: "
-              << std::hex << (unsigned)(registers.P | static_cast<uint8_t>(FLAGS::B))
-              << std::endl;
-              */
+}
+
+void CPU::RESET() { registers.PC = static_cast<uint16_t>(read(0xFFFD)) << 8 | read(0xFFFC); }
+
+void CPU::NMI()
+{
+    //nmi_pending = false;
+    push_stack(static_cast<uint8_t>(registers.PC >> 8));
+    push_stack(static_cast<uint8_t>(registers.PC & 0xFF));
+    push_stack(registers.P & ~static_cast<uint8_t>(FLAGS::B));
+    set_flag(FLAGS::I, true);
+    //set_flag(FLAGS::D, false);
+
+    registers.PC = static_cast<uint16_t>(read(0xFFFB)) << 8 | read(0xFFFA);
+    cycles_left = 8;
+}
+
+void CPU::IRQ()
+{
+    //irq_pending = false;
+    push_stack(static_cast<uint8_t>(registers.PC >> 8));
+    push_stack(static_cast<uint8_t>(registers.PC & 0xFF));
+    push_stack(registers.P & ~static_cast<uint8_t>(FLAGS::B));
+    set_flag(FLAGS::I, true);
+    //set_flag(FLAGS::D, false);
+
+    registers.PC = (static_cast<uint16_t>(read(0xFFFF)) << 8) | read(0xFFFE);
+    cycles_left = 7;
 }
 
 void CPU::RTI()
@@ -598,16 +618,11 @@ void CPU::JSR()
 
 void CPU::RTS() {registers.PC = (pop_stack() | (static_cast<uint16_t>(pop_stack()) << 8)) + 1 ; /* ++registers.PC; */ }
 
-void CPU::JMP()
-{
-    registers.PC = fetched_operand;
-    //std::cout << "JMP " << std::hex << registers.PC;
-}
+void CPU::JMP() { registers.PC = fetched_operand; }
 
 void CPU::BIT()
 {
     uint8_t value = read(fetched_operand);
-    //std::cout << "BIT: (" << std::hex << fetched_operand << ") " << std::hex << (unsigned)value << "|" << std::hex << (unsigned) (registers.A & value) << std::endl;
     set_flag(FLAGS::Z, !(registers.A & value));
     set_flag(FLAGS::N, value & 0x80);
     set_flag(FLAGS::V, value & 0x40);
@@ -626,6 +641,7 @@ void CPU::CLI() { set_flag(FLAGS::I, false); }
 void CPU::SEI() { set_flag(FLAGS::I, true); }
 
 void CPU::CLV() { set_flag(FLAGS::V, false); }
+
 
 void CPU::NOP() { ; }
 void CPU::STP() { ; }
@@ -648,6 +664,7 @@ void CPU::SHY() { ; }
 void CPU::TAS() { ; }
 void CPU::XAA() { ; }
 void CPU::LAS() { ; }
+
 
 std::ostream &operator<<(std::ostream &os, const CPU &cpu)
 {

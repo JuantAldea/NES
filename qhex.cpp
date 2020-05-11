@@ -177,7 +177,7 @@ int main(int argc, char *argv[])
        console.cpu.reset();
     });
 
-    QObject::connect(&btn_next, &QPushButton::clicked, &console.cpu, &CPU::execute_next_instruction);
+    QObject::connect(&btn_next, &QPushButton::clicked, [&]{ console.cpu.execute_next_instruction(trace.isChecked()); });
 
     /*
     QObject::connect(&btn_stop, &QPushButton::clicked, [&] {
@@ -249,9 +249,9 @@ int main(int argc, char *argv[])
 
     auto run = [&] {
         auto previous_pc = console.cpu.registers.PC;
-        console.cpu.execute_next_instruction(trace.isChecked());
+        auto executed = console.cpu.clock(trace.isChecked());
 
-        if (previous_pc == console.cpu.registers.PC){
+        if (executed && (previous_pc == console.cpu.registers.PC)){
             tick.stop();
             update_gui();
             std::cout << "TRAP" << std::endl;

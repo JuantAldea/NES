@@ -6,6 +6,7 @@ http://nesdev.com/6502bugs.txt
 http://www.oxyron.de/html/opcodes02.html
 https://www.masswerk.at/6502/6502_instruction_set.html
 http://www.obelisk.me.uk/6502/reference.html
+http://6502.org/tutorials/interrupts.html
 */
 #pragma once
 
@@ -49,6 +50,11 @@ public:
         uint8_t SP = 0;
     } registers;
 
+    /*
+    int8_t interrupt_delay = 0;
+    bool nmi_pending = false;
+    bool irq_pending = false;
+    */
     void set_flag(const FLAGS flag, const bool value);
     bool get_flag(const FLAGS flag) const;
 
@@ -61,7 +67,7 @@ public:
 
 
 public slots:
-    bool clock();
+    bool clock(bool trace);
     void execute_next_instruction(const bool update_debugger);
     void reset();
     uint8_t& register_A() { return registers.A; };
@@ -97,6 +103,8 @@ protected:
 
     void BRK(); void NOP();
 
+    void RESET(); void NMI(); void IRQ();
+
     //purely unoficial
     void STP(); void SLO(); void ANC(); void RLA();
     void ARL(); void LAX(); void AXS(); void DCP();
@@ -107,20 +115,20 @@ private:
     void ADC_SBC_internal(const uint8_t value);
 
 protected:
-    uint16_t addressing_zero_page_X();
-    uint16_t addressing_zero_page_Y();
-    uint16_t addressing_absolute_X();
-    uint16_t addressing_absolute_Y();
-    uint16_t addressing_indexed_indirect();
-    uint16_t addressing_indirect_indexed();
+    void addressing_zero_page_X();
+    void addressing_zero_page_Y();
+    void addressing_absolute_X();
+    void addressing_absolute_Y();
+    void addressing_indexed_indirect();
+    void addressing_indirect_indexed();
 
-    uint16_t addressing_implicit();
-    uint16_t address_accumulator();
-    uint16_t addressing_immediate();
-    uint16_t addressing_zero_page();
-    uint16_t addressing_absolute();
-    uint16_t addressing_relative();
-    uint16_t addressing_indirect();
+    void addressing_implicit();
+    void address_accumulator();
+    void addressing_immediate();
+    void addressing_zero_page();
+    void addressing_absolute();
+    void addressing_relative();
+    void addressing_indirect();
 
     uint8_t fetch_byte();
     uint16_t fetch_2bytes();
