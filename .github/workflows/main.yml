@@ -1,0 +1,39 @@
+name: CI
+
+on: [push, pull_request]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v2
+      with:
+        submodules: 'recursive'
+      
+    - name: Get latest CMake
+      uses: lukka/get-cmake@latest
+    
+    - name: Install ninja-build tool
+      uses: seanmiddleditch/gha-setup-ninja@v1
+    
+    - name: Install Qt
+      uses: jurplel/install-qt-action@v2.6.2
+    
+    - name: run-cmake
+      uses: lukka/run-cmake@v2.4
+      with:
+        cmakeListsOrSettingsJson: CMakeListsTxtAdvanced
+        cmakeListsTxtPath: '${{ github.workspace }}/CMakeLists.txt'
+        buildDirectory: '${{ runner.workspace }}/build'
+        cmakeAppendedArgs: '-GNinja '
+
+    - name: Build tests
+      working-directory: ${{ runner.workspace }}/build
+      run: ninja tests
+    
+    - name: Run tests
+      working-directory: ${{ runner.workspace }}/build
+      run: ninja test
+      
+    
