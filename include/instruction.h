@@ -1,17 +1,18 @@
 #pragma once
 
 #include <functional>
-#include <vector>
-#include <valarray>
 #include <string>
-#include "device.h"
+#include <valarray>
+#include <vector>
+
 #include "addressing_types.h"
 #include "cpu.h"
+#include "device.h"
 
 struct Instruction
 {
     std::string name;
-    AddressingTypes addr_type;
+    Addressing addr_type;
     std::function<void(CPU&)> operation = nullptr;
     std::function<void(CPU&)> addressing = nullptr;
     uint8_t cycles;

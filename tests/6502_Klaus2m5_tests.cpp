@@ -1,8 +1,7 @@
 #include <fstream>
 
-#include "gtest/gtest.h"
-
 #include "bus.h"
+#include "gtest/gtest.h"
 
 struct Klaus2m5Suite {
     uint16_t feedback_register;
@@ -24,11 +23,11 @@ bool klaus2m5_test(Klaus2m5Suite suite)
         console.cpu.write(suite.feedback_register, 0x0);
     }
 
-    while(true) {
+    while (true) {
         auto previous_pc = console.cpu.registers.PC;
         bool executed = console.cpu.clock(false);
 
-        if (suite.feedback_register){
+        if (suite.feedback_register) {
             uint8_t feedback_reg = console.cpu.read(suite.feedback_register);
             if ((feedback_reg & 0x2)) {
                 console.cpu.write(suite.feedback_register, feedback_reg & ~0x2);
@@ -50,12 +49,12 @@ bool klaus2m5_test(Klaus2m5Suite suite)
 
 GTEST_TEST(testCPU, 6502_Klaus2m5_funtional_test)
 {
-    Klaus2m5Suite suite {0x0000, 0x336d, "test_files/6502_functional_test.bin"};
+    Klaus2m5Suite suite{0x0000, 0x336d, "test_files/6502_functional_test.bin"};
     EXPECT_EQ(true, klaus2m5_test(suite));
 };
 
 GTEST_TEST(testCPU, 6502_Klaus2m5_interrupt_test)
 {
-    Klaus2m5Suite suite {0xbffc, 0x06f5, "test_files/6502_interrupt_test.bin"};
+    Klaus2m5Suite suite{0xbffc, 0x06f5, "test_files/6502_interrupt_test.bin"};
     EXPECT_EQ(true, klaus2m5_test(suite));
 };

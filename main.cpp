@@ -1,8 +1,9 @@
-#include "bus.h"
-#include <vector>
 #include <fstream>
 #include <iostream>
-int main(int argc, char **argv)
+#include <vector>
+
+#include "bus.h"
+int main(int argc, char** argv)
 {
     Bus console;
     std::ifstream file(argv[1], std::ios::binary | std::ios::ate);
@@ -23,26 +24,26 @@ int main(int argc, char **argv)
     }
     */
 
-   //console.cpu.write(0xbffc, 0x0);
+    // console.cpu.write(0xbffc, 0x0);
 
-    while(true) {
+    while (true) {
         auto previous_pc = console.cpu.registers.PC;
         bool executed = console.cpu.clock(false);
-/*
-        uint8_t feedback_reg = console.cpu.read(0xbffc);
-        if ((feedback_reg & 0x2)) {
-            console.cpu.write(0xbffc, feedback_reg & ~0x2);
-            console.cpu.raise_NMI();
-            continue;
-        } else if (feedback_reg & 0x1) {
-            console.cpu.write(0xbffc, feedback_reg & ~0x1);
-            console.cpu.raise_IRQ();
-            continue;
-        }
-*/
+        /*
+                uint8_t feedback_reg = console.cpu.read(0xbffc);
+                if ((feedback_reg & 0x2)) {
+                    console.cpu.write(0xbffc, feedback_reg & ~0x2);
+                    console.cpu.raise_NMI();
+                    continue;
+                } else if (feedback_reg & 0x1) {
+                    console.cpu.write(0xbffc, feedback_reg & ~0x1);
+                    console.cpu.raise_IRQ();
+                    continue;
+                }
+        */
         if (executed && previous_pc == console.cpu.registers.PC) {
             std::cerr << "TRAP" << std::hex << previous_pc << std::endl;
-           return previous_pc;
+            return previous_pc;
         }
     }
 }

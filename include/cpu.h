@@ -10,21 +10,21 @@ http://6502.org/tutorials/interrupts.html
 */
 #pragma once
 
-#include <functional>
-#include <valarray>
-#include "device.h"
-#include "addressing_types.h"
-#include <ostream>
-
 #include <QObject>
+#include <functional>
+#include <ostream>
+#include <valarray>
+
+#include "addressing_types.h"
+#include "device.h"
 class Bus;
 class CPU : public QObject, public Device
 {
-   Q_OBJECT
+    Q_OBJECT
 
 public:
     CPU() = delete;
-    CPU(Bus *b);
+    CPU(Bus* b);
     void write(const uint16_t addr, const uint8_t data);
     uint8_t read(const uint16_t addr);
     uint8_t read(const uint16_t addr) const;
@@ -34,8 +34,8 @@ public:
         Z = (1 << 1),  // zero
         I = (1 << 2),  // disable interrupts
         D = (1 << 3),  // decimal mode
-        B = (1 << 4), // "B-flag "
-        U = (1 << 5), // "Unused"
+        B = (1 << 4),  // "B-flag "
+        U = (1 << 5),  // "Unused"
         V = (1 << 6),  // overflow
         N = (1 << 7),  // negative
     };
@@ -50,8 +50,7 @@ public:
         uint8_t SP = 0;
     } registers;
 
-
-    //int8_t interrupt_delay = 0;
+    // int8_t interrupt_delay = 0;
 
     void raise_NMI();
     void raise_IRQ();
@@ -66,7 +65,6 @@ public:
 
     friend std::ostream& operator<<(std::ostream& os, const CPU& cpu);
 
-
 public slots:
     bool clock(bool trace);
     void execute_next_instruction(const bool update_debugger);
@@ -78,11 +76,11 @@ public slots:
     uint16_t& register_PC() { return registers.PC; };
     uint8_t& register_SP() { return registers.SP; };
 
-
 signals:
     void updated();
 
 protected:
+    // clang-format off
     void LDA(); void LDX(); void LDY(); void STA(); void STX(); void STY();
     void TAX(); void TAY(); void TXA(); void TSX(); void TXS(); void TYA();
 
@@ -131,6 +129,7 @@ protected:
     void addressing_relative();
     void addressing_indirect();
 
+    // clang-format on
     uint8_t fetch_byte();
     uint16_t fetch_2bytes();
     void push_stack(const uint8_t byte);

@@ -1,26 +1,25 @@
 #include <QApplication>
-#include <QFile>
-
+#include <QCheckBox>
+#include <QColor>
 #include <QDebug>
-#include <QTimer>
+#include <QFile>
 #include <QFileDialog>
-#include <QInputDialog>
-#include <QPushButton>
-#include <QVBoxLayout>
 #include <QGridLayout>
 #include <QGroupBox>
-#include <QColor>
-#include <QLineEdit>
-#include <QCheckBox>
+#include <QInputDialog>
 #include <QLabel>
+#include <QLineEdit>
+#include <QPushButton>
 #include <QTableWidget>
+#include <QTimer>
+#include <QVBoxLayout>
+
 #include "external/QHexView/document/buffer/qmemorybuffer.h"
 #include "external/QHexView/qhexview.h"
-
 #include "include/bus.h"
 #include "include/instruction.h"
 
-int main(int argc, char *argv[])
+int main(int argc, char* argv[])
 {
     QApplication a(argc, argv);
 
@@ -135,14 +134,14 @@ int main(int argc, char *argv[])
     /**************************/
     Bus console;
     QObject::connect(&btn_load, &QPushButton::clicked, [&w, &hexview, &console]() {
-       QString fileName = QFileDialog::getOpenFileName(&w, "Open File", QDir::homePath());
+        QString fileName = QFileDialog::getOpenFileName(&w, "Open File", QDir::homePath());
 
         if (fileName.isEmpty()) {
             return;
         }
 
         bool ok;
-        uint16_t addr = QInputDialog::getInt(&w, "Target address", "#", 0, 0, 64*1024, 1, &ok);
+        uint16_t addr = QInputDialog::getInt(&w, "Target address", "#", 0, 0, 64 * 1024, 1, &ok);
 
         if (!ok) {
             return;
@@ -152,11 +151,12 @@ int main(int argc, char *argv[])
         file.open(QIODevice::ReadOnly);
         file.read(reinterpret_cast<char*>(console.ram.memory.data()) + addr, console.ram.memory.size() - addr);
 
-        QHexDocument *document = QHexDocument::fromMemory<QMemoryBuffer>(reinterpret_cast<char*>(console.ram.memory.data()), console.ram.memory.size());
+        QHexDocument* document = QHexDocument::fromMemory<QMemoryBuffer>(
+            reinterpret_cast<char*>(console.ram.memory.data()), console.ram.memory.size());
 
-        hexview.setDocument(document); // Associate QHexEditData with this QHexEdit
-        document->metadata()->background(CPU::STACK_BASE_ADDR / HEX_LINE_LENGTH, CPU::STACK_BASE_ADDR  % HEX_LINE_LENGTH, 1, Qt::green);
-
+        hexview.setDocument(document);  // Associate QHexEditData with this QHexEdit
+        document->metadata()->background(CPU::STACK_BASE_ADDR / HEX_LINE_LENGTH, CPU::STACK_BASE_ADDR % HEX_LINE_LENGTH,
+                                         1, Qt::green);
 
         /*
         // Document editing
@@ -174,10 +174,11 @@ int main(int argc, char *argv[])
         //hexmetadata->clear();
         qDebug() << buffer;
         */
-       console.cpu.reset();
+        console.cpu.reset();
     });
 
-    QObject::connect(&btn_next, &QPushButton::clicked, [&]{ console.cpu.execute_next_instruction(trace.isChecked()); });
+    QObject::connect(&btn_next, &QPushButton::clicked,
+                     [&] { console.cpu.execute_next_instruction(trace.isChecked()); });
 
     /*
     QObject::connect(&btn_stop, &QPushButton::clicked, [&] {
@@ -211,15 +212,21 @@ int main(int argc, char *argv[])
         flag_U.setChecked(console.cpu.get_flag(CPU::FLAGS::U));
         flag_V.setChecked(console.cpu.get_flag(CPU::FLAGS::V));
         flag_Z.setChecked(console.cpu.get_flag(CPU::FLAGS::Z));
-        instruction.setText(QString::fromStdString(Instruction::instruction_set[console.cpu.read(console.cpu.registers.PC)].name));
+        instruction.setText(
+            QString::fromStdString(Instruction::instruction_set[console.cpu.read(console.cpu.registers.PC)].name));
         //operand.setText(QString::number(console.cpu.fetched_operand, 16));
 
-        QHexDocument *document = QHexDocument::fromMemory<QMemoryBuffer>((char*)console.ram.memory.data(), console.ram.memory.size());
+        QHexDocument* document =
+            QHexDocument::fromMemory<QMemoryBuffer>((char*)console.ram.memory.data(), console.ram.memory.size());
         hexview.setDocument(document);
 
-        document->metadata()->background(CPU::STACK_BASE_ADDR / HEX_LINE_LENGTH, CPU::STACK_BASE_ADDR  % HEX_LINE_LENGTH, 1, Qt::green);
-        document->metadata()->background((CPU::STACK_BASE_ADDR + console.cpu.registers.SP) / HEX_LINE_LENGTH, (CPU::STACK_BASE_ADDR + console.cpu.registers.SP) % HEX_LINE_LENGTH, 1, Qt::blue);
-        document->metadata()->background(console.cpu.registers.PC / HEX_LINE_LENGTH, console.cpu.registers.PC % HEX_LINE_LENGTH, 1, Qt::red);
+        document->metadata()->background(CPU::STACK_BASE_ADDR / HEX_LINE_LENGTH, CPU::STACK_BASE_ADDR % HEX_LINE_LENGTH,
+                                         1, Qt::green);
+        document->metadata()->background((CPU::STACK_BASE_ADDR + console.cpu.registers.SP) / HEX_LINE_LENGTH,
+                                         (CPU::STACK_BASE_ADDR + console.cpu.registers.SP) % HEX_LINE_LENGTH, 1,
+                                         Qt::blue);
+        document->metadata()->background(console.cpu.registers.PC / HEX_LINE_LENGTH,
+                                         console.cpu.registers.PC % HEX_LINE_LENGTH, 1, Qt::red);
         document->cursor()->moveTo(console.cpu.registers.PC);
 
         /*
@@ -244,14 +251,13 @@ int main(int argc, char *argv[])
     QObject::connect(&flag_V, &QCheckBox::clicked, [&]() { console.cpu.set_flag(CPU::FLAGS::V, flag_V.isChecked()); });
     QObject::connect(&flag_N, &QCheckBox::clicked, [&]() { console.cpu.set_flag(CPU::FLAGS::N, flag_N.isChecked()); });
 
-
     QTimer tick;
 
     auto run = [&] {
         auto previous_pc = console.cpu.registers.PC;
         auto executed = console.cpu.clock(trace.isChecked());
 
-        if (executed && (previous_pc == console.cpu.registers.PC)){
+        if (executed && (previous_pc == console.cpu.registers.PC)) {
             tick.stop();
             update_gui();
             std::cout << "TRAP" << std::endl;
@@ -268,9 +274,12 @@ int main(int argc, char *argv[])
     QObject::connect(&tick, &QTimer::timeout, run);
 
     QObject::connect(&btn_stop, &QPushButton::clicked, [&tick] { tick.stop(); });
-    QObject::connect(&btn_go, &QPushButton::clicked, [&tick] { tick.start(0);  });
+    QObject::connect(&btn_go, &QPushButton::clicked, [&tick] { tick.start(0); });
 
-    QObject::connect(&btn_reset, &QPushButton::clicked, [&console, &tick] { tick.stop(); console.cpu.reset(); });
+    QObject::connect(&btn_reset, &QPushButton::clicked, [&console, &tick] {
+        tick.stop();
+        console.cpu.reset();
+    });
 
     w.show();
     return a.exec();
