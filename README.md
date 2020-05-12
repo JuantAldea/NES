@@ -1,7 +1,7 @@
 ![CI](https://github.com/JuantAldea/NES/workflows/CI/badge.svg)
 # Just another NES Emulator
 
-## Current status:
+## Current status
 - 6502 CPU emulator passes Klaus2m5 Functional & Interrupt test suites [1].
 
 
