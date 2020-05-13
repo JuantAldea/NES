@@ -37,10 +37,6 @@ target_include_directories(libCPU
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
-target_link_libraries(libCPU
-    Qt5::Core
-    ${Qt5Core_LIBRARIES}
-)
 
 add_library(libInstruction
     src/instruction.cpp

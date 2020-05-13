@@ -177,27 +177,31 @@ int main(int argc, char* argv[])
         console.cpu.reset();
     });
 
-    QObject::connect(&btn_next, &QPushButton::clicked,
-                     [&] { console.cpu.execute_next_instruction(trace.isChecked()); });
-
+    QObject::connect(&btn_next, &QPushButton::clicked, [&] {
+        while (!console.cpu.clock(true)) {
+            ;
+        }
+    });
     /*
     QObject::connect(&btn_stop, &QPushButton::clicked, [&] {
-        while(true) {
-
+        while (true) {
+#if 0
             QList<QTableWidgetItem *> items = tableWidget.findItems(QString::number(console.cpu.registers.PC, 16), Qt::MatchFixedString);
             if (items.isEmpty()) {
                 break;
             }
-
+#endif
             auto previous_pc = console.cpu.registers.PC;
-            console.cpu.execute_next_instruction(trace.isChecked());
-            if (previous_pc == console.cpu.registers.PC){
+            auto executed = console.cpu.clock(false);
+
+            if (executed && (previous_pc == console.cpu.registers.PC)) {
+                std::cout << "TRAP " << std::hex << previous_pc << std::endl;
+                console.cpu.signal_update();
                 break;
             }
         }
     });
-    */
-
+*/
     auto update_gui = [&]() {
         reg_A.setText(QString::number(console.cpu.registers.A, 16));
         reg_X.setText(QString::number(console.cpu.registers.X, 16));
@@ -240,8 +244,7 @@ int main(int argc, char* argv[])
         }*/
     };
 
-    QObject::connect(&console.cpu, &CPU::updated, update_gui);
-
+    console.cpu.register_update_signal_callback(update_gui);
     QObject::connect(&flag_C, &QCheckBox::clicked, [&]() { console.cpu.set_flag(CPU::FLAGS::C, flag_C.isChecked()); });
     QObject::connect(&flag_Z, &QCheckBox::clicked, [&]() { console.cpu.set_flag(CPU::FLAGS::Z, flag_Z.isChecked()); });
     QObject::connect(&flag_I, &QCheckBox::clicked, [&]() { console.cpu.set_flag(CPU::FLAGS::I, flag_I.isChecked()); });
@@ -260,7 +263,7 @@ int main(int argc, char* argv[])
         if (executed && (previous_pc == console.cpu.registers.PC)) {
             tick.stop();
             update_gui();
-            std::cout << "TRAP" << std::endl;
+            std::cout << "TRAP " <<std::hex << (unsigned) previous_pc << std::endl;
         }
 
         /*

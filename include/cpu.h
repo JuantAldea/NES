@@ -10,7 +10,6 @@ http://6502.org/tutorials/interrupts.html
 */
 #pragma once
 
-#include <QObject>
 #include <functional>
 #include <ostream>
 #include <valarray>
@@ -18,16 +17,17 @@ http://6502.org/tutorials/interrupts.html
 #include "addressing_types.h"
 #include "device.h"
 
-class CPU : public QObject
+class CPU
 {
-    Q_OBJECT
-
 public:
     CPU() = delete;
     CPU(std::function<uint8_t(uint16_t)> read_callback, std::function<void(uint16_t, uint8_t)> write_callback);
 
-    std::function<uint8_t(uint16_t)> read;
-    std::function<void(uint16_t, uint8_t)> write;
+    void register_update_signal_callback(std::function<void(void)> callback);
+
+    std::function<uint8_t(uint16_t)> read{nullptr};
+    std::function<void(uint16_t, uint8_t)> write{nullptr};
+    std::function<void(void)> signal_update{[] {}};
 
     enum class FLAGS {
         C = (1 << 0),  // carry bit
@@ -65,7 +65,7 @@ public:
 
     friend std::ostream& operator<<(std::ostream& os, const CPU& cpu);
 
-public slots:
+public:
     bool clock(bool trace);
     void execute_next_instruction(const bool update_debugger);
     void reset();
@@ -75,9 +75,6 @@ public slots:
     uint8_t& register_P() { return registers.P; };
     uint16_t& register_PC() { return registers.PC; };
     uint8_t& register_SP() { return registers.SP; };
-
-signals:
-    void updated();
 
 protected:
     // clang-format off

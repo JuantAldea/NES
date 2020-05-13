@@ -2,7 +2,6 @@
 
 #include <iostream>
 
-#include "cpu.h"
 #include "instruction.h"
 
 uint8_t low_byte(const uint16_t twobytes) { return static_cast<uint8_t>(twobytes); }
@@ -12,6 +11,11 @@ uint8_t high_byte(const uint16_t twobytes) { return static_cast<uint8_t>(twobyte
 CPU::CPU(std::function<uint8_t(uint16_t)> read_callback, std::function<void(uint16_t, uint8_t)> write_callback)
     : read{read_callback}, write{write_callback}
 {
+}
+
+void CPU::register_update_signal_callback(std::function<void(void)> callback)
+{
+    signal_update = callback != nullptr ? callback : [] {};
 }
 
 void CPU::raise_NMI() { nmi_requested = true; }
@@ -88,10 +92,34 @@ void CPU::execute_next_instruction(const bool update_debugger)
     */
 
     if (update_debugger) {
-        emit updated();
+        signal_update();
     }
 }
 
+bool CPU::clock(bool trace)
+{
+    if (cycles_left > 0) {
+        #if 0
+        std::cout << Instruction::instruction_set[current_op_code].name << "(" << (unsigned)cycles_left << "/"
+                  << (unsigned)Instruction::instruction_set[current_op_code].cycles << ")" << std::endl;
+        #endif
+        --cycles_left;
+
+        return false;
+    }
+
+    execute_next_instruction(trace);
+
+    #if 0
+    std::cout << Instruction::instruction_set[current_op_code].name << "(" << (unsigned)cycles_left << "/"
+              << (unsigned)Instruction::instruction_set[current_op_code].cycles << ")"
+              << (cycles_left > Instruction::instruction_set[current_op_code].cycles ? "Oops cycle" : "") << std::endl;
+    #endif
+    --cycles_left;
+
+    return true;
+}
+/*
 bool CPU::clock(bool trace)
 {
     if (cycles_left > 0) {
@@ -102,7 +130,7 @@ bool CPU::clock(bool trace)
     execute_next_instruction(trace);
     return true;
 }
-
+*/
 void CPU::reset()
 {
     registers = {0};
@@ -111,18 +139,12 @@ void CPU::reset()
     registers.P = 0x34;  // U, B & I << WHY B is set on reset actually it does not exist?
     current_op_code = read(registers.PC);
 
-    emit updated();
+    signal_update();
 }
 
 uint8_t CPU::fetch_byte() { return read(registers.PC++); }
 
 uint16_t CPU::fetch_2bytes() { return fetch_byte() | (static_cast<uint16_t>(fetch_byte()) << 8); }
-
-//void CPU::write(const uint16_t addr, const uint8_t data) { bus->write(addr, data); }
-
-//uint8_t CPU::read(const uint16_t addr) { return bus->read(addr); }
-
-//uint8_t CPU::read(const uint16_t addr) const { return bus->read(addr); }
 
 void CPU::push_stack(const uint8_t byte) { write(STACK_BASE_ADDR + (registers.SP--), byte); }
 
@@ -142,8 +164,6 @@ bool CPU::get_flag(const FLAGS flag) const { return registers.P & static_cast<ui
 /* OP addressing modes */
 // nothing to do here. Operand implied by the operation.
 void CPU::addressing_implicit() { ; }
-
-void addressing_implicit() { ; }
 
 void CPU::addressing_immediate() { fetched_operand = register_PC()++; }
 
