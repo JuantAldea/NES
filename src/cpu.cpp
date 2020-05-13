@@ -2,14 +2,17 @@
 
 #include <iostream>
 
-#include "bus.h"
+#include "cpu.h"
 #include "instruction.h"
 
 uint8_t low_byte(const uint16_t twobytes) { return static_cast<uint8_t>(twobytes); }
 
 uint8_t high_byte(const uint16_t twobytes) { return static_cast<uint8_t>(twobytes >> 8); }
 
-CPU::CPU(Bus* b) : Device{b} {}
+CPU::CPU(std::function<uint8_t(uint16_t)> read_callback, std::function<void(uint16_t, uint8_t)> write_callback)
+    : read{read_callback}, write{write_callback}
+{
+}
 
 void CPU::raise_NMI() { nmi_requested = true; }
 
@@ -115,11 +118,11 @@ uint8_t CPU::fetch_byte() { return read(registers.PC++); }
 
 uint16_t CPU::fetch_2bytes() { return fetch_byte() | (static_cast<uint16_t>(fetch_byte()) << 8); }
 
-void CPU::write(const uint16_t addr, const uint8_t data) { bus->write(addr, data); }
+//void CPU::write(const uint16_t addr, const uint8_t data) { bus->write(addr, data); }
 
-uint8_t CPU::read(const uint16_t addr) { return bus->read(addr); }
+//uint8_t CPU::read(const uint16_t addr) { return bus->read(addr); }
 
-uint8_t CPU::read(const uint16_t addr) const { return bus->read(addr); }
+//uint8_t CPU::read(const uint16_t addr) const { return bus->read(addr); }
 
 void CPU::push_stack(const uint8_t byte) { write(STACK_BASE_ADDR + (registers.SP--), byte); }
 

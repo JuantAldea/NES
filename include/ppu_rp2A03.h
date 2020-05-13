@@ -1,6 +1,7 @@
 #pragma once
 #include "device.h"
 
+#include <cstdint>
 class RP2A03 : public Device
 {
 public:

@@ -17,17 +17,17 @@ http://6502.org/tutorials/interrupts.html
 
 #include "addressing_types.h"
 #include "device.h"
-class Bus;
-class CPU : public QObject, public Device
+
+class CPU : public QObject
 {
     Q_OBJECT
 
 public:
     CPU() = delete;
-    CPU(Bus* b);
-    void write(const uint16_t addr, const uint8_t data);
-    uint8_t read(const uint16_t addr);
-    uint8_t read(const uint16_t addr) const;
+    CPU(std::function<uint8_t(uint16_t)> read_callback, std::function<void(uint16_t, uint8_t)> write_callback);
+
+    std::function<uint8_t(uint16_t)> read;
+    std::function<void(uint16_t, uint8_t)> write;
 
     enum class FLAGS {
         C = (1 << 0),  // carry bit

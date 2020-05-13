@@ -1,21 +1,29 @@
 #include "bus.h"
-Bus::Bus() : cpu{this}, apu{this}, ppu{this}, ram{this} { cpu.reset(); }
+
+Bus::Bus()
+    : cpu{std::bind(&Bus::read, this, std::placeholders::_1),
+          std::bind(&Bus::write, this, std::placeholders::_1, std::placeholders::_2)},
+      apu{this},
+      ppu{this},
+      ram{this}
+{
+    cpu.reset();
+}
 
 const Device& Bus::get_device_from_addr(const uint16_t addr) const
 {
     /*
-        if (addr >= 0x0000 && addr < 0x2000) {
-            return ram;
-        } else if (addr >= 0x2000 && addr < 0x2008 || addr == 0x2014) {
-            return ppu;
-        } else if (addr >= 0x4000 && addr < 0x4016 && addr != 0x2014) {
-            return apu;
-        } else if (addr >= 0x40 && addr < 0x6000) {
-            //expansion rom;
-        } else if (addr >= 0x6000 && addr < 0x8000) {
-            //sram;
-        }
-
+    if (addr >= 0x0000 && addr < 0x2000) {
+        return ram;
+    } else if (addr >= 0x2000 && addr < 0x2008 || addr == 0x2014) {
+        return ppu;
+    } else if (addr >= 0x4000 && addr < 0x4016 && addr != 0x2014) {
+        return apu;
+    } else if (addr >= 0x40 && addr < 0x6000) {
+        //expansion rom;
+    } else if (addr >= 0x6000 && addr < 0x8000) {
+        //sram;
+    }
     */
     return ram;
 }

@@ -1,7 +1,8 @@
 #pragma once
 #include <cstdint>
 class Bus;
-struct Device {
+struct Device
+{
     Device() = delete;
     Device(Bus* b) : bus{b} {};
     virtual void write(const uint16_t addr, const uint8_t data) = 0;
