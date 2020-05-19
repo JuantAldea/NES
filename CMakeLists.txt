@@ -50,6 +50,18 @@ target_include_directories(libInstruction
         ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
+add_library(libPPU
+    src/ppu.cpp
+)
+
+target_include_directories(libPPU
+    PUBLIC
+        $<INSTALL_INTERFACE:include>
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
 
 add_library(libBus
     src/bus.cpp
@@ -65,6 +77,7 @@ target_include_directories(libBus
 
 target_link_libraries(libBus
     libCPU
+    libPPU
 )
 
 add_executable(NES main.cpp)

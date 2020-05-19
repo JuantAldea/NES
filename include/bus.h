@@ -13,6 +13,8 @@ public:
     void write_ram(const uint16_t start_addr, const size_t n_bytes, const uint8_t* bytes);
     uint8_t read(const uint16_t addr);
 
+    void clock();
+
     CPU cpu;
     APU apu;
     PPU ppu;
