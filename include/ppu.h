@@ -77,6 +77,7 @@ public:
     uint16_t base_nametable_addr = 0;
     uint16_t sprite_pattern_8x8_table_addr = 0;
     uint16_t bg_pattern_table_address = 0;
+    uint64_t total_cycles = 0;
 
     bool MMI_on_V_Blank = false;
     bool increase_vertical = false;

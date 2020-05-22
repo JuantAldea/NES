@@ -62,6 +62,7 @@ public:
     uint8_t current_op_code = 0;
     uint8_t cycles_left = 0;
     uint16_t previous_pc = 0;
+    uint64_t total_cycles = 0;
 
     friend std::ostream& operator<<(std::ostream& os, const CPU& cpu);
 

@@ -13,22 +13,22 @@ Bus::Bus()
 Device& Bus::get_device_from_addr(const uint16_t addr)
 {
     if (addr < 0x2000) {
-        std::cout << "RAM " << std::hex << addr << "\n";
+        // std::cout << "RAM " << std::hex << addr << "\n";
         return ram;
     } else if ((addr >= 0x2000 && addr < 0x3FFF) || addr == 0x4014) {
-        std::cout << "PPU " << std::hex << addr << "\n";
+        // std::cout << "PPU " << std::hex << addr << "\n";
         return ppu;
     } else if (addr >= 0x4000 && addr < 0x4016 && addr != 0x4014) {
-        std::cout << "APU " << std::hex << addr << "\n";
+        // std::cout << "APU " << std::hex << addr << "\n";
         return apu;
     } else if (addr >= 0x4020 && addr < 0x6000) {
-        std::cout << "ROM " << std::hex << addr << "\n";
+        // std::cout << "ROM " << std::hex << addr << "\n";
         //expansion rom;
     } else if (addr >= 0x6000 && addr < 0x8000) {
         //sram;
     }
 
-    std::cout << "DEFAULT RAM\n";
+    // std::cout << "DEFAULT RAM\n";
     return ram;
 }
 
@@ -76,9 +76,30 @@ uint8_t Bus::read(const uint16_t addr)
 
 void Bus::clock()
 {
-    if (!ppu.dma_in_progress()) {
-        cpu.clock(false);
-    }
+    ++total_cycles;
 
-    ppu.clock();
+    // TODO keep it easy, for now. -> no mid-frame PPU trickery
+    if (true || total_cycles % 2) {
+        clock_CPU();
+        clock_PPU();
+    } else {
+        clock_PPU();
+        clock_CPU();
+    }
+}
+
+void Bus::clock_PPU()
+{
+    if (total_cycles % 4 == 0) {
+        ppu.clock();
+    }
+}
+
+void Bus::clock_CPU()
+{
+    if (total_cycles % 12 == 0) {
+        if (!ppu.dma_in_progress()) {
+            cpu.clock(false);
+        }
+    }
 }

@@ -34,6 +34,7 @@
 */
 void PPU::clock()
 {
+    ++total_cycles;
     if (dma_in_progress()) {
         perform_OAM_DMA_cycle();
     }
@@ -41,40 +42,35 @@ void PPU::clock()
 
 void PPU::request_OAM_DMA()
 {
-    remaining_dma_cycles = 513;  //TODO + 1 if cpu on odd cycle
+    remaining_dma_cycles = 513 + (total_cycles + 1) % 2;
     dma_current_memory_source_addr = registers.OAMDMA << 8;
 
-    std::cout << "REQUESTING DMA from " << std::hex << dma_current_memory_source_addr << std::endl;
+    // std::cout << "REQUESTING DMA from " << std::hex << dma_current_memory_source_addr << std::endl;
 }
 
 void PPU::perform_OAM_DMA_cycle()
 {
-    static int count = 0;
-    count++;
-    std::cout << "COUNT " << std::dec << count << std::endl;
-
     // first 1 or 2 cyles are dummy
     remaining_dma_cycles--;
     if (remaining_dma_cycles >= 512) {
-        std::cout << "DUMMY " << std::dec << remaining_dma_cycles << std::endl;
+        // std::cout << "DUMMY " << std::dec << remaining_dma_cycles << std::endl;
         return;
     }
 
     if (remaining_dma_cycles % 2) {
         //alternate read/write cycle;
-        std::cout << "READ " << std::dec << remaining_dma_cycles << std::endl;
+        // std::cout << "READ " << std::dec << remaining_dma_cycles << std::endl;
         return;
     }
 
-    std::cout << "WRITE " << std::dec << remaining_dma_cycles << " (" << std::hex << dma_current_memory_source_addr
-              << ")" << std::endl;
+    // std::cout << "WRITE " << std::dec << remaining_dma_cycles << " (" << std::hex << dma_current_memory_source_addr << ")" << std::endl;
 
     bus->write(PPU::OAMDATA, bus->read(dma_current_memory_source_addr++));
 }
 
 void PPU::write(const uint16_t addr, const uint8_t data)
 {
-    std::cout << "PPU WRITE " << std::hex << addr << " " << (unsigned)data << std::endl;
+    // std::cout << "PPU WRITE " << std::hex << addr << " " << (unsigned)data << std::endl;
     assert(addr != PPUSTATUS);
     registers.PPUSTATUS &= 0xF0;
     registers.PPUSTATUS |= (data & 0x0F);
@@ -84,6 +80,10 @@ void PPU::write(const uint16_t addr, const uint8_t data)
 #pragma GCC diagnostic ignored "-Wswitch"
     switch (reg) {
     case PPUCTRL:
+        // After power/reset, writes to this register are ignored for about 30,000 cycles.
+        if (total_cycles < 300000) {
+            break;
+        }
         registers.PPUCTRL = data;
         update_flags();
         break;
@@ -95,8 +95,7 @@ void PPU::write(const uint16_t addr, const uint8_t data)
         registers.OAMADDR = data;
         break;
     case OAMDATA:
-        std::cout << "WRITE TO OAMDATA " << std::hex << "(" << (unsigned)registers.OAMADDR << ") <= " << std::hex
-                  << (unsigned)data << " PTR " << (unsigned) registers.OAMADDR << std::endl;
+        // std::cout << "WRITE TO OAMDATA " << std::hex << "(" << (unsigned)registers.OAMADDR << ") <= " << std::hex << (unsigned)data << " PTR " << (unsigned)registers.OAMADDR << std::endl;
         OAM_memory[registers.OAMADDR++] = data;
 
         break;
@@ -121,14 +120,12 @@ void PPU::write(const uint16_t addr, const uint8_t data)
         high_byte_input = !high_byte_input;
         break;
     case PPUDATA:
-        std::cout << "WRITE TO PPUDATA " << std::hex << "(" << (unsigned)registers.PPUDATA << ") <= " << std::hex
-                  << (unsigned)data << " PTR " << registers.PPUADDR << std::endl;
+        // std::cout << "WRITE TO PPUDATA " << std::hex << "(" << (unsigned)registers.PPUDATA << ") <= " << std::hex << (unsigned)data << " PTR " << registers.PPUADDR << std::endl;
         VRAM[registers.PPUADDR++] = data;
         break;
     case OAMDMA:
         registers.OAMDMA = data;
-        std::cout << "WRITE TO OAMDMA " << std::hex << "(" << (unsigned)registers.OAMDMA << ") <= " << std::hex
-                  << (unsigned)data << std::endl;
+        // std::cout << "WRITE TO OAMDMA " << std::hex << "(" << (unsigned)registers.OAMDMA << ") <= " << std::hex << (unsigned)data << std::endl;
         request_OAM_DMA();
         //bus->read(data << 4), &VRAM[registers.PPUADDR], std::min(256, 256 - registers.PPUADDR));
         break;

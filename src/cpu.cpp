@@ -75,8 +75,9 @@ void CPU::execute_next_instruction(const bool update_debugger)
     auto instruction = Instruction::instruction_set[current_op_code];
     auto fn_operation = instruction.operation;
     auto fn_addresing = instruction.addressing;
-    cycles_left = instruction.cycles;
-    // std::cout << "Instruction fetched: " << instruction.name << " " << (unsigned) current_op_code << std::endl;
+    //cycles_left = instruction.cycles;
+
+    // std::cout << "Instruction fetched: " << instruction.name << " " << (unsigned)current_op_code << std::endl;
 
     // execute
     fn_addresing(*this);
@@ -95,30 +96,63 @@ void CPU::execute_next_instruction(const bool update_debugger)
         signal_update();
     }
 }
-
+/*
 bool CPU::clock(bool trace)
 {
+    ++total_cycles;
+
     if (cycles_left > 0) {
-        #if 0
+#if 0
         std::cout << Instruction::instruction_set[current_op_code].name << "(" << (unsigned)cycles_left << "/"
                   << (unsigned)Instruction::instruction_set[current_op_code].cycles << ")" << std::endl;
-        #endif
+#endif
         --cycles_left;
 
+        return false;
+    }
+    execute_next_instruction(trace);
+
+#if 0
+    std::cout << Instruction::instruction_set[current_op_code].name << "(" << (unsigned)cycles_left << "/"
+              << (unsigned)Instruction::instruction_set[current_op_code].cycles << ")"
+              << (cycles_left > Instruction::instruction_set[current_op_code].cycles ? "Oops cycle" : "") << std::endl;
+#endif
+    --cycles_left;
+
+    return true;
+}
+*/
+bool CPU::clock(bool trace)
+{
+    ++total_cycles;
+
+    // decode
+    uint8_t current_op_code = read(registers.PC);
+    auto instruction = Instruction::instruction_set[current_op_code];
+
+    if (cycles_left == 0) {
+
+        cycles_left = instruction.cycles - 1;
+        std::cout << instruction.name << "(" << (unsigned)instruction.cycles - cycles_left << "/" << (unsigned)instruction.cycles << ")"
+                  << std::endl;
+
+        return false;
+    }
+
+    --cycles_left;
+
+    std::cout << instruction.name << "(" << (unsigned)instruction.cycles - cycles_left << "/" << (unsigned)instruction.cycles << ")"
+              << std::endl;
+
+    if (cycles_left != 0) {
         return false;
     }
 
     execute_next_instruction(trace);
 
-    #if 0
-    std::cout << Instruction::instruction_set[current_op_code].name << "(" << (unsigned)cycles_left << "/"
-              << (unsigned)Instruction::instruction_set[current_op_code].cycles << ")"
-              << (cycles_left > Instruction::instruction_set[current_op_code].cycles ? "Oops cycle" : "") << std::endl;
-    #endif
-    --cycles_left;
-
     return true;
 }
+
 /*
 bool CPU::clock(bool trace)
 {
