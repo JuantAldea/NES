@@ -17,7 +17,7 @@ struct TEST_MEMORY {
     uint8_t read(const uint16_t addr) { return memory[addr]; };
 };
 
-bool klaus2m5_test(Klaus2m5Suite suite)
+uint16_t klaus2m5_test(Klaus2m5Suite suite)
 {
     TEST_MEMORY ram;
     auto read = std::bind(&TEST_MEMORY::read, &ram, std::placeholders::_1);
@@ -36,40 +36,40 @@ bool klaus2m5_test(Klaus2m5Suite suite)
         cpu.write(suite.feedback_register, 0x0);
     }
 
+    uint16_t previous_pc = 0;
     while (true) {
-        auto previous_pc = cpu.registers.PC;
-        bool executed = cpu.clock(false);
+        if (cpu.clock(false)) {
+            if (previous_pc == cpu.registers.PC) {
+                std::cout << "TRAP " << std::hex << previous_pc << std::endl;
+                return cpu.registers.PC;
+            }
+            previous_pc = cpu.registers.PC;
+        }
 
         if (suite.feedback_register) {
             uint8_t feedback_reg = cpu.read(suite.feedback_register);
             if ((feedback_reg & 0x2)) {
                 cpu.write(suite.feedback_register, feedback_reg & ~0x2);
                 cpu.raise_NMI();
-                continue;
             } else if (feedback_reg & 0x1) {
                 cpu.write(suite.feedback_register, feedback_reg & ~0x1);
                 cpu.raise_IRQ();
-                continue;
             }
         }
-
-        if (executed && previous_pc == cpu.registers.PC) {
-            std::cerr << "TRAP " << std::hex << previous_pc << std::endl;
-            return previous_pc == suite.target_trap;
-        }
     }
+    return 0;
 }
 
 GTEST_TEST(testCPU, 6502_Klaus2m5_funtional_test)
 {
     Klaus2m5Suite suite{0x0000, 0x336d, "test_files/6502_functional_test.bin"};
-    EXPECT_EQ(true, klaus2m5_test(suite));
-};
+    EXPECT_EQ(suite.target_trap, klaus2m5_test(suite));
+}
 
 GTEST_TEST(testCPU, 6502_Klaus2m5_interrupt_test)
 {
     Klaus2m5Suite suite{0xbffc, 0x06f5, "test_files/6502_interrupt_test.bin"};
-    EXPECT_EQ(true, klaus2m5_test(suite));
-};
+    EXPECT_EQ(suite.target_trap, klaus2m5_test(suite));
+}
 
 }  // namespace tests

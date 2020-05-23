@@ -217,7 +217,7 @@ int main(int argc, char* argv[])
         flag_V.setChecked(console.cpu.get_flag(CPU::FLAGS::V));
         flag_Z.setChecked(console.cpu.get_flag(CPU::FLAGS::Z));
         instruction.setText(
-            QString::fromStdString(Instruction::instruction_set[console.cpu.read(console.cpu.registers.PC)].name));
+            QString::fromStdString(InstructionSet::Table[console.cpu.read(console.cpu.registers.PC)].name));
         //operand.setText(QString::number(console.cpu.fetched_operand, 16));
 
         QHexDocument* document =

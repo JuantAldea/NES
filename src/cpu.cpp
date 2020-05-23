@@ -22,149 +22,56 @@ void CPU::raise_NMI() { nmi_requested = true; }
 
 void CPU::raise_IRQ() { irq_requested = true; }
 
-void CPU::execute_next_instruction(const bool update_debugger)
+void CPU::execute_current_instruction(const bool update_debugger)
 {
-    /*
-    if (nmi_pending  && interrupt_delay <= 0) {
-        NMI();
-        return;
-    }
-
-    if (irq_pending  && interrupt_delay <= 0) {
-        IRQ();
-        return;
-    }
-    */
-
-    if (nmi_requested) {
-        nmi_requested = false;
-        NMI();
-        return;
-    } else if (!get_flag(FLAGS::I) && irq_requested) {
-        irq_requested = false;
-        IRQ();
-        return;
-    }
-
-#ifdef INTERRUPT_TEST
-    uint8_t feedback_reg = read(0xbffc);
-    // if ((feedback_reg & 0x2) && !nmi_pending) {
-
-    if ((feedback_reg & 0x2)) {
-        write(0xbffc, feedback_reg & ~0x2);
-        // nmi_pending = true;
-        // interrupt_delay = 0;
-        // std::cout << "NMI detected. Interrupt will be executed in " << (unsigned)interrupt_delay << " cycles\n";
-        NMI();
-        return;
-        //} else if(!get_flag(FLAGS::I) && (feedback_reg & 0x1) && !nmi_pending) {
-    } else if (!get_flag(FLAGS::I) && (feedback_reg & 0x1)) {
-        write(0xbffc, feedback_reg & ~0x1);
-        // irq_pending = true;
-        // interrupt_delay = 0;
-        // std::cout << "IRQ detected. Interrupt will be executed in " << (unsigned) interrupt_delay << " cycles\n";
-        IRQ();
-        return;
-    }
-#endif
-    // fetch
-    current_op_code = read(registers.PC);
-    registers.PC++;
-
-    // decode
-    auto instruction = Instruction::instruction_set[current_op_code];
-    auto fn_operation = instruction.operation;
-    auto fn_addresing = instruction.addressing;
-    //cycles_left = instruction.cycles;
-
-    // std::cout << "Instruction fetched: " << instruction.name << " " << (unsigned)current_op_code << std::endl;
+    //std::cout << std::hex << "PC before executing " << (unsigned)current_op_code << "->" << registers.PC <<std::endl;
 
     // execute
-    fn_addresing(*this);
-    fn_operation(*this);
+    current_instruction->operation(*this);
+    //std::cout << std::hex << "PC after executing " << (unsigned)current_op_code << "->" << registers.PC <<std::endl;
 
     set_flag(FLAGS::U, true);
-
-    /*
-    if (nmi_pending || irq_pending) {
-        interrupt_delay -= cycles_left;
-        std::cout << "Interrupt will be executed in " << (unsigned)interrupt_delay << " cycles\n";
-    }
-    */
 
     if (update_debugger) {
         signal_update();
     }
 }
-/*
+
 bool CPU::clock(bool trace)
 {
     ++total_cycles;
 
-    if (cycles_left > 0) {
-#if 0
-        std::cout << Instruction::instruction_set[current_op_code].name << "(" << (unsigned)cycles_left << "/"
-                  << (unsigned)Instruction::instruction_set[current_op_code].cycles << ")" << std::endl;
-#endif
-        --cycles_left;
-
-        return false;
-    }
-    execute_next_instruction(trace);
-
-#if 0
-    std::cout << Instruction::instruction_set[current_op_code].name << "(" << (unsigned)cycles_left << "/"
-              << (unsigned)Instruction::instruction_set[current_op_code].cycles << ")"
-              << (cycles_left > Instruction::instruction_set[current_op_code].cycles ? "Oops cycle" : "") << std::endl;
-#endif
-    --cycles_left;
-
-    return true;
-}
-*/
-bool CPU::clock(bool trace)
-{
-    ++total_cycles;
-
-    // decode
-    uint8_t current_op_code = read(registers.PC);
-    auto instruction = Instruction::instruction_set[current_op_code];
-
+    // fetch & decode
     if (cycles_left == 0) {
+        if (nmi_requested) {
+            current_instruction = &InstructionSet::NMI;
+            nmi_requested = false;
+        } else if (irq_requested && !get_flag(FLAGS::I)) {
+            current_instruction = &InstructionSet::IRQ;
+            irq_requested = false;
+        } else {
+            current_op_code = read(registers.PC++);
+            current_instruction = &InstructionSet::Table[current_op_code];
+            current_instruction->addressing(*this);
+        }
 
-        cycles_left = instruction.cycles - 1;
-        std::cout << instruction.name << "(" << (unsigned)instruction.cycles - cycles_left << "/" << (unsigned)instruction.cycles << ")"
-                  << std::endl;
-
-        return false;
+        cycles_left = current_instruction->cycles;
     }
 
     --cycles_left;
 
-    std::cout << instruction.name << "(" << (unsigned)instruction.cycles - cycles_left << "/" << (unsigned)instruction.cycles << ")"
-              << std::endl;
+    //std::cout << current_instruction->name << "(" << (unsigned)current_instruction->cycles - cycles_left << "/" << (unsigned)current_instruction->cycles << ") -> " << std::hex << (unsigned)current_op_code << " " << std::hex << (unsigned)registers.PC << std::endl;
 
     if (cycles_left != 0) {
         return false;
     }
 
-    execute_next_instruction(trace);
+    //execute during the last cycle
+    execute_current_instruction(trace);
 
     return true;
 }
 
-/*
-bool CPU::clock(bool trace)
-{
-    if (cycles_left > 0) {
-        --cycles_left;
-        return false;
-    }
-
-    execute_next_instruction(trace);
-    return true;
-}
-*/
 void CPU::reset()
 {
     registers = {0};
@@ -424,15 +331,15 @@ void CPU::INY()
 
 void CPU::ASL()
 {
-    bool addr_implicit = Instruction::instruction_set[current_op_code].addr_type == Addressing::implicit;
+    bool addressing_is_implicit = InstructionSet::Table[current_op_code].addr_type == Addressing::implicit;
 
-    uint8_t value = addr_implicit ? registers.A : read(fetched_operand);
+    uint8_t value = addressing_is_implicit ? registers.A : read(fetched_operand);
     set_flag(FLAGS::C, value & 0x80);
     value <<= 1;
     set_flag(FLAGS::N, value & 0x80);
     set_flag(FLAGS::Z, value == 0);
 
-    if (addr_implicit) {
+    if (addressing_is_implicit) {
         registers.A = value;
     } else {
         write(fetched_operand, value);
@@ -441,9 +348,9 @@ void CPU::ASL()
 
 void CPU::ROL()
 {
-    bool addr_implicit = Instruction::instruction_set[current_op_code].addr_type == Addressing::implicit;
+    bool addressing_is_implicit = InstructionSet::Table[current_op_code].addr_type == Addressing::implicit;
 
-    uint8_t value = addr_implicit ? registers.A : read(fetched_operand);
+    uint8_t value = addressing_is_implicit ? registers.A : read(fetched_operand);
 
     auto carry = get_flag(FLAGS::C);
     set_flag(FLAGS::C, value & 0x80);
@@ -452,7 +359,7 @@ void CPU::ROL()
     set_flag(FLAGS::N, value & 0x80);
     set_flag(FLAGS::Z, value == 0);
 
-    if (addr_implicit) {
+    if (addressing_is_implicit) {
         registers.A = value;
     } else {
         write(fetched_operand, value);
@@ -461,7 +368,7 @@ void CPU::ROL()
 
 void CPU::LSR()
 {
-    bool addressing_is_implicit = Instruction::instruction_set[current_op_code].addr_type == Addressing::implicit;
+    bool addressing_is_implicit = InstructionSet::Table[current_op_code].addr_type == Addressing::implicit;
 
     uint8_t value = addressing_is_implicit ? registers.A : read(fetched_operand);
 
@@ -479,7 +386,7 @@ void CPU::LSR()
 
 void CPU::ROR()
 {
-    bool addressing_is_implicit = Instruction::instruction_set[current_op_code].addr_type == Addressing::implicit;
+    bool addressing_is_implicit = InstructionSet::Table[current_op_code].addr_type == Addressing::implicit;
 
     uint8_t value = addressing_is_implicit ? registers.A : read(fetched_operand);
 
@@ -651,7 +558,6 @@ void CPU::RESET() { registers.PC = static_cast<uint16_t>(read(0xFFFD)) << 8 | re
 
 void CPU::NMI()
 {
-    // nmi_pending = false;
     push_stack(static_cast<uint8_t>(registers.PC >> 8));
     push_stack(static_cast<uint8_t>(registers.PC & 0xFF));
     push_stack(registers.P & ~static_cast<uint8_t>(FLAGS::B));
@@ -659,12 +565,10 @@ void CPU::NMI()
     // set_flag(FLAGS::D, false);
 
     registers.PC = static_cast<uint16_t>(read(0xFFFB)) << 8 | read(0xFFFA);
-    cycles_left = 8;
 }
 
 void CPU::IRQ()
 {
-    // irq_pending = false;
     push_stack(static_cast<uint8_t>(registers.PC >> 8));
     push_stack(static_cast<uint8_t>(registers.PC & 0xFF));
     push_stack(registers.P & ~static_cast<uint8_t>(FLAGS::B));
@@ -672,7 +576,6 @@ void CPU::IRQ()
     // set_flag(FLAGS::D, false);
 
     registers.PC = (static_cast<uint16_t>(read(0xFFFF)) << 8) | read(0xFFFE);
-    cycles_left = 7;
 }
 
 void CPU::RTI()
@@ -739,9 +642,9 @@ void CPU::LAS() { ; }
 
 std::ostream& operator<<(std::ostream& os, const CPU& cpu)
 {
-    os << "A:" << static_cast<unsigned>(cpu.registers.A) << " X:" << static_cast<unsigned>(cpu.registers.X)
+    os << std::hex << "A:" << static_cast<unsigned>(cpu.registers.A) << " X:" << static_cast<unsigned>(cpu.registers.X)
        << " Y:" << static_cast<unsigned>(cpu.registers.Y) << " P:" << static_cast<unsigned>(cpu.registers.P)
-       << " PC:" << cpu.registers.PC << " SP:" << cpu.registers.SP << std::endl;
+       << " PC:" << cpu.registers.PC << " SP:" << static_cast<unsigned>(cpu.registers.SP) << std::endl;
 
     os << "C:" << (cpu.get_flag(CPU::FLAGS::C) ? "x" : "o") << " Z:" << (cpu.get_flag(CPU::FLAGS::Z) ? "x" : "o")
        << " I:" << (cpu.get_flag(CPU::FLAGS::I) ? "x" : "o") << " D:" << (cpu.get_flag(CPU::FLAGS::D) ? "x" : "o")
@@ -749,7 +652,7 @@ std::ostream& operator<<(std::ostream& os, const CPU& cpu)
        << " V:" << (cpu.get_flag(CPU::FLAGS::V) ? "x" : "o") << " N:" << (cpu.get_flag(CPU::FLAGS::N) ? "x" : "o")
        << std::endl;
 
-    os << "Instruction : " << Instruction::instruction_set[cpu.read(cpu.registers.PC)].name
+    os << "Instruction : " << InstructionSet::Table[cpu.read(cpu.registers.PC)].name
        << " Cycles left: " << static_cast<unsigned>(cpu.cycles_left) << std::endl;
 
     return os;

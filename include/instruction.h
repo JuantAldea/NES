@@ -9,13 +9,16 @@
 #include "cpu.h"
 #include "device.h"
 
-struct Instruction
-{
+struct Instruction {
     std::string name;
     Addressing addr_type;
     std::function<void(CPU&)> operation = nullptr;
     std::function<void(CPU&)> addressing = nullptr;
     uint8_t cycles;
+};
 
-    static const std::valarray<Instruction> instruction_set;
+struct InstructionSet {
+    static const Instruction NMI;
+    static const Instruction IRQ;
+    static const std::valarray<Instruction> Table;
 };

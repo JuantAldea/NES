@@ -17,6 +17,8 @@ http://6502.org/tutorials/interrupts.html
 #include "addressing_types.h"
 #include "device.h"
 
+struct Instruction;
+
 class CPU
 {
 public:
@@ -57,10 +59,11 @@ public:
 
     void set_flag(const FLAGS flag, const bool value);
     bool get_flag(const FLAGS flag) const;
-
+    const Instruction* current_instruction;
     uint16_t fetched_operand = 0;
     uint8_t current_op_code = 0;
     uint8_t cycles_left = 0;
+
     uint16_t previous_pc = 0;
     uint64_t total_cycles = 0;
 
@@ -68,7 +71,7 @@ public:
 
 public:
     bool clock(bool trace);
-    void execute_next_instruction(const bool update_debugger);
+    void execute_current_instruction(const bool update_debugger);
     void reset();
     uint8_t& register_A() { return registers.A; };
     uint8_t& register_X() { return registers.X; };
@@ -137,5 +140,5 @@ protected:
     bool irq_requested = false;
 
 public:
-    friend class Instruction;
+    friend class InstructionSet;
 };

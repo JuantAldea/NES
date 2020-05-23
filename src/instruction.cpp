@@ -1,12 +1,12 @@
 #include "instruction.h"
 
 // clang-format off
-
-
+using c = CPU;
+const Instruction InstructionSet::NMI{"NMI", Addressing::implicit, &c::NMI, &c::addressing_implicit, 8};
+const Instruction InstructionSet::IRQ{"IRQ", Addressing::implicit, &c::IRQ, &c::addressing_implicit, 7};
 
 //Aligned to 10 so that they are easier to count
-using c = CPU;
-const std::valarray<Instruction> Instruction::instruction_set{
+const std::valarray<Instruction> InstructionSet::Table{
     {"BRK", Addressing::implicit, &c::BRK, &c::addressing_implicit, 7},
     {"ORA", Addressing::indexed_indirect, &c::ORA, &c::addressing_indexed_indirect, 6},
     {"STP", Addressing::implicit, &c::STP, &c::addressing_implicit, 0},
