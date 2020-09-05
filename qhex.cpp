@@ -14,8 +14,8 @@
 #include <QTimer>
 #include <QVBoxLayout>
 
-#include "external/QHexView/document/buffer/qmemorybuffer.h"
-#include "external/QHexView/qhexview.h"
+#include "QHexView/document/buffer/qmemorybuffer.h"
+#include "QHexView/qhexview.h"
 #include "include/bus.h"
 #include "include/instruction.h"
 
@@ -155,7 +155,7 @@ int main(int argc, char* argv[])
             reinterpret_cast<char*>(console.ram.memory.data()), console.ram.memory.size());
 
         hexview.setDocument(document);  // Associate QHexEditData with this QHexEdit
-        document->metadata()->background(CPU::STACK_BASE_ADDR / HEX_LINE_LENGTH, CPU::STACK_BASE_ADDR % HEX_LINE_LENGTH,
+        document->metadata()->background(CPU::STACK_BASE_ADDR / document->hexLineWidth(), CPU::STACK_BASE_ADDR % document->hexLineWidth(),
                                          1, Qt::green);
 
         /*
@@ -224,13 +224,13 @@ int main(int argc, char* argv[])
             QHexDocument::fromMemory<QMemoryBuffer>((char*)console.ram.memory.data(), console.ram.memory.size());
         hexview.setDocument(document);
 
-        document->metadata()->background(CPU::STACK_BASE_ADDR / HEX_LINE_LENGTH, CPU::STACK_BASE_ADDR % HEX_LINE_LENGTH,
+        document->metadata()->background(CPU::STACK_BASE_ADDR / document->hexLineWidth(), CPU::STACK_BASE_ADDR % document->hexLineWidth(),
                                          1, Qt::green);
-        document->metadata()->background((CPU::STACK_BASE_ADDR + console.cpu.registers.SP) / HEX_LINE_LENGTH,
-                                         (CPU::STACK_BASE_ADDR + console.cpu.registers.SP) % HEX_LINE_LENGTH, 1,
+        document->metadata()->background((CPU::STACK_BASE_ADDR + console.cpu.registers.SP) / document->hexLineWidth(),
+                                         (CPU::STACK_BASE_ADDR + console.cpu.registers.SP) % document->hexLineWidth(), 1,
                                          Qt::blue);
-        document->metadata()->background(console.cpu.registers.PC / HEX_LINE_LENGTH,
-                                         console.cpu.registers.PC % HEX_LINE_LENGTH, 1, Qt::red);
+        document->metadata()->background(console.cpu.registers.PC / document->hexLineWidth(),
+                                         console.cpu.registers.PC % document->hexLineWidth(), 1, Qt::red);
         document->cursor()->moveTo(console.cpu.registers.PC);
 
         /*

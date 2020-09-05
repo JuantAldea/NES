@@ -69,7 +69,7 @@ public:
     bool dma_in_progress() { return remaining_dma_cycles != 0; }
 
     uint8_t OAM_memory[256] = {0};
-    uint8_t VRAM[256] = {0};
+    uint8_t VRAM[0x4000] = {0};
 
     uint8_t& get_register(const RegisterMMap reg);
 

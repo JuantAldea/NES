@@ -56,20 +56,21 @@ bool dma_test(uint8_t target_oam_addr)
 
     std::cout << "Cycles " << std::dec << console.cpu.total_cycles << std::endl;
 
-    // NOP is one byte long and takes 2 cycles so after 99 cycles 49'5 NOP should have been executed
-    // one NOP cycle left
-    //EXPECT_EQ(1, console.cpu.cycles_left);
-
+    std::cout << "Cycles " << std::dec << console.ppu.total_cycles << std::endl;
+    auto ppuc = console.ppu.total_cycles;
     // PC points to instruction after STA (PC = 0x437)
     EXPECT_EQ(0x400 + 49 + 2 + 3 + 1, console.cpu.registers.PC);
 
-    std::cout << "Cycles " << std::hex << console.cpu.registers.PC << std::endl;
+    std::cout << "PC     " << std::hex << console.cpu.registers.PC << std::endl;
 
     // finish DMA
     while (console.ppu.dma_in_progress()) {
         console.clock();
     }
 
+    std::cout << "Cycles " << std::dec << console.cpu.total_cycles << std::endl;
+    std::cout << "Cycles " << std::dec << console.ppu.total_cycles - ppuc << std::endl;
+    std::cout << "Cycles " << std::dec << console.total_cycles << std::endl;
     // CPU state should be the same
     EXPECT_EQ(pre_dma_cpu_cycles, console.cpu.total_cycles);
 
@@ -83,14 +84,14 @@ bool dma_test(uint8_t target_oam_addr)
         EXPECT_EQ(bytes[i], console.ppu.OAM_memory[(i + target_oam_addr) % 256]);
     }
 
-    return true;
+    return false;
 }
 
 GTEST_TEST(testDMA, dma_test)
 {
-    for (auto i = 0; i < 256; i++) {
-        EXPECT_TRUE(dma_test(1));
-    }
+    //for (auto i = 0; i < 256; i++) {
+    EXPECT_TRUE(dma_test(1));
+    //}
 }
 
 };  // namespace tests

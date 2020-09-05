@@ -38,6 +38,33 @@ void PPU::clock()
     if (dma_in_progress()) {
         perform_OAM_DMA_cycle();
     }
+
+    int VINT = 1;
+    int scanline = 1;
+
+    //341 clocks/scanline
+    // external PPU memory accessed every two clocks = 170 reads
+    //+ 1 spare cycle
+
+    if (!VINT) {
+        return;
+    }
+
+    if (scanline < 20) {
+        return;
+    }
+
+    if (scanline == 20){
+        //dummy scanline
+        return;
+    }
+    if (scanline == 261) {
+        //set VINT
+        return;
+    }
+
+
+
 }
 
 void PPU::request_OAM_DMA()
@@ -127,7 +154,6 @@ void PPU::write(const uint16_t addr, const uint8_t data)
         registers.OAMDMA = data;
         // std::cout << "WRITE TO OAMDMA " << std::hex << "(" << (unsigned)registers.OAMDMA << ") <= " << std::hex << (unsigned)data << std::endl;
         request_OAM_DMA();
-        //bus->read(data << 4), &VRAM[registers.PPUADDR], std::min(256, 256 - registers.PPUADDR));
         break;
     }
 #pragma GCC diagnostic pop

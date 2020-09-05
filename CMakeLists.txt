@@ -1,7 +1,8 @@
-cmake_minimum_required(VERSION 3.10)
+cmake_minimum_required(VERSION 3.15)
 project(NES VERSION 0.1.0)
 
 include(CTest)
+include(FetchContent)
 
 enable_testing()
 add_subdirectory(tests)
@@ -87,16 +88,26 @@ target_link_libraries(NES
     libInstruction
 )
 
-add_subdirectory(external/QHexView)
+FetchContent_Declare(
+    QHexView
+    SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/QHexView
+    GIT_REPOSITORY https://github.com/Dax89/QHexView.git
+    GIT_TAG        642db82e8fd649478db69f12245a08d7caef22ea
+)
 
-add_executable(qhex qhex.cpp
+FetchContent_GetProperties(QHexView)
+FetchContent_MakeAvailable(QHexView)
+
+add_library(QHexView
     ${QHEXVIEW_SOURCES}
     ${QHEXVIEW_HEADERS}
 )
 
 find_package(Threads)
 
+add_executable(qhex qhex.cpp)
 target_link_libraries(qhex
+    QHexView
     libBus
     libCPU
     libInstruction
