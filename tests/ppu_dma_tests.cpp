@@ -84,14 +84,14 @@ bool dma_test(uint8_t target_oam_addr)
         EXPECT_EQ(bytes[i], console.ppu.OAM_memory[(i + target_oam_addr) % 256]);
     }
 
-    return false;
+    return true;
 }
 
 GTEST_TEST(testDMA, dma_test)
 {
-    //for (auto i = 0; i < 256; i++) {
-    EXPECT_TRUE(dma_test(1));
-    //}
+    for (auto i = 0; i < 256; i++) {
+        EXPECT_TRUE(dma_test(i));
+    }
 }
 
 };  // namespace tests
