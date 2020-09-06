@@ -32,41 +32,86 @@
     }
 }
 */
+
 void PPU::clock()
 {
     ++total_cycles;
+
     if (dma_in_progress()) {
         perform_OAM_DMA_cycle();
+        //TODO return?
     }
-
-    int VINT = 1;
     int scanline = 1;
-
+    const int cycle = total_cycles % 341;
     //341 clocks/scanline
     // external PPU memory accessed every two clocks = 170 reads
     //+ 1 spare cycle
 
-    if (!VINT) {
-        return;
+    //Pre-render scanline
+    switch (scanline) {
+        case -1:
+        case 261:
+            // prefetch tile info for first two tiles
+            if (cycle == 1) {
+               clear_vblank();
+               clear_sprite0_hit();
+               clear_sprite_overflow();
+            }
+            break;
+        case 0 ... 239:
+            process_visible_scanline();
+            break;
+        case 240:
+            // Post-render scanline
+            // idle
+            break;
+        case 241:
+            //NMI is raised on the second cycle of scanline 241
+            if (cycle == 1) {
+               bus->cpu.raise_NMI();
+               set_vblank();
+            }
+            break;
+        case 242 ... 260:
+            // TODO is it idle as well?
+            break;
+        default:
+            std::cerr << "Scanline out of range: " << scanline << std::endl;
+            break;
     }
 
-    if (scanline < 20) {
-        return;
-    }
+    scanline += (cycle == 0);
+    /*
 
-    if (scanline == 20){
-        //dummy scanline
-        return;
-    }
-    if (scanline == 261) {
-        //set VINT
-        return;
-    }
+    - Sprite DMA is 6144 clock cycles long (or in CPU clock cycles, 6144/12).
+    256 individual transfers are made from CPU memory to a temp register inside
+    the CPU, then from the CPU's temp reg, to $2004.
 
+    - One scanline is EXACTLY 1364 cycles long. In comparison to the CPU's
+    speed, one scanline is 1364/12 CPU cycles long.
 
+    - One frame is EXACTLY 357368 cycles long, or EXACTLY 262 scanlines long.
 
+    */
 }
 
+void PPU::process_visible_scanline()
+{
+    // 341 PPU cycles per scanline
+    const int cycle = total_cycles % 341;
+    // render background and sprite. Visible scanlines
+    if (cycle == 0) {
+        //idle
+        return;
+    } else if (1 <= cycle && cycle <= 256) {
+        // - Output pixel based on VRAM
+        // - Prefetch next tiles
+        // - Sprite evaluation for next scanline
+    } else if (257 <= cycle && cycle <= 340) {
+        //prefetch tile data for next line’s first two tiles
+    }
+    return;
+}
 void PPU::request_OAM_DMA()
 {
     remaining_dma_cycles = 513 + (total_cycles + 1) % 2;

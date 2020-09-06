@@ -68,6 +68,17 @@ public:
     void perform_OAM_DMA_cycle();
     bool dma_in_progress() { return remaining_dma_cycles != 0; }
 
+    void process_visible_scanline();
+
+    void set_vblank() { registers.PPUSTATUS |= 0x80; }
+    void clear_vblank() { registers.PPUSTATUS &= ~0x80; }
+
+    void set_sprite0_hit() { registers.PPUSTATUS |= 0x40; }
+    void clear_sprite0_hit() { registers.PPUSTATUS &= ~0x40; }
+
+    void set_sprite_overflow() { registers.PPUSTATUS |= 0x20; }
+    void clear_sprite_overflow() { registers.PPUSTATUS &= ~0x20; }
+
     uint8_t OAM_memory[256] = {0};
     uint8_t VRAM[0x4000] = {0};
 
