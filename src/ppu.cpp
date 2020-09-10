@@ -33,6 +33,8 @@
 }
 */
 
+// https://wiki.nesdev.com/w/index.php/PPU_sprite_evaluation
+
 void PPU::clock()
 {
     ++total_cycles;
