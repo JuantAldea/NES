@@ -123,7 +123,6 @@ protected:
     void addressing_indirect_indexed();
 
     void addressing_implicit();
-    void address_accumulator();
     void addressing_immediate();
     void addressing_zero_page();
     void addressing_absolute();
