@@ -1,8 +1,9 @@
 #include <fstream>
 #include <functional>
 
-#include "cpu.h"
+#include "../include/cpu.h"
 #include "gtest/gtest.h"
+
 namespace tests
 {
 struct Klaus2m5Suite {
@@ -17,7 +18,7 @@ struct TEST_MEMORY {
     uint8_t read(const uint16_t addr) { return memory[addr]; };
 };
 
-uint16_t klaus2m5_test(Klaus2m5Suite suite)
+void klaus2m5_test(Klaus2m5Suite suite)
 {
     TEST_MEMORY ram;
     auto read = std::bind(&TEST_MEMORY::read, &ram, std::placeholders::_1);
@@ -26,6 +27,7 @@ uint16_t klaus2m5_test(Klaus2m5Suite suite)
     CPU cpu(read, write);
 
     std::ifstream file(suite.path, std::ios::binary | std::ios::ate);
+    ASSERT_TRUE(file.is_open()) << "Failed to open file: " << suite.path;
 
     std::streamsize size = file.tellg();
     file.seekg(0, std::ios::beg);
@@ -41,7 +43,9 @@ uint16_t klaus2m5_test(Klaus2m5Suite suite)
         if (cpu.clock(false)) {
             if (previous_pc == cpu.registers.PC) {
                 std::cout << "TRAP " << std::hex << previous_pc << std::endl;
-                return cpu.registers.PC;
+                ASSERT_TRUE(cpu.registers.PC == suite.target_trap)
+                    << "Expected PC to be TRAP'ed at 0x" << std::hex << suite.target_trap << ", but got 0x" << cpu.registers.PC;
+                break;
             }
             previous_pc = cpu.registers.PC;
         }
@@ -57,19 +61,18 @@ uint16_t klaus2m5_test(Klaus2m5Suite suite)
             }
         }
     }
-    return 0;
 }
 
 GTEST_TEST(testCPU, 6502_Klaus2m5_funtional_test)
 {
-    Klaus2m5Suite suite{0x0000, 0x336d, "test_files/6502_functional_test.bin"};
-    EXPECT_EQ(suite.target_trap, klaus2m5_test(suite));
+    const Klaus2m5Suite suite{0x0000, 0x336d, "test_files/6502_functional_test.bin"};
+    klaus2m5_test(suite);
 }
 
 GTEST_TEST(testCPU, 6502_Klaus2m5_interrupt_test)
 {
-    Klaus2m5Suite suite{0xbffc, 0x06f5, "test_files/6502_interrupt_test.bin"};
-    EXPECT_EQ(suite.target_trap, klaus2m5_test(suite));
+    const Klaus2m5Suite suite{0xbffc, 0x06f5, "test_files/6502_interrupt_test.bin"};
+    klaus2m5_test(suite);
 }
 
 }  // namespace tests

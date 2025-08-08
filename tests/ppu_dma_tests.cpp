@@ -1,7 +1,6 @@
-#include <functional>
-
-#include "bus.h"
+#include "../include/bus.h"
 #include "gtest/gtest.h"
+
 namespace tests
 {
 bool dma_test(uint8_t target_oam_addr)
