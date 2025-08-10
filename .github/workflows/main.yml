@@ -8,7 +8,7 @@ jobs:
     
     steps:
     - name: Do not update man-db
-      run: rm /var/lib/man-db/auto-update
+      run: sudo rm /var/lib/man-db/auto-update
 
     - uses: actions/checkout@v2
       with:
