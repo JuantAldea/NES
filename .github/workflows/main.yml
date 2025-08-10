@@ -18,7 +18,7 @@ jobs:
     #  uses: seanmiddleditch/gha-setup-ninja@v1
     
     - name: Install Qt
-      uses: jurplel/install-qt-action@v2.6.2
+      uses: jurplel/install-qt-action@v4.3.0
     
     - name: run-cmake
       uses: lukka/run-cmake@v10.8
