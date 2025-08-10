@@ -7,6 +7,8 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
+    - name: Do not update man-db
+      run: rm /var/lib/man-db/auto-update
     - uses: actions/checkout@v2
       with:
         submodules: 'recursive'
@@ -23,9 +25,9 @@ jobs:
     - name: run-cmake
       uses: lukka/run-cmake@v10.8
       with:
-        cmakeListsOrSettingsJson: CMakeListsTxtAdvanced
-        cmakeListsTxtPath: '${{ github.workspace }}/CMakeLists.txt'
-        buildDirectory: '${{ runner.workspace }}/build'
+        #cmakeListsOrSettingsJson: CMakeListsTxtAdvanced
+        #cmakeListsTxtPath: '${{ github.workspace }}/CMakeLists.txt'
+        #buildDirectory: '${{ runner.workspace }}/build'
         #cmakeAppendedArgs: '-GNinja '
 
     - name: Build tests
