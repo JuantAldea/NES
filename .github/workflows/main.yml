@@ -14,8 +14,8 @@ jobs:
     - name: Get latest CMake
       uses: lukka/get-cmake@latest
     
-    - name: Install ninja-build tool
-      uses: seanmiddleditch/gha-setup-ninja@v1
+    #- name: Install ninja-build tool
+    #  uses: seanmiddleditch/gha-setup-ninja@v1
     
     - name: Install Qt
       uses: jurplel/install-qt-action@v2.6.2
@@ -26,14 +26,15 @@ jobs:
         cmakeListsOrSettingsJson: CMakeListsTxtAdvanced
         cmakeListsTxtPath: '${{ github.workspace }}/CMakeLists.txt'
         buildDirectory: '${{ runner.workspace }}/build'
-        cmakeAppendedArgs: '-GNinja '
+        #cmakeAppendedArgs: '-GNinja '
 
     - name: Build tests
       working-directory: ${{ runner.workspace }}/build
-      run: ninja tests
+      run: cmake --build .
     
     - name: Run tests
       working-directory: ${{ runner.workspace }}/build
-      run: ninja test
+      #run: ninja test
+      run: make test
       
     
