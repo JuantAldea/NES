@@ -21,7 +21,7 @@ jobs:
       uses: jurplel/install-qt-action@v2.6.2
     
     - name: run-cmake
-      uses: lukka/run-cmake@10.8
+      uses: lukka/run-cmake@v10.8
       with:
         cmakeListsOrSettingsJson: CMakeListsTxtAdvanced
         cmakeListsTxtPath: '${{ github.workspace }}/CMakeLists.txt'
