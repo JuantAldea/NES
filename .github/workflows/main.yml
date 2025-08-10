@@ -9,6 +9,7 @@ jobs:
     steps:
     - name: Do not update man-db
       run: rm /var/lib/man-db/auto-update
+
     - uses: actions/checkout@v2
       with:
         submodules: 'recursive'
@@ -24,7 +25,7 @@ jobs:
     
     - name: run-cmake
       uses: lukka/run-cmake@v10.8
-      with:
+      #with:
         #cmakeListsOrSettingsJson: CMakeListsTxtAdvanced
         #cmakeListsTxtPath: '${{ github.workspace }}/CMakeLists.txt'
         #buildDirectory: '${{ runner.workspace }}/build'
