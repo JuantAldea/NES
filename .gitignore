@@ -37,3 +37,7 @@ QHexView/
 
 # clangd index
 .cache/
+
+# nestest assets, fetched by tests/test_files/fetch_nestest.sh
+tests/test_files/nestest.nes
+tests/test_files/nestest.log
