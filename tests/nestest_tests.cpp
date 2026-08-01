@@ -20,8 +20,10 @@
 #include <string>
 #include <vector>
 
-#include "cpu.h"
 #include "gtest/gtest.h"
+
+#include "../include/cpu.h"
+
 
 namespace tests
 {

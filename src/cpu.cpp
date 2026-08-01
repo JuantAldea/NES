@@ -1,8 +1,7 @@
-#include "cpu.h"
-
 #include <iostream>
 
-#include "instruction.h"
+#include "../include/cpu.h"
+#include "../include/instruction.h"
 
 uint8_t low_byte(const uint16_t twobytes) { return static_cast<uint8_t>(twobytes); }
 

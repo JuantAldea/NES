@@ -4,10 +4,11 @@
 #include <string>
 #include <vector>
 
-#include "bus.h"
 #include "gtest/gtest.h"
-#include "ram.h"
-#include "rom.h"
+
+#include "../include/bus.h"
+#include "../include/ram.h"
+#include "../include/rom.h"
 
 namespace tests
 {

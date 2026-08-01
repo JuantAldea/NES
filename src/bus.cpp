@@ -1,4 +1,4 @@
-#include "bus.h"
+#include "../include/bus.h"
 
 Bus::Bus()
     : cpu{std::bind(&Bus::read, this, std::placeholders::_1),

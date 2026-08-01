@@ -1,4 +1,4 @@
-#include "instruction.h"
+#include "../include/instruction.h"
 
 // clang-format off
 using c = CPU;

@@ -1,6 +1,6 @@
 #include <functional>
 
-#include "bus.h"
+#include "../include/bus.h"
 #include "gtest/gtest.h"
 namespace tests
 {

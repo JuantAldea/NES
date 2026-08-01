@@ -1,8 +1,7 @@
-#include "ppu.h"
-
 #include <cstring>
 
-#include "bus.h"
+#include "../include/ppu.h"
+#include "../include/bus.h"
 /*
 1uint8_t& PPU::get_register(const RegisterMMap reg)
 {
@@ -104,15 +103,17 @@ void PPU::process_visible_scanline()
     if (cycle == 0) {
         //idle
         return;
-    } else if (1 <= cycle && cycle <= 256) {
+    }
+
+    if (1 <= cycle && cycle <= 256) {
         // - Output pixel based on VRAM
         // - Prefetch next tiles
         // - Sprite evaluation for next scanline
     } else if (257 <= cycle && cycle <= 340) {
         //prefetch tile data for next line’s first two tiles
     }
-    return;
 }
+
 void PPU::request_OAM_DMA()
 {
     remaining_dma_cycles = 513 + (total_cycles + 1) % 2;

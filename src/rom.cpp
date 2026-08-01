@@ -1,7 +1,7 @@
-#include "rom.h"
-
 #include <fstream>
 #include <iostream>
+
+#include "../include/rom.h"
 
 namespace
 {
@@ -23,7 +23,7 @@ bool ROM::load(const std::string& path)
 
     std::ifstream file(path, std::ios::binary | std::ios::ate);
     if (!file) {
-        std::cerr << "ROM: could not open '" << path << "'" << std::endl;
+        std::cerr << "ROM: could not open '" << path << "'\n";
         return false;
     }
 
@@ -31,18 +31,18 @@ bool ROM::load(const std::string& path)
     file.seekg(0, std::ios::beg);
 
     if (size < static_cast<std::streamsize>(INES_HEADER_SIZE)) {
-        std::cerr << "ROM: file too small to contain an iNES header" << std::endl;
+        std::cerr << "ROM: file too small to contain an iNES header\n";
         return false;
     }
 
     std::vector<uint8_t> data(static_cast<size_t>(size));
     if (!file.read(reinterpret_cast<char*>(data.data()), size)) {
-        std::cerr << "ROM: short read while loading '" << path << "'" << std::endl;
+        std::cerr << "ROM: short read while loading '" << path << "'\n";
         return false;
     }
 
     if (data[0] != INES_MAGIC[0] || data[1] != INES_MAGIC[1] || data[2] != INES_MAGIC[2] || data[3] != INES_MAGIC[3]) {
-        std::cerr << "ROM: missing iNES magic number" << std::endl;
+        std::cerr << "ROM: missing iNES magic number\n";
         return false;
     }
 
@@ -57,13 +57,12 @@ bool ROM::load(const std::string& path)
     const uint8_t parsed_mapper_id = (flags7 & 0xF0) | (flags6 >> 4);
 
     if (parsed_mapper_id != 0) {
-        std::cerr << "ROM: mapper " << static_cast<int>(parsed_mapper_id) << " is not supported (only NROM/mapper 0)"
-                  << std::endl;
+        std::cerr << "ROM: mapper " << static_cast<int>(parsed_mapper_id) << " is not supported (only NROM/mapper 0)\n";
         return false;
     }
 
     if (prg_rom_banks == 0) {
-        std::cerr << "ROM: header advertises zero PRG-ROM banks" << std::endl;
+        std::cerr << "ROM: header advertises zero PRG-ROM banks\n";
         return false;
     }
 
@@ -76,7 +75,7 @@ bool ROM::load(const std::string& path)
     const size_t chr_size = chr_rom_banks * CHR_ROM_BANK_SIZE;
 
     if (data.size() < offset + prg_size + chr_size) {
-        std::cerr << "ROM: file is smaller than advertised by its header (truncated)" << std::endl;
+        std::cerr << "ROM: file is smaller than advertised by its header (truncated)\n";
         return false;
     }
 

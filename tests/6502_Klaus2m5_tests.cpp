@@ -1,7 +1,7 @@
 #include <fstream>
 #include <functional>
 
-#include "cpu.h"
+#include "../include/cpu.h"
 #include "gtest/gtest.h"
 namespace tests
 {
