@@ -25,11 +25,23 @@ uint16_t klaus2m5_test(Klaus2m5Suite suite)
 
     CPU cpu(read, write);
 
-    std::ifstream file(suite.path, std::ios::binary | std::ios::ate);
+    const std::string path = std::string(NES_TEST_FILES_DIR) + "/" + suite.path;
+    std::ifstream file(path, std::ios::binary | std::ios::ate);
+
+    // Without this check a missing fixture leaves memory zeroed, the CPU executes
+    // BRK at $0000, and the suite reports a misleading "TRAP 0" instead of a
+    // missing-file error.
+    if (!file) {
+        ADD_FAILURE() << "could not open test fixture: " << path;
+        return 0;
+    }
 
     std::streamsize size = file.tellg();
     file.seekg(0, std::ios::beg);
-    file.read(reinterpret_cast<char*>(ram.memory.data()), size);
+    if (!file.read(reinterpret_cast<char*>(ram.memory.data()), size)) {
+        ADD_FAILURE() << "short read on test fixture: " << path;
+        return 0;
+    }
     cpu.reset();
     // These test images don't follow the $FFFC/$FFFD reset-vector convention;
     // per the suite's documentation, execution is expected to start at $0400.
@@ -65,13 +77,13 @@ uint16_t klaus2m5_test(Klaus2m5Suite suite)
 
 GTEST_TEST(testCPU, 6502_Klaus2m5_funtional_test)
 {
-    Klaus2m5Suite suite{0x0000, 0x336d, "test_files/6502_functional_test.bin"};
+    Klaus2m5Suite suite{0x0000, 0x336d, "6502_functional_test.bin"};
     EXPECT_EQ(suite.target_trap, klaus2m5_test(suite));
 }
 
 GTEST_TEST(testCPU, 6502_Klaus2m5_interrupt_test)
 {
-    Klaus2m5Suite suite{0xbffc, 0x06f5, "test_files/6502_interrupt_test.bin"};
+    Klaus2m5Suite suite{0xbffc, 0x06f5, "6502_interrupt_test.bin"};
     EXPECT_EQ(suite.target_trap, klaus2m5_test(suite));
 }
 
