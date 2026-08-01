@@ -31,3 +31,9 @@ build/
 *.exe
 *.out
 *.app
+
+# Fetched dependency (FetchContent SOURCE_DIR)
+QHexView/
+
+# clangd index
+.cache/

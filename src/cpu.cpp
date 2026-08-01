@@ -75,9 +75,9 @@ bool CPU::clock(bool trace)
 void CPU::reset()
 {
     registers = {0};
-    registers.PC = 0x400;
     registers.SP = 0xff;
     registers.P = 0x34;  // U, B & I << WHY B is set on reset actually it does not exist?
+    registers.PC = static_cast<uint16_t>(read(0xFFFC)) | (static_cast<uint16_t>(read(0xFFFD)) << 8);
     current_op_code = read(registers.PC);
 
     signal_update();

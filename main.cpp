@@ -6,34 +6,21 @@
 #if 1
 int main(int argc, char** argv)
 {
-    Bus console;
-    std::ifstream file(argv[1], std::ios::binary | std::ios::ate);
-    std::streamsize size = file.tellg();
-    file.seekg(0, std::ios::beg);
-    file.read(reinterpret_cast<char*>(console.ram.memory.data()), size);
-    console.cpu.reset();
-
-    uint16_t feedback_register = 0;  //0xbffc;
-
-    if (feedback_register) {
-        console.write(feedback_register, 0x0);
+    if (argc < 2) {
+        std::cerr << "usage: " << argv[0] << " <rom.nes>" << std::endl;
+        return 1;
     }
+
+    Bus console;
+    if (!console.load_cartridge(argv[1])) {
+        std::cerr << "Failed to load cartridge: " << argv[1] << std::endl;
+        return 1;
+    }
+    console.cpu.reset();
 
     while (true) {
         auto previous_pc = console.cpu.registers.PC;
         bool executed = console.cpu.clock(false);
-        if (feedback_register) {
-            uint8_t feedback_reg = console.cpu.read(feedback_register);
-            if (feedback_reg & 0x2) {
-                console.write(feedback_register, feedback_reg & ~0x2);
-                console.cpu.raise_NMI();
-                continue;
-            } else if (feedback_reg & 0x1) {
-                console.write(feedback_register, feedback_reg & ~0x1);
-                console.cpu.raise_IRQ();
-                continue;
-            }
-        }
         if (executed && previous_pc == console.cpu.registers.PC) {
             std::cerr << "TRAP " << std::hex << previous_pc << std::endl;
             return previous_pc;

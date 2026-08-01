@@ -4,6 +4,7 @@
 #include "device.h"
 #include "ppu.h"
 #include "ram.h"
+#include "rom.h"
 
 class Bus
 {
@@ -12,6 +13,7 @@ public:
     void write(const uint16_t addr, const uint8_t data);
     void write_ram(const uint16_t start_addr, const size_t n_bytes, const uint8_t* bytes);
     uint8_t read(const uint16_t addr);
+    bool load_cartridge(const std::string& path);
     uint64_t total_cycles = 0;
 
     void clock();
@@ -22,6 +24,7 @@ public:
     APU apu;
     PPU ppu;
     RAM ram;
+    ROM rom;
 
 protected:
     const Device& get_device_from_addr(const uint16_t addr) const;

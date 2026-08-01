@@ -31,6 +31,9 @@ uint16_t klaus2m5_test(Klaus2m5Suite suite)
     file.seekg(0, std::ios::beg);
     file.read(reinterpret_cast<char*>(ram.memory.data()), size);
     cpu.reset();
+    // These test images don't follow the $FFFC/$FFFD reset-vector convention;
+    // per the suite's documentation, execution is expected to start at $0400.
+    cpu.registers.PC = 0x400;
 
     if (suite.feedback_register) {
         cpu.write(suite.feedback_register, 0x0);

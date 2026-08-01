@@ -5,9 +5,15 @@ Bus::Bus()
           std::bind(&Bus::write, this, std::placeholders::_1, std::placeholders::_2)},
       apu{this},
       ppu{this},
-      ram{this}
+      ram{this},
+      rom{this}
 {
     cpu.reset();
+}
+
+bool Bus::load_cartridge(const std::string& path)
+{
+    return rom.load(path);
 }
 
 Device& Bus::get_device_from_addr(const uint16_t addr)
@@ -26,6 +32,9 @@ Device& Bus::get_device_from_addr(const uint16_t addr)
         //expansion rom;
     } else if (addr >= 0x6000 && addr < 0x8000) {
         //sram;
+    } else if (addr >= 0x8000) {
+        // std::cout << "CARTRIDGE " << std::hex << addr << "\n";
+        return rom;
     }
 
     // std::cout << "DEFAULT RAM\n";
@@ -69,6 +78,8 @@ uint8_t Bus::read(const uint16_t addr)
         //expansion rom;
     } else if (addr >= 0x6000 && addr < 0x8000) {
         //sram;
+    } else if (addr >= 0x8000) {
+        return rom.read(addr);
     }
 
     return 0;

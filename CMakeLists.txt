@@ -66,6 +66,7 @@ target_include_directories(libPPU
 
 add_library(libBus
     src/bus.cpp
+    src/rom.cpp
 )
 
 target_include_directories(libBus
