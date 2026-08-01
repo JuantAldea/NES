@@ -1,0 +1,1166 @@
+// Cycle-accuracy and undocumented-opcode tests for the 6502 core.
+//
+// Three independent layers, deliberately not sharing a source of truth with
+// src/:
+//
+//  1. SingleStepTests 65x02 vectors (an external oracle: 10,000 randomized
+//     cases per opcode, generated from real hardware behaviour). This is what
+//     validates the illegal opcodes. Asserting that "SLO does ASL then ORA"
+//     against an implementation written as ASL-then-ORA would prove nothing;
+//     these vectors were produced without reference to this codebase.
+//
+//  2. A cycle-count table transcribed by hand from a published 6502 reference
+//     (see kReferenceTimings). Deliberately NOT derived from
+//     src/instruction.cpp, which would test that file against itself.
+//
+//  3. Targeted regression tests pinning the specific hazards this core got
+//     wrong: the page-cross penalty applied to stores, branches executing
+//     twice, and the (zp),Y pointer wrap.
+//
+// Layer 1 needs ~360 MB of fetched vectors and skips (loudly) without them; see
+// tests/test_files/fetch_single_step_tests.sh. Layers 2 and 3 always run.
+
+#include <gtest/gtest.h>
+
+#include <array>
+#include <cstdint>
+#include <fstream>
+#include <sstream>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include "../include/cpu.h"
+#include "../include/instruction.h"
+
+namespace tests
+{
+namespace
+{
+
+// ---------------------------------------------------------------------------
+// A flat 64 KB address space. No mirroring, no mapped registers: the vectors
+// assume a bare 6502 with RAM everywhere, and so does the timing table.
+// ---------------------------------------------------------------------------
+
+struct FlatMemory {
+    std::array<uint8_t, 64 * 1024> memory{};
+
+    uint8_t read(const uint16_t addr) const { return memory[addr]; }
+    void write(const uint16_t addr, const uint8_t data) { memory[addr] = data; }
+};
+
+CPU make_cpu(FlatMemory& mem)
+{
+    return CPU([&mem](uint16_t addr) { return mem.read(addr); },
+               [&mem](uint16_t addr, uint8_t data) { mem.write(addr, data); });
+}
+
+// Runs exactly one instruction and returns how many clock() calls it took.
+// clock() returns true on the final cycle of an instruction, so the number of
+// calls up to and including that one is the instruction's cycle count.
+size_t run_one_instruction(CPU& cpu)
+{
+    size_t cycles = 0;
+    bool complete = false;
+
+    while (!complete) {
+        complete = cpu.clock(false);
+        ++cycles;
+
+        // A wrong cycle count is a test failure, not a reason to hang the
+        // suite. No 6502 instruction exceeds 8 cycles (7 plus the oops cycle).
+        if (cycles > 64) {
+            throw std::runtime_error("instruction did not complete within 64 cycles");
+        }
+    }
+
+    return cycles;
+}
+
+// ---------------------------------------------------------------------------
+// Layer 2: cycle counts transcribed from a published reference.
+//
+// Source: the opcode timing tables at
+// https://www.masswerk.at/6502/6502_instruction_set.html, cross-checked against
+// http://www.oxyron.de/html/opcodes02.html for the undocumented opcodes. Typed
+// in by hand from those tables. This must NOT be regenerated from
+// src/instruction.cpp - the entire point is that it disagrees loudly if that
+// table is wrong.
+//
+// `base` is the cost with no page cross. `oops` marks the instructions that
+// spend one extra cycle when indexing crosses a page boundary: the read forms
+// only. Stores and read-modify-writes always perform the address fix-up, so
+// their published cost already includes it and never varies - STA abs,X is 5
+// cycles whether or not it crosses a page, ASL abs,X is always 7.
+// ---------------------------------------------------------------------------
+
+struct ReferenceTiming {
+    uint8_t opcode;
+    const char* mnemonic;
+    uint8_t base;
+    bool oops;
+};
+
+// clang-format off: the table is laid out in aligned columns on purpose.
+constexpr ReferenceTiming kReferenceTimings[] = {
+    // Loads: read forms pay the oops cycle.
+    {0xA9, "LDA #", 2, false},   {0xA5, "LDA zp", 3, false},    {0xB5, "LDA zp,X", 4, false},
+    {0xAD, "LDA abs", 4, false}, {0xBD, "LDA abs,X", 4, true},  {0xB9, "LDA abs,Y", 4, true},
+    {0xA1, "LDA (zp,X)", 6, false}, {0xB1, "LDA (zp),Y", 5, true},
+    {0xA2, "LDX #", 2, false},   {0xAE, "LDX abs", 4, false},   {0xBE, "LDX abs,Y", 4, true},
+    {0xA0, "LDY #", 2, false},   {0xAC, "LDY abs", 4, false},   {0xBC, "LDY abs,X", 4, true},
+
+    // Stores: fixed cost, never an oops cycle.
+    {0x85, "STA zp", 3, false},  {0x95, "STA zp,X", 4, false},  {0x8D, "STA abs", 4, false},
+    {0x9D, "STA abs,X", 5, false}, {0x99, "STA abs,Y", 5, false}, {0x81, "STA (zp,X)", 6, false},
+    {0x91, "STA (zp),Y", 6, false},
+    {0x86, "STX zp", 3, false},  {0x8E, "STX abs", 4, false},   {0x84, "STY zp", 3, false},
+
+    // Read-modify-write: fixed cost, never an oops cycle.
+    {0x0A, "ASL A", 2, false},   {0x06, "ASL zp", 5, false},    {0x16, "ASL zp,X", 6, false},
+    {0x0E, "ASL abs", 6, false}, {0x1E, "ASL abs,X", 7, false},
+    {0x2A, "ROL A", 2, false},   {0x3E, "ROL abs,X", 7, false},
+    {0x4A, "LSR A", 2, false},   {0x5E, "LSR abs,X", 7, false},
+    {0x6A, "ROR A", 2, false},   {0x7E, "ROR abs,X", 7, false},
+    {0xE6, "INC zp", 5, false},  {0xFE, "INC abs,X", 7, false},
+    {0xC6, "DEC zp", 5, false},  {0xDE, "DEC abs,X", 7, false},
+
+    // ALU read forms.
+    {0x69, "ADC #", 2, false},   {0x7D, "ADC abs,X", 4, true},  {0x79, "ADC abs,Y", 4, true},
+    {0x71, "ADC (zp),Y", 5, true},
+    {0xE9, "SBC #", 2, false},   {0xFD, "SBC abs,X", 4, true},  {0xF1, "SBC (zp),Y", 5, true},
+    {0xC9, "CMP #", 2, false},   {0xDD, "CMP abs,X", 4, true},  {0xD1, "CMP (zp),Y", 5, true},
+    {0x29, "AND #", 2, false},   {0x3D, "AND abs,X", 4, true},
+    {0x09, "ORA #", 2, false},   {0x1D, "ORA abs,X", 4, true},
+    {0x49, "EOR #", 2, false},   {0x5D, "EOR abs,X", 4, true},
+    {0x24, "BIT zp", 3, false},  {0x2C, "BIT abs", 4, false},
+    {0xE0, "CPX #", 2, false},   {0xC0, "CPY #", 2, false},
+
+    // Implied / transfers.
+    {0xEA, "NOP", 2, false},     {0xAA, "TAX", 2, false},       {0xA8, "TAY", 2, false},
+    {0x8A, "TXA", 2, false},     {0x98, "TYA", 2, false},       {0xBA, "TSX", 2, false},
+    {0x9A, "TXS", 2, false},     {0xE8, "INX", 2, false},       {0xC8, "INY", 2, false},
+    {0xCA, "DEX", 2, false},     {0x88, "DEY", 2, false},       {0x18, "CLC", 2, false},
+    {0x38, "SEC", 2, false},     {0x58, "CLI", 2, false},       {0x78, "SEI", 2, false},
+    {0xB8, "CLV", 2, false},     {0xD8, "CLD", 2, false},       {0xF8, "SED", 2, false},
+
+    // Stack and control flow.
+    {0x48, "PHA", 3, false},     {0x08, "PHP", 3, false},       {0x68, "PLA", 4, false},
+    {0x28, "PLP", 4, false},     {0x40, "RTI", 6, false},       {0x60, "RTS", 6, false},
+    {0x20, "JSR", 6, false},     {0x4C, "JMP abs", 3, false},   {0x6C, "JMP (ind)", 5, false},
+    {0x00, "BRK", 7, false},
+
+    // Undocumented, read forms: pay the oops cycle.
+    {0xA3, "LAX (zp,X)", 6, false}, {0xA7, "LAX zp", 3, false}, {0xAF, "LAX abs", 4, false},
+    {0xB3, "LAX (zp),Y", 5, true},  {0xB7, "LAX zp,Y", 4, false}, {0xBF, "LAX abs,Y", 4, true},
+
+    // Undocumented stores: fixed cost.
+    {0x83, "SAX (zp,X)", 6, false}, {0x87, "SAX zp", 3, false}, {0x8F, "SAX abs", 4, false},
+    {0x97, "SAX zp,Y", 4, false},
+
+    // Undocumented read-modify-writes: fixed cost, never an oops cycle. These
+    // are the rows most at risk of being wrongly given the penalty.
+    {0x03, "SLO (zp,X)", 8, false}, {0x07, "SLO zp", 5, false}, {0x0F, "SLO abs", 6, false},
+    {0x13, "SLO (zp),Y", 8, false}, {0x17, "SLO zp,X", 6, false}, {0x1B, "SLO abs,Y", 7, false},
+    {0x1F, "SLO abs,X", 7, false},
+    {0x23, "RLA (zp,X)", 8, false}, {0x27, "RLA zp", 5, false}, {0x2F, "RLA abs", 6, false},
+    {0x33, "RLA (zp),Y", 8, false}, {0x37, "RLA zp,X", 6, false}, {0x3B, "RLA abs,Y", 7, false},
+    {0x3F, "RLA abs,X", 7, false},
+    {0x43, "SRE (zp,X)", 8, false}, {0x47, "SRE zp", 5, false}, {0x4F, "SRE abs", 6, false},
+    {0x53, "SRE (zp),Y", 8, false}, {0x57, "SRE zp,X", 6, false}, {0x5B, "SRE abs,Y", 7, false},
+    {0x5F, "SRE abs,X", 7, false},
+    {0x63, "RRA (zp,X)", 8, false}, {0x67, "RRA zp", 5, false}, {0x6F, "RRA abs", 6, false},
+    {0x73, "RRA (zp),Y", 8, false}, {0x77, "RRA zp,X", 6, false}, {0x7B, "RRA abs,Y", 7, false},
+    {0x7F, "RRA abs,X", 7, false},
+    {0xC3, "DCP (zp,X)", 8, false}, {0xC7, "DCP zp", 5, false}, {0xCF, "DCP abs", 6, false},
+    {0xD3, "DCP (zp),Y", 8, false}, {0xD7, "DCP zp,X", 6, false}, {0xDB, "DCP abs,Y", 7, false},
+    {0xDF, "DCP abs,X", 7, false},
+    {0xE3, "ISC (zp,X)", 8, false}, {0xE7, "ISC zp", 5, false}, {0xEF, "ISC abs", 6, false},
+    {0xF3, "ISC (zp),Y", 8, false}, {0xF7, "ISC zp,X", 6, false}, {0xFB, "ISC abs,Y", 7, false},
+    {0xFF, "ISC abs,X", 7, false},
+
+    // Undocumented immediate forms.
+    {0x0B, "ANC #", 2, false},   {0x2B, "ANC #", 2, false},     {0x4B, "ALR #", 2, false},
+
+    // Undocumented NOPs, including the abs,X reads that do pay the oops cycle.
+    {0x1A, "NOP impl", 2, false}, {0x80, "NOP #", 2, false},    {0x04, "NOP zp", 3, false},
+    {0x14, "NOP zp,X", 4, false}, {0x0C, "NOP abs", 4, false},  {0x1C, "NOP abs,X", 4, true},
+    {0x3C, "NOP abs,X", 4, true}, {0x5C, "NOP abs,X", 4, true}, {0x7C, "NOP abs,X", 4, true},
+    {0xDC, "NOP abs,X", 4, true}, {0xFC, "NOP abs,X", 4, true},
+};
+// clang-format on
+
+// ---------------------------------------------------------------------------
+// Layer 1: a minimal parser for the SingleStepTests JSON schema.
+//
+// Purpose-built rather than generic, but it validates as it goes: anything that
+// does not match the expected shape throws, so a truncated or malformed
+// download surfaces as a parse error instead of a silently-skipped assertion.
+// ---------------------------------------------------------------------------
+
+struct CpuState {
+    uint16_t pc = 0;
+    uint8_t s = 0;
+    uint8_t a = 0;
+    uint8_t x = 0;
+    uint8_t y = 0;
+    uint8_t p = 0;
+    std::vector<std::pair<uint16_t, uint8_t>> ram;
+};
+
+struct VectorCase {
+    std::string name;
+    CpuState initial;
+    CpuState expected;
+    size_t cycle_count = 0;
+};
+
+class JsonParser
+{
+public:
+    explicit JsonParser(std::string text) : text_{std::move(text)} {}
+
+    std::vector<VectorCase> parse_cases()
+    {
+        std::vector<VectorCase> cases;
+
+        skip_ws();
+        expect('[');
+        skip_ws();
+
+        if (peek() == ']') {
+            advance();
+            return cases;
+        }
+
+        while (true) {
+            cases.push_back(parse_case());
+            skip_ws();
+
+            if (peek() == ',') {
+                advance();
+                skip_ws();
+                continue;
+            }
+
+            expect(']');
+            break;
+        }
+
+        return cases;
+    }
+
+private:
+    [[noreturn]] void fail(const std::string& what) const
+    {
+        std::ostringstream oss;
+        oss << "malformed vector JSON at byte " << pos_ << ": " << what;
+        throw std::runtime_error(oss.str());
+    }
+
+    char peek() const
+    {
+        if (pos_ >= text_.size()) {
+            throw std::runtime_error("unexpected end of vector JSON");
+        }
+        return text_[pos_];
+    }
+
+    void advance() { ++pos_; }
+
+    void skip_ws()
+    {
+        while (pos_ < text_.size() &&
+               (text_[pos_] == ' ' || text_[pos_] == '\n' || text_[pos_] == '\r' || text_[pos_] == '\t')) {
+            ++pos_;
+        }
+    }
+
+    void expect(const char c)
+    {
+        if (pos_ >= text_.size() || text_[pos_] != c) {
+            fail(std::string("expected '") + c + "'");
+        }
+        ++pos_;
+    }
+
+    uint32_t parse_number()
+    {
+        skip_ws();
+
+        const size_t start = pos_;
+        while (pos_ < text_.size() && (text_[pos_] == '-' || (text_[pos_] >= '0' && text_[pos_] <= '9'))) {
+            ++pos_;
+        }
+
+        if (pos_ == start) {
+            fail("expected a number");
+        }
+
+        return static_cast<uint32_t>(std::stol(text_.substr(start, pos_ - start)));
+    }
+
+    std::string parse_string()
+    {
+        skip_ws();
+        expect('"');
+
+        const size_t start = pos_;
+        while (pos_ < text_.size() && text_[pos_] != '"') {
+            ++pos_;
+        }
+
+        if (pos_ >= text_.size()) {
+            fail("unterminated string");
+        }
+
+        std::string value = text_.substr(start, pos_ - start);
+        advance();
+        return value;
+    }
+
+    // [ addr, value ] pairs, or [ addr, value, "read"/"write" ] for cycles.
+    // Only the count matters for cycles, so the third element is skipped.
+    std::vector<std::pair<uint16_t, uint8_t>> parse_ram()
+    {
+        std::vector<std::pair<uint16_t, uint8_t>> ram;
+
+        skip_ws();
+        expect('[');
+        skip_ws();
+
+        if (peek() == ']') {
+            advance();
+            return ram;
+        }
+
+        while (true) {
+            skip_ws();
+            expect('[');
+            const uint32_t addr = parse_number();
+            skip_ws();
+            expect(',');
+            const uint32_t value = parse_number();
+            skip_ws();
+            expect(']');
+
+            ram.emplace_back(static_cast<uint16_t>(addr), static_cast<uint8_t>(value));
+
+            skip_ws();
+            if (peek() == ',') {
+                advance();
+                continue;
+            }
+
+            expect(']');
+            break;
+        }
+
+        return ram;
+    }
+
+    size_t parse_cycle_count()
+    {
+        size_t count = 0;
+
+        skip_ws();
+        expect('[');
+        skip_ws();
+
+        if (peek() == ']') {
+            advance();
+            return count;
+        }
+
+        while (true) {
+            skip_ws();
+            expect('[');
+            parse_number();
+            skip_ws();
+            expect(',');
+            parse_number();
+            skip_ws();
+            expect(',');
+            parse_string();
+            skip_ws();
+            expect(']');
+            ++count;
+
+            skip_ws();
+            if (peek() == ',') {
+                advance();
+                continue;
+            }
+
+            expect(']');
+            break;
+        }
+
+        return count;
+    }
+
+    CpuState parse_state()
+    {
+        CpuState state;
+        bool seen_pc = false;
+        bool seen_ram = false;
+
+        skip_ws();
+        expect('{');
+        skip_ws();
+
+        while (true) {
+            const std::string key = parse_string();
+            skip_ws();
+            expect(':');
+
+            if (key == "pc") {
+                state.pc = static_cast<uint16_t>(parse_number());
+                seen_pc = true;
+            } else if (key == "s") {
+                state.s = static_cast<uint8_t>(parse_number());
+            } else if (key == "a") {
+                state.a = static_cast<uint8_t>(parse_number());
+            } else if (key == "x") {
+                state.x = static_cast<uint8_t>(parse_number());
+            } else if (key == "y") {
+                state.y = static_cast<uint8_t>(parse_number());
+            } else if (key == "p") {
+                state.p = static_cast<uint8_t>(parse_number());
+            } else if (key == "ram") {
+                state.ram = parse_ram();
+                seen_ram = true;
+            } else {
+                fail("unknown key in CPU state: " + key);
+            }
+
+            skip_ws();
+            if (peek() == ',') {
+                advance();
+                skip_ws();
+                continue;
+            }
+
+            expect('}');
+            break;
+        }
+
+        if (!seen_pc || !seen_ram) {
+            fail("CPU state is missing pc or ram");
+        }
+
+        return state;
+    }
+
+    VectorCase parse_case()
+    {
+        VectorCase test_case;
+        bool seen_cycles = false;
+
+        skip_ws();
+        expect('{');
+        skip_ws();
+
+        while (true) {
+            const std::string key = parse_string();
+            skip_ws();
+            expect(':');
+
+            if (key == "name") {
+                test_case.name = parse_string();
+            } else if (key == "initial") {
+                test_case.initial = parse_state();
+            } else if (key == "final") {
+                test_case.expected = parse_state();
+            } else if (key == "cycles") {
+                test_case.cycle_count = parse_cycle_count();
+                seen_cycles = true;
+            } else {
+                fail("unknown key in test case: " + key);
+            }
+
+            skip_ws();
+            if (peek() == ',') {
+                advance();
+                skip_ws();
+                continue;
+            }
+
+            expect('}');
+            break;
+        }
+
+        if (!seen_cycles) {
+            fail("test case is missing its cycles array");
+        }
+
+        return test_case;
+    }
+
+    std::string text_;
+    size_t pos_ = 0;
+};
+
+std::string vectors_path(const std::string& opcode_hex)
+{
+    return std::string(NES_TEST_FILES_DIR) + "/single_step_tests/" + opcode_hex + ".json";
+}
+
+}  // namespace
+
+// ---------------------------------------------------------------------------
+// Layer 1: run every SingleStepTests case for one opcode.
+// ---------------------------------------------------------------------------
+
+class SingleStepVectors : public ::testing::TestWithParam<const char*>
+{
+};
+
+TEST_P(SingleStepVectors, matches_hardware_vectors)
+{
+    const std::string opcode_hex = GetParam();
+    const std::string path = vectors_path(opcode_hex);
+
+    std::ifstream file(path, std::ios::binary);
+    if (!file.is_open()) {
+        GTEST_SKIP() << "vectors not present: " << path << "\n"
+                     << "run tests/test_files/fetch_single_step_tests.sh to enable this oracle";
+    }
+
+    std::string text((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    ASSERT_FALSE(text.empty()) << "empty vector file: " << path;
+
+    const std::vector<VectorCase> cases = JsonParser(text).parse_cases();
+    ASSERT_FALSE(cases.empty()) << "no test cases parsed from " << path;
+
+    FlatMemory mem;
+    CPU cpu = make_cpu(mem);
+
+    size_t failures = 0;
+    constexpr size_t kMaxReported = 5;
+
+    for (const VectorCase& test_case : cases) {
+        mem.memory.fill(0);
+        for (const auto& [addr, value] : test_case.initial.ram) {
+            mem.memory[addr] = value;
+        }
+
+        cpu.registers.PC = test_case.initial.pc;
+        cpu.registers.SP = test_case.initial.s;
+        cpu.registers.A = test_case.initial.a;
+        cpu.registers.X = test_case.initial.x;
+        cpu.registers.Y = test_case.initial.y;
+        cpu.registers.P = test_case.initial.p;
+        cpu.cycles_left = 0;
+
+        const size_t cycles = run_one_instruction(cpu);
+
+        // Collect every mismatch for this case, then report the case once.
+        std::ostringstream problems;
+
+        if (cycles != test_case.cycle_count) {
+            problems << "\n  cycles:   expected " << test_case.cycle_count << ", got " << cycles;
+        }
+        if (cpu.registers.PC != test_case.expected.pc) {
+            problems << "\n  PC:       expected " << std::hex << test_case.expected.pc << ", got " << cpu.registers.PC
+                     << std::dec;
+        }
+        if (cpu.registers.SP != test_case.expected.s) {
+            problems << "\n  SP:       expected " << std::hex << static_cast<unsigned>(test_case.expected.s) << ", got "
+                     << static_cast<unsigned>(cpu.registers.SP) << std::dec;
+        }
+        if (cpu.registers.A != test_case.expected.a) {
+            problems << "\n  A:        expected " << std::hex << static_cast<unsigned>(test_case.expected.a) << ", got "
+                     << static_cast<unsigned>(cpu.registers.A) << std::dec;
+        }
+        if (cpu.registers.X != test_case.expected.x) {
+            problems << "\n  X:        expected " << std::hex << static_cast<unsigned>(test_case.expected.x) << ", got "
+                     << static_cast<unsigned>(cpu.registers.X) << std::dec;
+        }
+        if (cpu.registers.Y != test_case.expected.y) {
+            problems << "\n  Y:        expected " << std::hex << static_cast<unsigned>(test_case.expected.y) << ", got "
+                     << static_cast<unsigned>(cpu.registers.Y) << std::dec;
+        }
+        if (cpu.registers.P != test_case.expected.p) {
+            problems << "\n  P:        expected " << std::hex << static_cast<unsigned>(test_case.expected.p) << ", got "
+                     << static_cast<unsigned>(cpu.registers.P) << std::dec;
+        }
+
+        for (const auto& [addr, value] : test_case.expected.ram) {
+            if (mem.memory[addr] != value) {
+                problems << "\n  mem[" << std::hex << addr << "]: expected " << static_cast<unsigned>(value) << ", got "
+                         << static_cast<unsigned>(mem.memory[addr]) << std::dec;
+            }
+        }
+
+        const std::string detail = problems.str();
+        if (!detail.empty()) {
+            ++failures;
+            if (failures <= kMaxReported) {
+                ADD_FAILURE() << "opcode $" << opcode_hex << " case \"" << test_case.name << "\"" << detail;
+            }
+        }
+    }
+
+    EXPECT_EQ(failures, 0u) << failures << " of " << cases.size() << " vectors failed for opcode $" << opcode_hex
+                            << (failures > kMaxReported ? " (only the first 5 shown)" : "");
+}
+
+// Every opcode implemented or restructured by this core that has vectors
+// fetched for it. Kept in sync with tests/test_files/fetch_single_step_tests.sh.
+INSTANTIATE_TEST_SUITE_P(IllegalOpcodes,
+                         SingleStepVectors,
+                         ::testing::Values("03",
+                                           "07",
+                                           "0f",
+                                           "13",
+                                           "17",
+                                           "1b",
+                                           "1f",  // SLO
+                                           "23",
+                                           "27",
+                                           "2f",
+                                           "33",
+                                           "37",
+                                           "3b",
+                                           "3f",  // RLA
+                                           "43",
+                                           "47",
+                                           "4f",
+                                           "53",
+                                           "57",
+                                           "5b",
+                                           "5f",  // SRE
+                                           "63",
+                                           "67",
+                                           "6f",
+                                           "73",
+                                           "77",
+                                           "7b",
+                                           "7f",  // RRA
+                                           "83",
+                                           "87",
+                                           "8f",
+                                           "97",  // SAX
+                                           "a3",
+                                           "a7",
+                                           "af",
+                                           "b3",
+                                           "b7",
+                                           "bf",  // LAX
+                                           "c3",
+                                           "c7",
+                                           "cf",
+                                           "d3",
+                                           "d7",
+                                           "db",
+                                           "df",  // DCP
+                                           "e3",
+                                           "e7",
+                                           "ef",
+                                           "f3",
+                                           "f7",
+                                           "fb",
+                                           "ff",  // ISC
+                                           "0b",
+                                           "2b",
+                                           "4b"));  // ANC, ALR
+
+INSTANTIATE_TEST_SUITE_P(Branches,
+                         SingleStepVectors,
+                         ::testing::Values("10", "30", "50", "70", "90", "b0", "d0", "f0"));
+
+INSTANTIATE_TEST_SUITE_P(StackAndFlags, SingleStepVectors, ::testing::Values("40", "28", "08", "68", "48"));
+
+INSTANTIATE_TEST_SUITE_P(
+    IndexedAddressing,
+    SingleStepVectors,
+    ::testing::Values("bd", "b9", "b1", "9d", "99", "91", "1e", "3e", "5e", "7e", "de", "fe", "bc", "be"));
+
+INSTANTIATE_TEST_SUITE_P(CoreOperations,
+                         SingleStepVectors,
+                         ::testing::Values("a9", "69", "e9", "c9", "2a", "6a", "4a", "0a"));
+
+// ---------------------------------------------------------------------------
+// Layer 2: cycle counts against the hand-transcribed reference table.
+// ---------------------------------------------------------------------------
+
+namespace
+{
+
+// Lays out `opcode` at $1000 with two operand bytes and runs it, with the
+// operand chosen so the effective address does NOT cross a page.
+size_t measure_without_page_cross(const uint8_t opcode)
+{
+    FlatMemory mem;
+    CPU cpu = make_cpu(mem);
+
+    // Indexing by 1 from $2000 stays inside the page; zero-page pointers are
+    // set up to resolve to $2000 as well.
+    mem.memory[0x1000] = opcode;
+    mem.memory[0x1001] = 0x00;
+    mem.memory[0x1002] = 0x20;
+
+    // Zero-page pointer at $00/$01 -> $2000, for the (zp,X) and (zp),Y forms.
+    mem.memory[0x0000] = 0x00;
+    mem.memory[0x0001] = 0x20;
+
+    cpu.registers.PC = 0x1000;
+    cpu.registers.SP = 0xFD;
+    cpu.registers.A = 0;
+    cpu.registers.X = 0;
+    cpu.registers.Y = 1;
+    cpu.registers.P = 0x24;
+    cpu.cycles_left = 0;
+
+    return run_one_instruction(cpu);
+}
+
+// Runs `opcode` with an absolute base address and an index, returning the cycle
+// count. The index goes in both X and Y so the same helper serves the abs,X and
+// abs,Y forms.
+size_t measure_indexed(const uint8_t opcode, const uint16_t base_address, const uint8_t index)
+{
+    FlatMemory mem;
+    CPU cpu = make_cpu(mem);
+
+    mem.memory[0x1000] = opcode;
+    mem.memory[0x1001] = static_cast<uint8_t>(base_address & 0xFF);
+    mem.memory[0x1002] = static_cast<uint8_t>(base_address >> 8);
+
+    cpu.registers.PC = 0x1000;
+    cpu.registers.SP = 0xFD;
+    cpu.registers.A = 0;
+    cpu.registers.X = index;
+    cpu.registers.Y = index;
+    cpu.registers.P = 0x24;
+    cpu.cycles_left = 0;
+
+    return run_one_instruction(cpu);
+}
+
+// Places a branch at `address` with the given offset and returns its cycle
+// count. Only the carry flag is configurable, which covers BCC/BCS; the other
+// six are exercised against the vectors and by the agreement test below.
+size_t measure_branch(const uint8_t opcode, const bool carry, const uint16_t address, const uint8_t offset)
+{
+    FlatMemory mem;
+    CPU cpu = make_cpu(mem);
+
+    mem.memory[address] = opcode;
+    mem.memory[static_cast<uint16_t>(address + 1)] = offset;
+
+    cpu.registers.PC = address;
+    cpu.registers.SP = 0xFD;
+    cpu.registers.P = 0x24;
+    cpu.set_flag(CPU::FLAGS::C, carry);
+    cpu.cycles_left = 0;
+
+    return run_one_instruction(cpu);
+}
+
+}  // namespace
+
+TEST(CpuCycleCounts, base_cost_matches_published_reference)
+{
+    for (const ReferenceTiming& timing : kReferenceTimings) {
+        // Branches are covered separately: their cost depends on the condition
+        // and the target, so there is no single "base" measurement here.
+        if (InstructionSet::Table[timing.opcode].addr_type == Addressing::relative) {
+            continue;
+        }
+
+        const size_t measured = measure_without_page_cross(timing.opcode);
+
+        EXPECT_EQ(measured, timing.base) << "opcode $" << std::hex << static_cast<unsigned>(timing.opcode) << std::dec
+                                         << " (" << timing.mnemonic << ") took " << measured
+                                         << " cycles with no page cross, reference says "
+                                         << static_cast<unsigned>(timing.base);
+    }
+}
+
+TEST(CpuCycleCounts, page_cross_penalty_applies_only_to_read_forms)
+{
+    for (const ReferenceTiming& timing : kReferenceTimings) {
+        const Addressing mode = InstructionSet::Table[timing.opcode].addr_type;
+
+        const bool is_indexed =
+            mode == Addressing::absolute_X || mode == Addressing::absolute_Y || mode == Addressing::indirect_indexed;
+        if (!is_indexed) {
+            // Anything not indexed cannot cross a page, so the reference must
+            // not be claiming a penalty for it.
+            EXPECT_FALSE(timing.oops) << "reference table marks a non-indexed opcode $" << std::hex
+                                      << static_cast<unsigned>(timing.opcode) << std::dec
+                                      << " as paying the oops cycle";
+            continue;
+        }
+
+        FlatMemory mem;
+        CPU cpu = make_cpu(mem);
+
+        // Base address $20FF indexed by 1 lands at $2100: a page cross.
+        mem.memory[0x1000] = timing.opcode;
+        mem.memory[0x1001] = 0xFF;
+        mem.memory[0x1002] = 0x20;
+
+        // For the (zp),Y forms the operand byte above is the zero-page address
+        // of the pointer, i.e. $FF - so the pointer's low byte lives at $FF and
+        // its high byte wraps round to $00, giving $20FF. Indexed by 1 that is
+        // $2100, the same page cross the absolute forms above see.
+        mem.memory[0x00FF] = 0xFF;
+        mem.memory[0x0000] = 0x20;
+
+        cpu.registers.PC = 0x1000;
+        cpu.registers.SP = 0xFD;
+        cpu.registers.A = 0;
+        cpu.registers.X = 1;
+        cpu.registers.Y = 1;
+        cpu.registers.P = 0x24;
+        cpu.cycles_left = 0;
+
+        const size_t measured = run_one_instruction(cpu);
+        const size_t expected = timing.base + (timing.oops ? 1u : 0u);
+
+        EXPECT_EQ(measured, expected) << "opcode $" << std::hex << static_cast<unsigned>(timing.opcode) << std::dec
+                                      << " (" << timing.mnemonic << ") took " << measured
+                                      << " cycles across a page boundary, reference says " << expected;
+    }
+}
+
+// The specific regression: a store must not pay the read form's penalty.
+TEST(CpuCycleCounts, store_does_not_pay_the_page_cross_penalty)
+{
+    // LDA $C0FF,X with X=1 reads across a page: 4 base + 1 = 5.
+    EXPECT_EQ(measure_indexed(0xBD, 0xC0FF, 1), 5u) << "LDA abs,X across a page should cost 5 cycles";
+
+    // LDA $C000,X with X=1 stays on the page: 4.
+    EXPECT_EQ(measure_indexed(0xBD, 0xC000, 1), 4u) << "LDA abs,X within a page should cost 4 cycles";
+
+    // STA $C0FF,X with X=1 also crosses, but stores have a fixed cost: 5, NOT 6.
+    EXPECT_EQ(measure_indexed(0x9D, 0xC0FF, 1), 5u)
+        << "STA abs,X must cost 5 cycles even across a page boundary - the oops cycle is already "
+           "included in a store's fixed cost";
+
+    // STA $C000,X with X=1: still 5.
+    EXPECT_EQ(measure_indexed(0x9D, 0xC000, 1), 5u) << "STA abs,X should cost 5 cycles regardless of page crossing";
+
+    // ASL $C0FF,X read-modify-write: always 7.
+    EXPECT_EQ(measure_indexed(0x1E, 0xC0FF, 1), 7u) << "ASL abs,X must cost 7 cycles even across a page boundary";
+    EXPECT_EQ(measure_indexed(0x1E, 0xC000, 1), 7u) << "ASL abs,X should cost 7 cycles regardless of page crossing";
+
+    // The undocumented read-modify-writes behave the same way.
+    EXPECT_EQ(measure_indexed(0x1F, 0xC0FF, 1), 7u) << "SLO abs,X must cost 7 cycles even across a page boundary";
+    EXPECT_EQ(measure_indexed(0xFF, 0xC0FF, 1), 7u) << "ISC abs,X must cost 7 cycles even across a page boundary";
+    EXPECT_EQ(measure_indexed(0xDF, 0xC0FF, 1), 7u) << "DCP abs,X must cost 7 cycles even across a page boundary";
+}
+
+// ---------------------------------------------------------------------------
+// Layer 3: branch timing, and the double-execution regression.
+// ---------------------------------------------------------------------------
+
+TEST(CpuBranches, timing_depends_on_taken_and_target_page)
+{
+    // BCS with carry clear: not taken, 2 cycles.
+    EXPECT_EQ(measure_branch(0xB0, /*carry=*/false, 0x1000, 0x10), 2u) << "a branch that is not taken costs 2 cycles";
+
+    // BCS with carry set, target on the same page: 3 cycles.
+    EXPECT_EQ(measure_branch(0xB0, /*carry=*/true, 0x1000, 0x10), 3u)
+        << "a taken branch within the same page costs 3 cycles";
+
+    // BCS at $10F0: PC after the branch is $10F2, +$70 = $1162, a different
+    // page, so 4 cycles.
+    EXPECT_EQ(measure_branch(0xB0, /*carry=*/true, 0x10F0, 0x70), 4u)
+        << "a taken branch onto a different page costs 4 cycles";
+
+    // Backwards across a page boundary is the same: PC after is $1001,
+    // -$10 = $0FF1, a different page.
+    EXPECT_EQ(measure_branch(0xB0, /*carry=*/true, 0x0FFF, 0xF0), 4u)
+        << "a taken backwards branch onto a different page costs 4 cycles";
+}
+
+// The trap this core was structurally exposed to: an operation that extends its
+// own cycle budget pushes cycles_left from 0 back to 1 after it has already
+// run. clock() then reports the instruction complete, but the next clock() sees
+// a non-zero cycles_left, skips fetch/decode, and runs the same instruction a
+// second time. Nothing fails visibly - the CPU just silently executes twice.
+//
+// INC $20 is used as the witness: if the branch instruction were executed
+// twice, the counter would advance by two rather than one.
+TEST(CpuBranches, taken_branch_executes_exactly_once)
+{
+    FlatMemory mem;
+    CPU cpu = make_cpu(mem);
+
+    // $1000: BCS +2   -> jumps over the INC at $1002, landing on the INC at $1004
+    // $1002: INC $20  (must NOT run)
+    // $1004: INC $21  (must run exactly once)
+    mem.memory[0x1000] = 0xB0;  // BCS
+    mem.memory[0x1001] = 0x02;
+    mem.memory[0x1002] = 0xE6;  // INC zp
+    mem.memory[0x1003] = 0x20;
+    mem.memory[0x1004] = 0xE6;  // INC zp
+    mem.memory[0x1005] = 0x21;
+
+    mem.memory[0x0020] = 0;
+    mem.memory[0x0021] = 0;
+
+    cpu.registers.PC = 0x1000;
+    cpu.registers.SP = 0xFD;
+    cpu.registers.P = 0x24;
+    cpu.set_flag(CPU::FLAGS::C, true);
+    cpu.cycles_left = 0;
+
+    const size_t branch_cycles = run_one_instruction(cpu);
+    EXPECT_EQ(branch_cycles, 3u) << "taken branch within a page should take 3 cycles";
+    EXPECT_EQ(cpu.registers.PC, 0x1004) << "the branch should have landed at $1004";
+
+    // Run the instruction the branch landed on.
+    const size_t inc_cycles = run_one_instruction(cpu);
+    EXPECT_EQ(inc_cycles, 5u) << "INC zp should take 5 cycles";
+
+    EXPECT_EQ(mem.memory[0x0020], 0u) << "the branched-over INC must not have run";
+    EXPECT_EQ(mem.memory[0x0021], 1u)
+        << "the instruction at the branch target ran " << static_cast<unsigned>(mem.memory[0x0021])
+        << " times; exactly one is required. More than one means clock() re-entered an instruction "
+           "that had already executed.";
+    EXPECT_EQ(cpu.registers.PC, 0x1006) << "PC should have advanced past the INC exactly once";
+}
+
+// Cross-check for the decode-time branch prediction in CPU::branch_is_taken()
+// against the BPL()/BMI()/... implementations, which are the ones that actually
+// move PC. The two encode the same condition in different ways, so this pins
+// them together: for all eight branches in both flag states, the cycle count
+// (which comes from the prediction) must agree with whether PC actually moved
+// (which comes from the operation).
+TEST(CpuBranches, predicted_cost_agrees_with_whether_the_branch_was_taken)
+{
+    struct BranchCase {
+        uint8_t opcode;
+        const char* mnemonic;
+        CPU::FLAGS flag;
+        bool branches_when_flag_set;
+    };
+
+    constexpr BranchCase branches[] = {
+        {0x10, "BPL", CPU::FLAGS::N, false}, {0x30, "BMI", CPU::FLAGS::N, true},  {0x50, "BVC", CPU::FLAGS::V, false},
+        {0x70, "BVS", CPU::FLAGS::V, true},  {0x90, "BCC", CPU::FLAGS::C, false}, {0xB0, "BCS", CPU::FLAGS::C, true},
+        {0xD0, "BNE", CPU::FLAGS::Z, false}, {0xF0, "BEQ", CPU::FLAGS::Z, true},
+    };
+
+    for (const BranchCase& branch : branches) {
+        for (const bool flag_value : {false, true}) {
+            FlatMemory mem;
+            CPU cpu = make_cpu(mem);
+
+            mem.memory[0x1000] = branch.opcode;
+            mem.memory[0x1001] = 0x10;
+
+            cpu.registers.PC = 0x1000;
+            cpu.registers.SP = 0xFD;
+            cpu.registers.P = 0x24;
+            cpu.set_flag(branch.flag, flag_value);
+            cpu.cycles_left = 0;
+
+            const size_t cycles = run_one_instruction(cpu);
+            const bool pc_moved = cpu.registers.PC == 0x1012;
+            const bool should_branch = (flag_value == branch.branches_when_flag_set);
+
+            EXPECT_EQ(pc_moved, should_branch)
+                << branch.mnemonic << " with its flag " << (flag_value ? "set" : "clear") << " branched the wrong way";
+
+            // The cycle count is derived from the decode-time prediction; PC is
+            // moved by the operation. They must tell the same story.
+            EXPECT_EQ(cycles, pc_moved ? 3u : 2u)
+                << branch.mnemonic << " with its flag " << (flag_value ? "set" : "clear") << " took " << cycles
+                << " cycles but " << (pc_moved ? "did" : "did not")
+                << " branch; the decode-time prediction in "
+                   "CPU::branch_is_taken() disagrees with the operation itself";
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Layer 3: the (zp),Y pointer wrap.
+// ---------------------------------------------------------------------------
+
+// The pointer for (zp),Y lives in zero page and its high byte comes from the
+// next zero-page location, wrapping within the page. For a pointer of $FF the
+// high byte must come from $00, not from $0100.
+TEST(CpuAddressing, indirect_indexed_pointer_wraps_within_zero_page)
+{
+    FlatMemory mem;
+    CPU cpu = make_cpu(mem);
+
+    // LDA ($FF),Y with Y=0.
+    mem.memory[0x1000] = 0xB1;
+    mem.memory[0x1001] = 0xFF;
+
+    // The pointer: low byte at $FF, high byte wrapping round to $00.
+    mem.memory[0x00FF] = 0x34;
+    mem.memory[0x0000] = 0x12;
+
+    // The address the wrap should NOT produce: $0100 holds a decoy high byte.
+    mem.memory[0x0100] = 0xAB;
+
+    mem.memory[0x1234] = 0x42;  // via the correct pointer $1234
+    mem.memory[0xAB34] = 0x99;  // via the incorrect pointer $AB34
+
+    cpu.registers.PC = 0x1000;
+    cpu.registers.SP = 0xFD;
+    cpu.registers.Y = 0;
+    cpu.registers.P = 0x24;
+    cpu.cycles_left = 0;
+
+    run_one_instruction(cpu);
+
+    EXPECT_EQ(cpu.registers.A, 0x42)
+        << "LDA ($FF),Y should read through pointer $1234 (high byte wrapping to $00), not $AB34 "
+           "(high byte taken from $0100)";
+}
+
+// The same wrap, in the indexed-indirect direction, which was already correct.
+// Kept so a future change cannot regress one while fixing the other.
+TEST(CpuAddressing, indexed_indirect_pointer_wraps_within_zero_page)
+{
+    FlatMemory mem;
+    CPU cpu = make_cpu(mem);
+
+    // LDA ($FE,X) with X=1, so the pointer is $FF and its high byte wraps to $00.
+    mem.memory[0x1000] = 0xA1;
+    mem.memory[0x1001] = 0xFE;
+
+    mem.memory[0x00FF] = 0x34;
+    mem.memory[0x0000] = 0x12;
+    mem.memory[0x0100] = 0xAB;
+
+    mem.memory[0x1234] = 0x42;
+    mem.memory[0xAB34] = 0x99;
+
+    cpu.registers.PC = 0x1000;
+    cpu.registers.SP = 0xFD;
+    cpu.registers.X = 1;
+    cpu.registers.P = 0x24;
+    cpu.cycles_left = 0;
+
+    run_one_instruction(cpu);
+
+    EXPECT_EQ(cpu.registers.A, 0x42) << "LDA ($FE,X) with X=1 should read through pointer $1234";
+}
+
+// ---------------------------------------------------------------------------
+// Layer 3: interrupt timing and power-on state.
+// ---------------------------------------------------------------------------
+
+TEST(CpuInterrupts, nmi_takes_seven_cycles)
+{
+    FlatMemory mem;
+    CPU cpu = make_cpu(mem);
+
+    mem.memory[0xFFFA] = 0x00;
+    mem.memory[0xFFFB] = 0x90;
+
+    cpu.registers.PC = 0x1000;
+    cpu.registers.SP = 0xFD;
+    cpu.registers.P = 0x24;
+    cpu.cycles_left = 0;
+    cpu.raise_NMI();
+
+    EXPECT_EQ(run_one_instruction(cpu), 7u) << "the NMI sequence takes 7 cycles on hardware, not 8";
+    EXPECT_EQ(cpu.registers.PC, 0x9000) << "NMI should vector through $FFFA/$FFFB";
+}
+
+TEST(CpuInterrupts, irq_takes_seven_cycles)
+{
+    FlatMemory mem;
+    CPU cpu = make_cpu(mem);
+
+    mem.memory[0xFFFE] = 0x00;
+    mem.memory[0xFFFF] = 0x90;
+
+    cpu.registers.PC = 0x1000;
+    cpu.registers.SP = 0xFD;
+    cpu.registers.P = 0x24;  // I clear, so the IRQ is taken
+    cpu.set_flag(CPU::FLAGS::I, false);
+    cpu.cycles_left = 0;
+    cpu.raise_IRQ();
+
+    EXPECT_EQ(run_one_instruction(cpu), 7u) << "the IRQ sequence takes 7 cycles";
+    EXPECT_EQ(cpu.registers.PC, 0x9000) << "IRQ should vector through $FFFE/$FFFF";
+}
+
+TEST(CpuReset, power_on_state_matches_hardware)
+{
+    FlatMemory mem;
+    CPU cpu = make_cpu(mem);
+
+    mem.memory[0xFFFC] = 0x00;
+    mem.memory[0xFFFD] = 0xC0;
+
+    cpu.reset();
+
+    // Three dummy stack accesses during reset decrement SP without writing.
+    EXPECT_EQ(cpu.registers.SP, 0xFD) << "SP should settle at $FD after reset, not $FF";
+
+    // U set, I set, B clear: this is the $24 that nestest's first log line shows.
+    EXPECT_EQ(cpu.registers.P, 0x24) << "P should be $24 after reset (U and I set, B clear)";
+    EXPECT_TRUE(cpu.get_flag(CPU::FLAGS::U)) << "the unused flag always reads as set";
+    EXPECT_TRUE(cpu.get_flag(CPU::FLAGS::I)) << "interrupts are masked on reset";
+    EXPECT_FALSE(cpu.get_flag(CPU::FLAGS::B)) << "B is not a real bit of P; it only exists in pushed copies";
+
+    EXPECT_EQ(cpu.registers.PC, 0xC000) << "reset should vector through $FFFC/$FFFD";
+}
+
+// B must not survive a pull, and U must always come back set - the two must
+// agree between RTI and PLP.
+TEST(CpuFlags, rti_and_plp_agree_on_the_b_and_u_bits)
+{
+    for (const uint8_t pushed : {uint8_t{0x00}, uint8_t{0xFF}, uint8_t{0x30}, uint8_t{0xCF}}) {
+        // PLP
+        {
+            FlatMemory mem;
+            CPU cpu = make_cpu(mem);
+
+            mem.memory[0x1000] = 0x28;  // PLP
+            mem.memory[0x01FE] = pushed;
+
+            cpu.registers.PC = 0x1000;
+            cpu.registers.SP = 0xFD;
+            cpu.registers.P = 0x24;
+            cpu.cycles_left = 0;
+
+            run_one_instruction(cpu);
+
+            EXPECT_FALSE(cpu.get_flag(CPU::FLAGS::B))
+                << "PLP must discard B (pushed value " << std::hex << static_cast<unsigned>(pushed) << ")";
+            EXPECT_TRUE(cpu.get_flag(CPU::FLAGS::U))
+                << "PLP must leave U set (pushed value " << std::hex << static_cast<unsigned>(pushed) << ")";
+        }
+
+        // RTI
+        {
+            FlatMemory mem;
+            CPU cpu = make_cpu(mem);
+
+            mem.memory[0x1000] = 0x40;  // RTI
+            mem.memory[0x01FE] = pushed;
+            mem.memory[0x01FF] = 0x00;  // PCL
+            mem.memory[0x0100] = 0x90;  // PCH (SP wraps)
+
+            cpu.registers.PC = 0x1000;
+            cpu.registers.SP = 0xFD;
+            cpu.registers.P = 0x24;
+            cpu.cycles_left = 0;
+
+            run_one_instruction(cpu);
+
+            EXPECT_FALSE(cpu.get_flag(CPU::FLAGS::B))
+                << "RTI must discard B (pushed value " << std::hex << static_cast<unsigned>(pushed) << ")";
+            EXPECT_TRUE(cpu.get_flag(CPU::FLAGS::U))
+                << "RTI must leave U set (pushed value " << std::hex << static_cast<unsigned>(pushed) << ")";
+        }
+    }
+}
+
+}  // namespace tests

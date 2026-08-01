@@ -64,6 +64,11 @@ public:
     uint8_t current_op_code = 0;
     uint8_t cycles_left = 0;
 
+    // Set by the indexed addressing modes when the effective address crossed a
+    // page boundary. Only meaningful for the instruction currently being
+    // decoded; clock() clears it before each fetch.
+    bool page_crossed = false;
+
     uint16_t previous_pc = 0;
     uint64_t total_cycles = 0;
 
@@ -71,6 +76,8 @@ public:
 
 public:
     bool clock(bool trace);
+    bool branch_is_taken() const;
+    uint8_t extra_cycles_for_current_instruction() const;
     void execute_current_instruction(const bool update_debugger);
     void reset();
     uint8_t& register_A() { return registers.A; };
@@ -107,7 +114,7 @@ protected:
 
     //purely unoficial
     void STP(); void SLO(); void ANC(); void RLA();
-    void ARL(); void LAX(); void AXS(); void DCP();
+    void LAX(); void AXS(); void DCP();
     void SAX(); void RRA(); void SRE(); void ALR();
     void ARR(); void ISC(); void AHX(); void SHX();
     void SHY(); void TAS(); void XAA(); void LAS();

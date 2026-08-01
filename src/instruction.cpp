@@ -2,7 +2,9 @@
 
 // clang-format off
 using c = CPU;
-const Instruction InstructionSet::NMI{"NMI", Addressing::implicit, &c::NMI, &c::addressing_implicit, 8};
+// Both interrupt sequences take 7 cycles on hardware: 2 internal, 3 pushes
+// (PCH, PCL, P) and 2 vector fetches.
+const Instruction InstructionSet::NMI{"NMI", Addressing::implicit, &c::NMI, &c::addressing_implicit, 7};
 const Instruction InstructionSet::IRQ{"IRQ", Addressing::implicit, &c::IRQ, &c::addressing_implicit, 7};
 
 //Aligned to 10 so that they are easier to count
@@ -23,8 +25,8 @@ const std::valarray<Instruction> InstructionSet::Table{
     {"ORA", Addressing::absolute, &c::ORA, &c::addressing_absolute, 4},
     {"ASL", Addressing::absolute, &c::ASL, &c::addressing_absolute, 6},
     {"SLO", Addressing::absolute, &c::SLO, &c::addressing_absolute, 6},
-    {"BPL", Addressing::relative, &c::BPL, &c::addressing_relative, 2},                  // oops cycle
-    {"ORA", Addressing::indirect_indexed, &c::ORA, &c::addressing_indirect_indexed, 5},  // oops cycle
+    {"BPL", Addressing::relative, &c::BPL, &c::addressing_relative, 2, true},                  // oops cycle
+    {"ORA", Addressing::indirect_indexed, &c::ORA, &c::addressing_indirect_indexed, 5, true},  // oops cycle
     {"STP", Addressing::implicit, &c::STP, &c::addressing_implicit, 0},
     {"SLO", Addressing::indirect_indexed, &c::SLO, &c::addressing_indirect_indexed, 8},
     {"NOP", Addressing::zero_page_X, &c::NOP, &c::addressing_zero_page_X, 4},
@@ -32,11 +34,11 @@ const std::valarray<Instruction> InstructionSet::Table{
     {"ASL", Addressing::zero_page_X, &c::ASL, &c::addressing_zero_page_X, 6},
     {"SLO", Addressing::zero_page_X, &c::SLO, &c::addressing_zero_page_X, 6},
     {"CLC", Addressing::implicit, &c::CLC, &c::addressing_implicit, 2},
-    {"ORA", Addressing::absolute_Y, &c::ORA, &c::addressing_absolute_Y, 4},  // oops cycle
+    {"ORA", Addressing::absolute_Y, &c::ORA, &c::addressing_absolute_Y, 4, true},  // oops cycle
     {"NOP", Addressing::implicit, &c::NOP, &c::addressing_implicit, 2},
     {"SLO", Addressing::absolute_Y, &c::SLO, &c::addressing_absolute_Y, 7},
-    {"NOP", Addressing::absolute_X, &c::NOP, &c::addressing_absolute_X, 4},  // oops cycle
-    {"ORA", Addressing::absolute_X, &c::ORA, &c::addressing_absolute_X, 4},  // oops cycle
+    {"NOP", Addressing::absolute_X, &c::NOP, &c::addressing_absolute_X, 4, true},  // oops cycle
+    {"ORA", Addressing::absolute_X, &c::ORA, &c::addressing_absolute_X, 4, true},  // oops cycle
     {"ASL", Addressing::absolute_X, &c::ASL, &c::addressing_absolute_X, 7},
     {"SLO", Addressing::absolute_X, &c::SLO, &c::addressing_absolute_X, 7},
     {"JSR", Addressing::absolute, &c::JSR, &c::addressing_absolute, 6},
@@ -55,8 +57,8 @@ const std::valarray<Instruction> InstructionSet::Table{
     {"AND", Addressing::absolute, &c::AND, &c::addressing_absolute, 4},
     {"ROL", Addressing::absolute, &c::ROL, &c::addressing_absolute, 6},
     {"RLA", Addressing::absolute, &c::RLA, &c::addressing_absolute, 6},
-    {"BMI", Addressing::relative, &c::BMI, &c::addressing_relative, 2},                  // oops cycle
-    {"AND", Addressing::indirect_indexed, &c::AND, &c::addressing_indirect_indexed, 5},  // oops cycle
+    {"BMI", Addressing::relative, &c::BMI, &c::addressing_relative, 2, true},                  // oops cycle
+    {"AND", Addressing::indirect_indexed, &c::AND, &c::addressing_indirect_indexed, 5, true},  // oops cycle
     {"STP", Addressing::implicit, &c::STP, &c::addressing_implicit, 0},
     {"RLA", Addressing::indirect_indexed, &c::RLA, &c::addressing_indirect_indexed, 8},
     {"NOP", Addressing::zero_page_X, &c::NOP, &c::addressing_zero_page_X, 4},
@@ -64,11 +66,11 @@ const std::valarray<Instruction> InstructionSet::Table{
     {"ROL", Addressing::zero_page_X, &c::ROL, &c::addressing_zero_page_X, 6},
     {"RLA", Addressing::zero_page_X, &c::RLA, &c::addressing_zero_page_X, 6},
     {"SEC", Addressing::implicit, &c::SEC, &c::addressing_implicit, 2},
-    {"AND", Addressing::absolute_Y, &c::AND, &c::addressing_absolute_Y, 4},  // oops cycle
+    {"AND", Addressing::absolute_Y, &c::AND, &c::addressing_absolute_Y, 4, true},  // oops cycle
     {"NOP", Addressing::implicit, &c::NOP, &c::addressing_implicit, 2},
     {"RLA", Addressing::absolute_Y, &c::RLA, &c::addressing_absolute_Y, 7},
-    {"NOP", Addressing::absolute_X, &c::NOP, &c::addressing_absolute_X, 4},  // oops cycle
-    {"AND", Addressing::absolute_X, &c::AND, &c::addressing_absolute_X, 4},  // oops cycle
+    {"NOP", Addressing::absolute_X, &c::NOP, &c::addressing_absolute_X, 4, true},  // oops cycle
+    {"AND", Addressing::absolute_X, &c::AND, &c::addressing_absolute_X, 4, true},  // oops cycle
     {"ROL", Addressing::absolute_X, &c::ROL, &c::addressing_absolute_X, 7},
     {"RLA", Addressing::absolute_X, &c::RLA, &c::addressing_absolute_X, 7},
     {"RTI", Addressing::implicit, &c::RTI, &c::addressing_implicit, 6},
@@ -87,8 +89,8 @@ const std::valarray<Instruction> InstructionSet::Table{
     {"EOR", Addressing::absolute, &c::EOR, &c::addressing_absolute, 4},
     {"LSR", Addressing::absolute, &c::LSR, &c::addressing_absolute, 6},
     {"SRE", Addressing::absolute, &c::SRE, &c::addressing_absolute, 6},
-    {"BVC", Addressing::relative, &c::BVC, &c::addressing_relative, 2},                  // oops cycle
-    {"EOR", Addressing::indirect_indexed, &c::EOR, &c::addressing_indirect_indexed, 5},  // oops cycle
+    {"BVC", Addressing::relative, &c::BVC, &c::addressing_relative, 2, true},                  // oops cycle
+    {"EOR", Addressing::indirect_indexed, &c::EOR, &c::addressing_indirect_indexed, 5, true},  // oops cycle
     {"STP", Addressing::implicit, &c::STP, &c::addressing_implicit, 0},
     {"SRE", Addressing::indirect_indexed, &c::SRE, &c::addressing_indirect_indexed, 8},
     {"NOP", Addressing::zero_page_X, &c::NOP, &c::addressing_zero_page_X, 4},
@@ -96,11 +98,11 @@ const std::valarray<Instruction> InstructionSet::Table{
     {"LSR", Addressing::zero_page_X, &c::LSR, &c::addressing_zero_page_X, 6},
     {"SRE", Addressing::zero_page_X, &c::SRE, &c::addressing_zero_page_X, 6},
     {"CLI", Addressing::implicit, &c::CLI, &c::addressing_implicit, 2},
-    {"EOR", Addressing::absolute_Y, &c::EOR, &c::addressing_absolute_Y, 4},  // oops cycle
+    {"EOR", Addressing::absolute_Y, &c::EOR, &c::addressing_absolute_Y, 4, true},  // oops cycle
     {"NOP", Addressing::implicit, &c::NOP, &c::addressing_implicit, 2},
     {"SRE", Addressing::absolute_Y, &c::SRE, &c::addressing_absolute_Y, 7},
-    {"NOP", Addressing::absolute_X, &c::NOP, &c::addressing_absolute_X, 4},  // oops cycle
-    {"EOR", Addressing::absolute_X, &c::EOR, &c::addressing_absolute_X, 4},  // oops cycle
+    {"NOP", Addressing::absolute_X, &c::NOP, &c::addressing_absolute_X, 4, true},  // oops cycle
+    {"EOR", Addressing::absolute_X, &c::EOR, &c::addressing_absolute_X, 4, true},  // oops cycle
     {"LSR", Addressing::absolute_X, &c::LSR, &c::addressing_absolute_X, 7},
     {"SRE", Addressing::absolute_X, &c::SRE, &c::addressing_absolute_X, 7},
     {"RTS", Addressing::implicit, &c::RTS, &c::addressing_implicit, 6},
@@ -119,8 +121,8 @@ const std::valarray<Instruction> InstructionSet::Table{
     {"ADC", Addressing::absolute, &c::ADC, &c::addressing_absolute, 4},
     {"ROR", Addressing::absolute, &c::ROR, &c::addressing_absolute, 6},
     {"RRA", Addressing::absolute, &c::RRA, &c::addressing_absolute, 6},
-    {"BVS", Addressing::relative, &c::BVS, &c::addressing_relative, 2},                  // oops cycle
-    {"ADC", Addressing::indirect_indexed, &c::ADC, &c::addressing_indirect_indexed, 5},  // oops cycle
+    {"BVS", Addressing::relative, &c::BVS, &c::addressing_relative, 2, true},                  // oops cycle
+    {"ADC", Addressing::indirect_indexed, &c::ADC, &c::addressing_indirect_indexed, 5, true},  // oops cycle
     {"STP", Addressing::implicit, &c::STP, &c::addressing_implicit, 0},
     {"RRA", Addressing::indirect_indexed, &c::RRA, &c::addressing_indirect_indexed, 8},
     {"NOP", Addressing::zero_page_X, &c::NOP, &c::addressing_zero_page_X, 4},
@@ -128,11 +130,11 @@ const std::valarray<Instruction> InstructionSet::Table{
     {"ROR", Addressing::zero_page_X, &c::ROR, &c::addressing_zero_page_X, 6},
     {"RRA", Addressing::zero_page_X, &c::RRA, &c::addressing_zero_page_X, 6},
     {"SEI", Addressing::implicit, &c::SEI, &c::addressing_implicit, 2},
-    {"ADC", Addressing::absolute_Y, &c::ADC, &c::addressing_absolute_Y, 4},  // oops cycle
+    {"ADC", Addressing::absolute_Y, &c::ADC, &c::addressing_absolute_Y, 4, true},  // oops cycle
     {"NOP", Addressing::implicit, &c::NOP, &c::addressing_implicit, 2},
     {"RRA", Addressing::absolute_Y, &c::RRA, &c::addressing_absolute_Y, 7},
-    {"NOP", Addressing::absolute_X, &c::NOP, &c::addressing_absolute_X, 4},  // oops cycle
-    {"ADC", Addressing::absolute_X, &c::ADC, &c::addressing_absolute_X, 4},  // oops cycle
+    {"NOP", Addressing::absolute_X, &c::NOP, &c::addressing_absolute_X, 4, true},  // oops cycle
+    {"ADC", Addressing::absolute_X, &c::ADC, &c::addressing_absolute_X, 4, true},  // oops cycle
     {"ROR", Addressing::absolute_X, &c::ROR, &c::addressing_absolute_X, 7},
     {"RRA", Addressing::absolute_X, &c::RRA, &c::addressing_absolute_X, 7},
     {"NOP", Addressing::immediate, &c::NOP, &c::addressing_immediate, 2},
@@ -151,7 +153,7 @@ const std::valarray<Instruction> InstructionSet::Table{
     {"STA", Addressing::absolute, &c::STA, &c::addressing_absolute, 4},
     {"STX", Addressing::absolute, &c::STX, &c::addressing_absolute, 4},
     {"SAX", Addressing::absolute, &c::SAX, &c::addressing_absolute, 4},
-    {"BCC", Addressing::relative, &c::BCC, &c::addressing_relative, 2},  // oops cycle
+    {"BCC", Addressing::relative, &c::BCC, &c::addressing_relative, 2, true},  // oops cycle
     {"STA", Addressing::indirect_indexed, &c::STA, &c::addressing_indirect_indexed, 6},
     {"STP", Addressing::implicit, &c::STP, &c::addressing_implicit, 0},
     {"AHX", Addressing::indirect_indexed, &c::AHX, &c::addressing_indirect_indexed, 6},
@@ -183,22 +185,22 @@ const std::valarray<Instruction> InstructionSet::Table{
     {"LDA", Addressing::absolute, &c::LDA, &c::addressing_absolute, 4},
     {"LDX", Addressing::absolute, &c::LDX, &c::addressing_absolute, 4},
     {"LAX", Addressing::absolute, &c::LAX, &c::addressing_absolute, 4},
-    {"BCS", Addressing::relative, &c::BCS, &c::addressing_relative, 2},                  // oops cycle
-    {"LDA", Addressing::indirect_indexed, &c::LDA, &c::addressing_indirect_indexed, 5},  // oops cycle
+    {"BCS", Addressing::relative, &c::BCS, &c::addressing_relative, 2, true},                  // oops cycle
+    {"LDA", Addressing::indirect_indexed, &c::LDA, &c::addressing_indirect_indexed, 5, true},  // oops cycle
     {"STP", Addressing::implicit, &c::STP, &c::addressing_implicit, 0},
-    {"LAX", Addressing::indirect_indexed, &c::LAX, &c::addressing_indirect_indexed, 5},  // oops cycle
+    {"LAX", Addressing::indirect_indexed, &c::LAX, &c::addressing_indirect_indexed, 5, true},  // oops cycle
     {"LDY", Addressing::zero_page_X, &c::LDY, &c::addressing_zero_page_X, 4},
     {"LDA", Addressing::zero_page_X, &c::LDA, &c::addressing_zero_page_X, 4},
     {"LDX", Addressing::zero_page_Y, &c::LDX, &c::addressing_zero_page_Y, 4},
     {"LAX", Addressing::zero_page_Y, &c::LAX, &c::addressing_zero_page_Y, 4},
     {"CLV", Addressing::implicit, &c::CLV, &c::addressing_implicit, 2},
-    {"LDA", Addressing::absolute_Y, &c::LDA, &c::addressing_absolute_Y, 4},  // oops cycle
+    {"LDA", Addressing::absolute_Y, &c::LDA, &c::addressing_absolute_Y, 4, true},  // oops cycle
     {"TSX", Addressing::implicit, &c::TSX, &c::addressing_implicit, 2},
-    {"LAS", Addressing::absolute_Y, &c::LAS, &c::addressing_absolute_Y, 4},  // oops cycle
-    {"LDY", Addressing::absolute_X, &c::LDY, &c::addressing_absolute_X, 4},  // oops cycle
-    {"LDA", Addressing::absolute_X, &c::LDA, &c::addressing_absolute_X, 4},  // oops cycle
-    {"LDX", Addressing::absolute_Y, &c::LDX, &c::addressing_absolute_Y, 4},  // oops cycle
-    {"LAX", Addressing::absolute_Y, &c::LAX, &c::addressing_absolute_Y, 4},  // oops cycle
+    {"LAS", Addressing::absolute_Y, &c::LAS, &c::addressing_absolute_Y, 4, true},  // oops cycle
+    {"LDY", Addressing::absolute_X, &c::LDY, &c::addressing_absolute_X, 4, true},  // oops cycle
+    {"LDA", Addressing::absolute_X, &c::LDA, &c::addressing_absolute_X, 4, true},  // oops cycle
+    {"LDX", Addressing::absolute_Y, &c::LDX, &c::addressing_absolute_Y, 4, true},  // oops cycle
+    {"LAX", Addressing::absolute_Y, &c::LAX, &c::addressing_absolute_Y, 4, true},  // oops cycle
     {"CPY", Addressing::immediate, &c::CPY, &c::addressing_immediate, 2},
     {"CMP", Addressing::indexed_indirect, &c::CMP, &c::addressing_indexed_indirect, 6},
     {"NOP", Addressing::immediate, &c::NOP, &c::addressing_immediate, 2},
@@ -215,8 +217,8 @@ const std::valarray<Instruction> InstructionSet::Table{
     {"CMP", Addressing::absolute, &c::CMP, &c::addressing_absolute, 4},
     {"DEC", Addressing::absolute, &c::DEC, &c::addressing_absolute, 6},
     {"DCP", Addressing::absolute, &c::DCP, &c::addressing_absolute, 6},
-    {"BNE", Addressing::relative, &c::BNE, &c::addressing_relative, 2},                  // oops cycle
-    {"CMP", Addressing::indirect_indexed, &c::CMP, &c::addressing_indirect_indexed, 5},  // oops cycle
+    {"BNE", Addressing::relative, &c::BNE, &c::addressing_relative, 2, true},                  // oops cycle
+    {"CMP", Addressing::indirect_indexed, &c::CMP, &c::addressing_indirect_indexed, 5, true},  // oops cycle
     {"STP", Addressing::implicit, &c::STP, &c::addressing_implicit, 0},
     {"DCP", Addressing::indirect_indexed, &c::DCP, &c::addressing_indirect_indexed, 8},
     {"NOP", Addressing::zero_page_X, &c::NOP, &c::addressing_zero_page_X, 4},
@@ -224,11 +226,11 @@ const std::valarray<Instruction> InstructionSet::Table{
     {"DEC", Addressing::zero_page_X, &c::DEC, &c::addressing_zero_page_X, 6},
     {"DCP", Addressing::zero_page_X, &c::DCP, &c::addressing_zero_page_X, 6},
     {"CLD", Addressing::implicit, &c::CLD, &c::addressing_implicit, 2},
-    {"CMP", Addressing::absolute_Y, &c::CMP, &c::addressing_absolute_Y, 4},  // oops cycle
+    {"CMP", Addressing::absolute_Y, &c::CMP, &c::addressing_absolute_Y, 4, true},  // oops cycle
     {"NOP", Addressing::implicit, &c::NOP, &c::addressing_implicit, 2},
     {"DCP", Addressing::absolute_Y, &c::DCP, &c::addressing_absolute_Y, 7},
-    {"NOP", Addressing::absolute_X, &c::NOP, &c::addressing_absolute_X, 4},  // oops cycle
-    {"CMP", Addressing::absolute_X, &c::CMP, &c::addressing_absolute_X, 4},  // oops cycle
+    {"NOP", Addressing::absolute_X, &c::NOP, &c::addressing_absolute_X, 4, true},  // oops cycle
+    {"CMP", Addressing::absolute_X, &c::CMP, &c::addressing_absolute_X, 4, true},  // oops cycle
     {"DEC", Addressing::absolute_X, &c::DEC, &c::addressing_absolute_X, 7},
     {"DCP", Addressing::absolute_X, &c::DCP, &c::addressing_absolute_X, 7},
     {"CPX", Addressing::immediate, &c::CPX, &c::addressing_immediate, 2},
@@ -247,8 +249,8 @@ const std::valarray<Instruction> InstructionSet::Table{
     {"SBC", Addressing::absolute, &c::SBC, &c::addressing_absolute, 4},
     {"INC", Addressing::absolute, &c::INC, &c::addressing_absolute, 6},
     {"ISC", Addressing::absolute, &c::ISC, &c::addressing_absolute, 6},
-    {"BEQ", Addressing::relative, &c::BEQ, &c::addressing_relative, 2},                  // oops cycle
-    {"SBC", Addressing::indirect_indexed, &c::SBC, &c::addressing_indirect_indexed, 5},  // oops cycle
+    {"BEQ", Addressing::relative, &c::BEQ, &c::addressing_relative, 2, true},                  // oops cycle
+    {"SBC", Addressing::indirect_indexed, &c::SBC, &c::addressing_indirect_indexed, 5, true},  // oops cycle
     {"STP", Addressing::implicit, &c::STP, &c::addressing_implicit, 0},
     {"ISC", Addressing::indirect_indexed, &c::ISC, &c::addressing_indirect_indexed, 8},
     {"NOP", Addressing::zero_page_X, &c::NOP, &c::addressing_zero_page_X, 4},
@@ -256,11 +258,11 @@ const std::valarray<Instruction> InstructionSet::Table{
     {"INC", Addressing::zero_page_X, &c::INC, &c::addressing_zero_page_X, 6},
     {"ISC", Addressing::zero_page_X, &c::ISC, &c::addressing_zero_page_X, 6},
     {"SED", Addressing::implicit, &c::SED, &c::addressing_implicit, 2},
-    {"SBC", Addressing::absolute_Y, &c::SBC, &c::addressing_absolute_Y, 4},  // oops cycle
+    {"SBC", Addressing::absolute_Y, &c::SBC, &c::addressing_absolute_Y, 4, true},  // oops cycle
     {"NOP", Addressing::implicit, &c::NOP, &c::addressing_implicit, 2},
     {"ISC", Addressing::absolute_Y, &c::ISC, &c::addressing_absolute_Y, 7},
-    {"NOP", Addressing::absolute_X, &c::NOP, &c::addressing_absolute_X, 4},  // oops cycle
-    {"SBC", Addressing::absolute_X, &c::SBC, &c::addressing_absolute_X, 4},  // oops cycle
+    {"NOP", Addressing::absolute_X, &c::NOP, &c::addressing_absolute_X, 4, true},  // oops cycle
+    {"SBC", Addressing::absolute_X, &c::SBC, &c::addressing_absolute_X, 4, true},  // oops cycle
     {"INC", Addressing::absolute_X, &c::INC, &c::addressing_absolute_X, 7},
     {"ISC", Addressing::absolute_X, &c::ISC, &c::addressing_absolute_X, 7}};
 

@@ -36,12 +36,69 @@ void CPU::execute_current_instruction(const bool update_debugger)
     }
 }
 
+// True when the current instruction is one of the eight conditional branches
+// and its condition holds, i.e. the branch will be taken.
+//
+// The branches share a single encoding: bits 7-6 of the opcode select which
+// flag is tested and bit 5 selects the value it is compared against.
+//
+//     opcode      76  5    taken when
+//     $10 BPL     00  0    N == 0        $90 BCC     10  0    C == 0
+//     $30 BMI     00  1    N == 1        $B0 BCS     10  1    C == 1
+//     $50 BVC     01  0    V == 0        $D0 BNE     11  0    Z == 0
+//     $70 BVS     01  1    V == 1        $F0 BEQ     11  1    Z == 1
+//
+// Evaluating the condition here, at decode time, is equivalent to evaluating it
+// when the operation runs: no branch reads or writes anything but PC, so the
+// tested flag cannot change in between. That equivalence is what lets the whole
+// cycle count be known up front - see clock() for why that matters.
+//
+// Only ever called for opcodes whose addressing mode is `relative`, which is
+// exactly this set of eight. cpu_cycle_tests.cpp pins this against the
+// BPL()/BMI()/... implementations so the two cannot drift apart.
+bool CPU::branch_is_taken() const
+{
+    static constexpr FLAGS flag_under_test[4] = {FLAGS::N, FLAGS::V, FLAGS::C, FLAGS::Z};
+
+    const FLAGS flag = flag_under_test[(current_op_code >> 6) & 0x03];
+    const bool branch_on = (current_op_code & 0x20) != 0;
+
+    return get_flag(flag) == branch_on;
+}
+
+// The variable part of the current instruction's cost, in cycles, computed at
+// decode time. Zero unless the instruction is flagged as paying the "oops"
+// cycle (see Instruction::extra_cycle_on_page_cross).
+uint8_t CPU::extra_cycles_for_current_instruction() const
+{
+    if (!current_instruction->extra_cycle_on_page_cross) {
+        return 0;
+    }
+
+    // A taken branch costs one extra cycle, and one more if the branch target
+    // lands on a different page than the instruction that follows the branch.
+    // A branch that is not taken costs nothing extra.
+    if (current_instruction->addr_type == Addressing::relative) {
+        if (!branch_is_taken()) {
+            return 0;
+        }
+
+        const uint16_t target = registers.PC + static_cast<int16_t>(fetched_operand);
+        return ((target & 0xFF00) != (registers.PC & 0xFF00)) ? 2 : 1;
+    }
+
+    return page_crossed ? 1 : 0;
+}
+
 bool CPU::clock(bool trace)
 {
     ++total_cycles;
 
     // fetch & decode
     if (cycles_left == 0) {
+        // Cleared before addressing runs; the indexed modes set it.
+        page_crossed = false;
+
         if (nmi_requested) {
             current_instruction = &InstructionSet::NMI;
             nmi_requested = false;
@@ -54,7 +111,14 @@ bool CPU::clock(bool trace)
             current_instruction->addressing(*this);
         }
 
-        cycles_left = current_instruction->cycles;
+        // The full cost of the instruction has to be known now, before any
+        // cycle of it is counted, because the operation runs on the *last*
+        // cycle. An operation that tried to extend its own budget by bumping
+        // cycles_left would push it from 0 back to 1 after having already
+        // executed; the next clock() would then see a non-zero cycles_left,
+        // skip fetch/decode, and silently run the same instruction a second
+        // time. Computing it up front makes that unrepresentable.
+        cycles_left = current_instruction->cycles + extra_cycles_for_current_instruction();
     }
 
     --cycles_left;
@@ -74,8 +138,15 @@ bool CPU::clock(bool trace)
 void CPU::reset()
 {
     registers = {0};
-    registers.SP = 0xff;
-    registers.P = 0x34;  // U, B & I << WHY B is set on reset actually it does not exist?
+
+    // The reset sequence performs three dummy stack accesses that decrement SP
+    // without writing anything, so SP settles at $FD rather than $FF.
+    registers.SP = 0xFD;
+
+    // U (always set) and I (interrupts masked on reset). B is deliberately not
+    // set: it is not a real bit of P, only a value that appears in the copy
+    // pushed to the stack by BRK/PHP.
+    registers.P = static_cast<uint8_t>(FLAGS::U) | static_cast<uint8_t>(FLAGS::I);
     registers.PC = static_cast<uint16_t>(read(0xFFFC)) | (static_cast<uint16_t>(read(0xFFFD)) << 8);
     current_op_code = read(registers.PC);
 
@@ -125,22 +196,20 @@ void CPU::addressing_absolute() { fetched_operand = fetch_2bytes(); }
 
 void CPU::addressing_absolute_X()
 {
-    uint16_t base_ptr = fetch_2bytes();
+    const uint16_t base_ptr = fetch_2bytes();
     fetched_operand = base_ptr + registers.X;
 
-    if ((fetched_operand & 0xFF00) != (base_ptr & 0xFF00)) {
-        cycles_left += 1;
-    }
+    // Recorded, not charged: whether crossing a page actually costs a cycle
+    // depends on the instruction, not the addressing mode. clock() decides.
+    page_crossed = (fetched_operand & 0xFF00) != (base_ptr & 0xFF00);
 }
 
 void CPU::addressing_absolute_Y()
 {
-    uint16_t base_ptr = fetch_2bytes();
+    const uint16_t base_ptr = fetch_2bytes();
     fetched_operand = base_ptr + registers.Y;
 
-    if ((fetched_operand & 0xFF00) != (base_ptr & 0xFF00)) {
-        cycles_left += 1;
-    }
+    page_crossed = (fetched_operand & 0xFF00) != (base_ptr & 0xFF00);
 }
 
 void CPU::addressing_indirect()
@@ -161,12 +230,15 @@ void CPU::addressing_indexed_indirect()
 void CPU::addressing_indirect_indexed()
 {
     const uint16_t pointer = fetch_byte();
-    const uint16_t base_ptr = (read(pointer + 1) % 256) * 256 + read(pointer);
+
+    // The pointer is a zero-page address and its high byte is fetched from the
+    // *next* zero-page location, wrapping within the page: for a pointer of
+    // $FF the high byte comes from $00, not $0100. The wrap therefore belongs
+    // on the address being read, not on the byte that comes back.
+    const uint16_t base_ptr = read((pointer + 1) % 256) * 256 + read(pointer);
     fetched_operand = base_ptr + registers.Y;
 
-    if ((fetched_operand & 0xFF00) != (base_ptr & 0xFF00)) {
-        cycles_left += 1;
-    }
+    page_crossed = (fetched_operand & 0xFF00) != (base_ptr & 0xFF00);
 }
 
 /* Operations */
@@ -476,7 +548,7 @@ void CPU::PLA()
 
 void CPU::PHA() { push_stack(registers.A); }
 
-void CPU::PLP() { registers.P = (pop_stack() & ~static_cast<uint8_t>(FLAGS::B)); }
+void CPU::PLP() { registers.P = (pop_stack() & ~static_cast<uint8_t>(FLAGS::B)) | static_cast<uint8_t>(FLAGS::U); }
 
 void CPU::PHP() { push_stack(registers.P | static_cast<uint8_t>(FLAGS::B)); }
 
@@ -579,7 +651,10 @@ void CPU::IRQ()
 
 void CPU::RTI()
 {
-    registers.P = pop_stack();
+    // B does not exist as a real bit in P; it only ever appears in the copy
+    // pushed onto the stack. Pulling it back has to discard it and leave U set,
+    // exactly as PLP does.
+    registers.P = (pop_stack() & ~static_cast<uint8_t>(FLAGS::B)) | static_cast<uint8_t>(FLAGS::U);
     registers.PC = pop_stack() | (static_cast<uint16_t>(pop_stack()) << 8);
 }
 
@@ -618,26 +693,127 @@ void CPU::SEI() { set_flag(FLAGS::I, true); }
 void CPU::CLV() { set_flag(FLAGS::V, false); }
 
 void CPU::NOP() { ; }
+
+/* Undocumented ("illegal") opcodes.
+ *
+ * The ones implemented below are the combined read-modify-write / load forms
+ * that fall out of the 6502's decoding naturally: the ALU and the memory
+ * pipeline both run, so the instruction behaves as two documented instructions
+ * applied to the same effective address. They are stable across every NMOS
+ * 6502, and nestest exercises all of them.
+ *
+ * Each is written as the composition it actually is, reusing the documented
+ * implementations, so the flag handling cannot drift from the real opcodes.
+ * The addressing mode has already run, so fetched_operand is shared.
+ */
+
+// ASL then ORA on the result.
+void CPU::SLO()
+{
+    ASL();
+    ORA();
+}
+
+// ROL then AND on the result.
+void CPU::RLA()
+{
+    ROL();
+    AND();
+}
+
+// LSR then EOR on the result.
+void CPU::SRE()
+{
+    LSR();
+    EOR();
+}
+
+// ROR then ADC on the result.
+void CPU::RRA()
+{
+    ROR();
+    ADC();
+}
+
+// Stores A & X. Affects no flags - it is a store, and neither operand is
+// modified.
+void CPU::SAX() { write(fetched_operand, registers.A & registers.X); }
+
+// Loads both A and X with the same value.
+void CPU::LAX()
+{
+    LDA();
+    registers.X = registers.A;
+}
+
+// DEC then CMP against the decremented value.
+void CPU::DCP()
+{
+    DEC();
+    CMP();
+}
+
+// INC then SBC by the incremented value. Also known as ISB in some references
+// (including nestest.log); same opcode.
+void CPU::ISC()
+{
+    INC();
+    SBC();
+}
+
+// AND then copy bit 7 into carry, i.e. the carry ends up matching N.
+void CPU::ANC()
+{
+    AND();
+    set_flag(FLAGS::C, get_flag(FLAGS::N));
+}
+
+// AND then LSR on the accumulator. The carry takes the bit shifted out, which
+// is bit 0 of the AND result - not zero.
+void CPU::ALR()
+{
+    AND();
+    set_flag(FLAGS::C, registers.A & 0x01);
+    registers.A >>= 1;
+    set_flag(FLAGS::N, false);
+    set_flag(FLAGS::Z, registers.A == 0);
+}
+
+/* The remainder are deliberately left unimplemented.
+ *
+ * These are unstable on real hardware: their results depend on analogue effects
+ * (a "magic constant" that varies between chips, temperature and the data left
+ * floating on the bus), so there is no single correct behaviour to encode and
+ * no oracle to test against. nestest does not execute any of them. Guessing
+ * would produce code that looks authoritative while being wrong on some
+ * fraction of real machines, so they stay as documented no-ops.
+ */
+
+// Halts the CPU until reset ("jam"/"KIL"). Modelled as a no-op rather than
+// hanging the emulator.
 void CPU::STP() { ; }
-void CPU::SLO() { ; }
-void CPU::ANC() { ; }
-void CPU::RLA() { ; }
-void CPU::ARL() { ; }
-void CPU::LAX() { ; }
-void CPU::AXS() { ; }
-void CPU::DCP() { ; }
-void CPU::SAX() { ; }
-void CPU::RRA() { ; }
-void CPU::SRE() { ; }
-void CPU::ALR() { ; }
-void CPU::ARR() { ; }
-void CPU::ISC() { ; }
+
+// (A | magic) & X & immediate - magic constant is chip-dependent.
+void CPU::XAA() { ; }
+
+// Stores A & X & (high byte of address + 1); the +1 is skipped when the
+// address computation crossed a page, and the store target itself can change.
 void CPU::AHX() { ; }
+
+// As AHX, with X and Y respectively.
 void CPU::SHX() { ; }
 void CPU::SHY() { ; }
+
+// Sets SP to A & X, then stores like AHX.
 void CPU::TAS() { ; }
-void CPU::XAA() { ; }
+
+// Loads A, X and SP with (memory & SP); unstable on some units.
 void CPU::LAS() { ; }
+
+// ARR and AXS are stable, but nestest does not reach them and they are not
+// required here; left unimplemented rather than added without an oracle.
+void CPU::ARR() { ; }
+void CPU::AXS() { ; }
 
 std::ostream& operator<<(std::ostream& os, const CPU& cpu)
 {

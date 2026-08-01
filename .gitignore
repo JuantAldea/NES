@@ -44,3 +44,6 @@ tests/test_files/nestest.log
 
 # agent worktrees
 .claude/worktrees/
+
+# SingleStepTests 65x02 vectors, fetched by tests/test_files/fetch_single_step_tests.sh
+tests/test_files/single_step_tests/
