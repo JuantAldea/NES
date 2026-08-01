@@ -22,6 +22,7 @@
 
 #include "gtest/gtest.h"
 
+#include "../include/bus.h"
 #include "../include/cpu.h"
 
 
@@ -548,7 +549,12 @@ void print_divergence_report(const DivergenceReport& report)
 // Runs the CPU against the nestest.log oracle, one instruction per log line.
 // Stops at the first divergence (or at end of log / end of file, whichever
 // comes first).
-DivergenceReport run_nestest(CPU& cpu, FlatMemory& mem, std::ifstream& log_file)
+// Templated on the memory backend so the identical comparison can be driven
+// either against FlatMemory (isolating the CPU) or against the real Bus
+// (additionally exercising the address decode, RAM mirroring, cartridge
+// mapping and PPU register stubs). Memory only needs `uint8_t read(uint16_t)`.
+template <typename Memory>
+DivergenceReport run_nestest(CPU& cpu, Memory& mem, std::ifstream& log_file)
 {
     DivergenceReport report;
 
@@ -664,9 +670,52 @@ GTEST_TEST(nestestDiffer, cpu_trace_matches_golden_log)
         EXPECT_EQ(mem.read(0x0003), 0) << "nestest reported a failure via byte $03 despite a full log match";
     }
 
-    // This is the actual measurement: expected (and currently known) to fail.
-    // Do NOT weaken this assertion and do NOT modify the CPU to make it pass.
-    // The line number printed above is the scalar to drive upward.
+    // The measurement. If this ever regresses, the line number printed above
+    // localises the failure to a single instruction -- do not weaken it.
+    EXPECT_FALSE(report.diverged) << "first divergence at line " << report.line_number << ", field "
+                                  << to_string(report.field);
+}
+
+// Same comparison, but driven through the real Bus instead of a flat array, so
+// it additionally exercises the address decode, RAM mirroring, cartridge
+// mapping and the PPU register stubs. The flat-memory test above isolates the
+// CPU; this one is the integration counterpart. A divergence here that does NOT
+// appear above indicts the memory map rather than the CPU.
+GTEST_TEST(nestestDiffer, cpu_trace_matches_golden_log_through_bus)
+{
+    Bus console;
+    ASSERT_TRUE(console.load_cartridge(std::string(NES_TEST_FILES_DIR) + "/nestest.nes"))
+        << "aborting: cannot measure divergence without a valid ROM image";
+
+    // reset() reads the ROM's real vector ($C004); nestest's automated entry
+    // point is $C000, so override PC afterwards. SP/P/cycles come from reset().
+    console.cpu.reset();
+    ASSERT_EQ(console.cpu.registers.PC, 0xC004) << "cartridge reset vector not visible through the Bus";
+    console.cpu.registers.PC = 0xC000;
+    console.cpu.total_cycles = 7;
+
+    const std::string log_path = std::string(NES_TEST_FILES_DIR) + "/nestest.log";
+    std::ifstream log_file(log_path);
+    ASSERT_TRUE(log_file.is_open()) << "could not open nestest log: " << log_path;
+
+    const DivergenceReport report = run_nestest(console.cpu, console, log_file);
+
+    if (report.diverged) {
+        print_divergence_report(report);
+    } else {
+        std::cout << "nestest (via Bus): full log matched, " << report.line_number << " lines" << std::endl;
+    }
+
+    if (!report.diverged) {
+        EXPECT_EQ(report.line_number, EXPECTED_LOG_LINES)
+            << "log ended early: compared " << report.line_number << " of " << EXPECTED_LOG_LINES
+            << " lines. The fixture is truncated - re-run tests/test_files/fetch_nestest.sh";
+        // Unlike the flat-memory case these bytes go through RAM mirroring, so
+        // this also confirms the decode routes $0002/$0003 to internal RAM.
+        EXPECT_EQ(console.read(0x0002), 0) << "nestest reported a failure via byte $02";
+        EXPECT_EQ(console.read(0x0003), 0) << "nestest reported a failure via byte $03";
+    }
+
     EXPECT_FALSE(report.diverged) << "first divergence at line " << report.line_number << ", field "
                                   << to_string(report.field);
 }
