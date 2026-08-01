@@ -49,6 +49,10 @@ public:
         OAMDMA = 0x4014,
     };
 
+    // Value-initialized: without this the registers hold indeterminate memory,
+    // so a read of $2002 on a freshly constructed PPU could report a spurious
+    // vblank and sprite-0 hit. The open-bus model below only makes reads
+    // deterministic if the underlying registers start from a known state.
     struct {
         uint8_t PPUCTRL;
         uint8_t PPUMASK;
@@ -59,7 +63,7 @@ public:
         uint8_t PPUADDR;
         uint8_t PPUDATA;
         uint8_t OAMDMA;
-    } registers;
+    } registers = {};
 
     // Approximates the PPU's internal data bus latch: every register access
     // (read or write) through PPU::read/PPU::write drives this byte. Real

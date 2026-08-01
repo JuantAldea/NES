@@ -64,7 +64,14 @@ void Bus::write(const uint16_t addr, const uint8_t data)
 
 void Bus::write_ram(const uint16_t start_addr, const size_t n_bytes, const uint8_t* bytes)
 {
-    ram.write(start_addr, n_bytes, bytes);
+    // Routed through write() one byte at a time rather than straight at the RAM
+    // array: passing the raw address to RAM::write would bypass decode() and
+    // make this a third address path that disagrees with the other two. A bulk
+    // write starting in a mirror ($0800-$1FFF) silently wrote nothing, because
+    // RAM::write clamps out-of-range offsets.
+    for (size_t i = 0; i < n_bytes; ++i) {
+        write(static_cast<uint16_t>(start_addr + i), bytes[i]);
+    }
 }
 
 uint8_t Bus::read(const uint16_t addr)

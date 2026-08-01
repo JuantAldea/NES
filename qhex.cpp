@@ -141,7 +141,12 @@ int main(int argc, char* argv[])
         }
 
         bool ok;
-        uint16_t addr = QInputDialog::getInt(&w, "Target address", "#", 0, 0, 64 * 1024, 1, &ok);
+        // Bounded by the RAM array, not by the 64K address space: internal RAM
+        // is 2KB. Offering a larger range here used to let the read below run
+        // past the end of the buffer (and underflow the remaining-size
+        // computation) once RAM was resized from 64KB down to 2KB.
+        const int max_addr = static_cast<int>(console.ram.memory.size()) - 1;
+        const int addr = QInputDialog::getInt(&w, "Target address", "#", 0, 0, max_addr, 1, &ok);
 
         if (!ok) {
             return;
@@ -149,7 +154,8 @@ int main(int argc, char* argv[])
 
         QFile file(fileName);
         file.open(QIODevice::ReadOnly);
-        file.read(reinterpret_cast<char*>(console.ram.memory.data()) + addr, console.ram.memory.size() - addr);
+        file.read(reinterpret_cast<char*>(console.ram.memory.data()) + addr,
+                  static_cast<qint64>(console.ram.memory.size()) - addr);
 
         QHexDocument* document = QHexDocument::fromMemory<QMemoryBuffer>(
             reinterpret_cast<char*>(console.ram.memory.data()), console.ram.memory.size());
