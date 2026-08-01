@@ -6,47 +6,60 @@ Bus::Bus()
       apu{this},
       ppu{this},
       ram{this},
+      prg_ram{this},
       rom{this}
 {
     cpu.reset();
 }
 
-bool Bus::load_cartridge(const std::string& path)
-{
-    return rom.load(path);
-}
+bool Bus::load_cartridge(const std::string& path) { return rom.load(path); }
 
-Device& Bus::get_device_from_addr(const uint16_t addr)
+// Single address decode used by both read() and write(). This is the only
+// place CPU addresses get mapped to a device + effective (mirrored) address,
+// so a read and a write to the same CPU address can never disagree about
+// where they land.
+//
+// NES CPU memory map (as relevant here):
+//   $0000-$1FFF  2KB internal RAM, mirrored every $0800
+//   $2000-$3FFF  8 PPU registers, mirrored every 8 bytes
+//   $4000-$4013, $4015  APU registers
+//   $4014        PPU OAMDMA
+//   $4016-$4017  controllers (stubbed: no device, open bus)
+//   $4018-$401F  APU/IO test registers (stubbed: no device, open bus)
+//   $4020-$5FFF  cartridge expansion area (stubbed: no device, open bus)
+//   $6000-$7FFF  8KB cartridge PRG-RAM
+//   $8000-$FFFF  cartridge PRG-ROM
+Bus::DecodedAddress Bus::decode(const uint16_t addr)
 {
     if (addr < 0x2000) {
-        // std::cout << "RAM " << std::hex << addr << "\n";
-        return ram;
-    } else if ((addr >= 0x2000 && addr < 0x3FFF) || addr == 0x4014) {
-        // std::cout << "PPU " << std::hex << addr << "\n";
-        return ppu;
-    } else if (addr >= 0x4000 && addr < 0x4016 && addr != 0x4014) {
-        // std::cout << "APU " << std::hex << addr << "\n";
-        return apu;
-    } else if (addr >= 0x4020 && addr < 0x6000) {
-        // std::cout << "ROM " << std::hex << addr << "\n";
-        //expansion rom;
-    } else if (addr >= 0x6000 && addr < 0x8000) {
-        //sram;
-    } else if (addr >= 0x8000) {
-        // std::cout << "CARTRIDGE " << std::hex << addr << "\n";
-        return rom;
+        return {&ram, static_cast<uint16_t>(addr % 0x0800)};
+    } else if (addr < 0x4000) {
+        return {&ppu, static_cast<uint16_t>(0x2000 + (addr % 8))};
+    } else if (addr <= 0x4013 || addr == 0x4015) {
+        return {&apu, addr};
+    } else if (addr == 0x4014) {
+        return {&ppu, addr};
+    } else if (addr <= 0x401F) {
+        // $4016/$4017 controllers and the remaining APU/IO test range are not
+        // implemented yet; treat as open bus rather than routing to RAM/APU.
+        return {nullptr, addr};
+    } else if (addr < 0x6000) {
+        // Cartridge expansion area; no device backs it.
+        return {nullptr, addr};
+    } else if (addr < 0x8000) {
+        return {&prg_ram, static_cast<uint16_t>(addr - 0x6000)};
     }
 
-    // std::cout << "DEFAULT RAM\n";
-    return ram;
+    return {&rom, addr};
 }
-
-//Device& Bus::get_device_from_addr(const uint16_t addr) { return ram; }
 
 void Bus::write(const uint16_t addr, const uint8_t data)
 {
-    Device& device = get_device_from_addr(addr);
-    device.write(addr, data);
+    const DecodedAddress d = decode(addr);
+    if (d.device) {
+        d.device->write(d.effective_addr, data);
+    }
+    // Open-bus ranges (no device): writes are discarded.
 }
 
 void Bus::write_ram(const uint16_t start_addr, const size_t n_bytes, const uint8_t* bytes)
@@ -56,32 +69,11 @@ void Bus::write_ram(const uint16_t start_addr, const size_t n_bytes, const uint8
 
 uint8_t Bus::read(const uint16_t addr)
 {
-    if (addr < 0x2000) {
-        const uint16_t effective_addr = addr % 0x0800;
-        return ram.read(effective_addr);
-    } else if (addr >= 0x2000 && addr < 0x4000) {
-        const uint16_t addr_index = addr % 0x8;
-        return ppu.read(0x2000 + addr_index);
-    } else if (addr >= 0x4000 && addr < 0x4014) {
-        return apu.read(addr);
-    } else if (addr == 0x4014) {
-        return ppu.read(addr);
-    } else if (addr == 0x4015) {
-        return apu.read(addr);
-#if 0
-    } else if (addr == 0x4016) {
-        return pad1.read(addr);
-    } else if (addr == 0x4017) {
-        return pad2.read(addr);
-#endif
-    } else if (addr >= 0x4020 && addr < 0x6000) {
-        //expansion rom;
-    } else if (addr >= 0x6000 && addr < 0x8000) {
-        //sram;
-    } else if (addr >= 0x8000) {
-        return rom.read(addr);
+    const DecodedAddress d = decode(addr);
+    if (d.device) {
+        return d.device->read(d.effective_addr);
     }
-
+    // Open-bus ranges (no device): reads return 0.
     return 0;
 }
 

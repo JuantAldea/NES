@@ -18,9 +18,27 @@ int main(int argc, char** argv)
     }
     console.cpu.reset();
 
+    uint16_t feedback_register = 0;  //0xbffc;
+
+    if (feedback_register) {
+        console.write(feedback_register, 0x0);
+    }
+
     while (true) {
         auto previous_pc = console.cpu.registers.PC;
         bool executed = console.cpu.clock(false);
+        if (feedback_register) {
+            uint8_t feedback_reg = console.cpu.read(feedback_register);
+            if (feedback_reg & 0x2) {
+                console.write(feedback_register, feedback_reg & ~0x2);
+                console.cpu.raise_NMI();
+                continue;
+            } else if (feedback_reg & 0x1) {
+                console.write(feedback_register, feedback_reg & ~0x1);
+                console.cpu.raise_IRQ();
+                continue;
+            }
+        }
         if (executed && previous_pc == console.cpu.registers.PC) {
             std::cerr << "TRAP " << std::hex << previous_pc << std::endl;
             return previous_pc;

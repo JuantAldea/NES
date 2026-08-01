@@ -1,6 +1,5 @@
 #include "ppu.h"
 
-#include <cassert>
 #include <cstring>
 
 #include "bus.h"
@@ -145,9 +144,21 @@ void PPU::perform_OAM_DMA_cycle()
 void PPU::write(const uint16_t addr, const uint8_t data)
 {
     // std::cout << "PPU WRITE " << std::hex << addr << " " << (unsigned)data << std::endl;
-    assert(addr != PPUSTATUS);
-    registers.PPUSTATUS &= 0xF0;
-    registers.PPUSTATUS |= (data & 0x0F);
+
+    // Every write drives the PPU's internal data bus latch, regardless of
+    // which register it targets (including PPUSTATUS itself, which is
+    // read-only: the write still reaches the bus, it just has no register to
+    // land in). This latch is what PPUSTATUS's open-bus bits 0-4 read back
+    // from below.
+    open_bus = data;
+
+    // PPUSTATUS ($2002) is read-only. Real hardware simply ignores writes to
+    // it (the byte still lands on the bus latch above, but no register is
+    // updated). CPU code can legally do this (e.g. speculative writes), so
+    // this must not abort.
+    if (addr == PPUSTATUS) {
+        return;
+    }
 
     const RegisterMMap reg = static_cast<PPU::RegisterMMap>(addr);
 #pragma GCC diagnostic push
@@ -208,28 +219,42 @@ void PPU::write(const uint16_t addr, const uint8_t data)
 
 uint8_t PPU::read(const uint16_t addr)
 {
-    assert(addr == PPUSTATUS || addr == OAMDATA || addr == PPUDATA);
+    // PPUCTRL, PPUMASK, OAMADDR, PPUSCROLL and PPUADDR are write-only.
+    // Reading them is perfectly legal from the CPU's point of view (nestest
+    // and plenty of real games do it, intentionally or not); real hardware
+    // returns whatever is currently sitting on the PPU's internal data bus
+    // latch rather than trapping. We approximate that with `open_bus`,
+    // updated on every register access below and in PPU::write.
     const RegisterMMap reg = static_cast<PPU::RegisterMMap>(addr);
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wswitch"
     switch (reg) {
     case PPUSTATUS: {
-        uint8_t data = registers.PPUSTATUS;
+        // Bits 0-4 are unused/open bus: they reflect the last value driven on
+        // the PPU data bus rather than real status bits.
+        uint8_t data = (registers.PPUSTATUS & 0xE0) | (open_bus & 0x1F);
         registers.PPUSTATUS &= 0x7F;
         registers.PPUSCROLL = 0x0;
         registers.PPUADDR = 0x0;
         update_flags();
+        open_bus = data;
         return data;
     };
     case OAMDATA:
         //reads during vertical or forced blanking return the value from OAM at that address but do not increment. ?¿?¿?¿?
         //return OAM_memory[registers.OAMADDR--];
-        return OAM_memory[registers.OAMADDR];
+        open_bus = OAM_memory[registers.OAMADDR];
+        return open_bus;
 
-    case PPUDATA:
+    case PPUDATA: {
         uint8_t data = VRAM[registers.PPUADDR];
         registers.PPUADDR += vram_step;
+        open_bus = data;
         return data;
+    }
+    default:
+        // Write-only register read as open bus.
+        return open_bus;
     }
 #pragma GCC diagnostic pop
     return 0;
@@ -237,20 +262,26 @@ uint8_t PPU::read(const uint16_t addr)
 
 void PPU::update_flags()
 {
-    base_nametable_addr = 0x2000 + 0x400 * (read(PPUCTRL) & 0x3);
-    vram_step = read(PPUCTRL) & 0x4 ? Vertical : Horizontal;
-    sprite_pattern_8x8_table_addr = (read(PPUCTRL) & 0x8) ? 0x0000 : 0x1000;
-    bg_pattern_table_address = (read(PPUCTRL) & 0x10) ? 0x0000 : 0x1000;
-    big_sprites = (read(PPUCTRL) & 0x20);
+    // NOTE: this reads the internal register state directly (registers.*),
+    // not through PPU::read(). PPU::read() models CPU-facing register access
+    // semantics (e.g. PPUCTRL/PPUMASK are write-only from the CPU's side and
+    // now correctly return open-bus there); calling it here would either hit
+    // the write-only open-bus path (wrong value) or, previously, an assert.
+    // This function needs the PPU's own idea of what was last written.
+    base_nametable_addr = 0x2000 + 0x400 * (registers.PPUCTRL & 0x3);
+    vram_step = registers.PPUCTRL & 0x4 ? Vertical : Horizontal;
+    sprite_pattern_8x8_table_addr = (registers.PPUCTRL & 0x8) ? 0x0000 : 0x1000;
+    bg_pattern_table_address = (registers.PPUCTRL & 0x10) ? 0x0000 : 0x1000;
+    big_sprites = (registers.PPUCTRL & 0x20);
     // bit 6 PPU master/slave mode. Not used in NES.
-    MMI_on_V_Blank = read(PPUCTRL) & 0x80;
+    MMI_on_V_Blank = registers.PPUCTRL & 0x80;
 
-    greyscale = read(PPUMASK) & 0x1;
-    show_bg_in_leftmost = read(PPUMASK) & 0x2;
-    show_sprites_in_leftmost = read(PPUMASK) & 0x4;
-    show_background = read(PPUMASK) & 0x8;
-    show_sprites = read(PPUMASK) & 0x10;
-    emphasize_red = read(PPUMASK) & 0x20;
-    emphasize_green = read(PPUMASK) & 0x40;
-    emphasize_blue = read(PPUMASK) & 0x80;
+    greyscale = registers.PPUMASK & 0x1;
+    show_bg_in_leftmost = registers.PPUMASK & 0x2;
+    show_sprites_in_leftmost = registers.PPUMASK & 0x4;
+    show_background = registers.PPUMASK & 0x8;
+    show_sprites = registers.PPUMASK & 0x10;
+    emphasize_red = registers.PPUMASK & 0x20;
+    emphasize_green = registers.PPUMASK & 0x40;
+    emphasize_blue = registers.PPUMASK & 0x80;
 }

@@ -23,10 +23,17 @@ public:
     CPU cpu;
     APU apu;
     PPU ppu;
-    RAM ram;
+    SystemRAM ram;
+    PrgRAM prg_ram;
     ROM rom;
 
 protected:
-    const Device& get_device_from_addr(const uint16_t addr) const;
-    Device& get_device_from_addr(const uint16_t addr);
+    // Single address-decode table shared by read() and write() so the two
+    // paths can never disagree about which device (and which mirrored
+    // effective address) a given CPU address maps to.
+    struct DecodedAddress {
+        Device* device;  // nullptr for open-bus ranges (no device backs them)
+        uint16_t effective_addr;
+    };
+    DecodedAddress decode(const uint16_t addr);
 };

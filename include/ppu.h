@@ -61,6 +61,14 @@ public:
         uint8_t OAMDMA;
     } registers;
 
+    // Approximates the PPU's internal data bus latch: every register access
+    // (read or write) through PPU::read/PPU::write drives this byte. Real
+    // hardware decays this value over time; we keep the simpler "last value
+    // seen" approximation, which is enough to make open-bus bits (PPUSTATUS
+    // bits 0-4, and reads of write-only registers) return something
+    // deterministic instead of aborting or fabricating state.
+    uint8_t open_bus = 0;
+
     uint16_t remaining_dma_cycles = 0;
     uint16_t dma_current_memory_source_addr = 0;
 

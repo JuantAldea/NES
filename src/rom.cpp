@@ -9,10 +9,18 @@ constexpr size_t INES_HEADER_SIZE = 16;
 constexpr size_t TRAINER_SIZE = 512;
 constexpr size_t PRG_ROM_BANK_SIZE = 16 * 1024;
 constexpr size_t CHR_ROM_BANK_SIZE = 8 * 1024;
+constexpr uint8_t INES_MAGIC[4] = {'N', 'E', 'S', 0x1A};
 }  // namespace
 
 bool ROM::load(const std::string& path)
 {
+    // Reset any previously loaded cartridge up front so a failed load never
+    // leaves a half-loaded (and therefore misleadingly "loaded()") cartridge.
+    prg_rom.clear();
+    chr_rom.clear();
+    mapper_id = 0;
+    horizontal_mirroring = true;
+
     std::ifstream file(path, std::ios::binary | std::ios::ate);
     if (!file) {
         std::cerr << "ROM: could not open '" << path << "'" << std::endl;
@@ -28,9 +36,12 @@ bool ROM::load(const std::string& path)
     }
 
     std::vector<uint8_t> data(static_cast<size_t>(size));
-    file.read(reinterpret_cast<char*>(data.data()), size);
+    if (!file.read(reinterpret_cast<char*>(data.data()), size)) {
+        std::cerr << "ROM: short read while loading '" << path << "'" << std::endl;
+        return false;
+    }
 
-    if (!(data[0] == 'N' && data[1] == 'E' && data[2] == 'S' && data[3] == 0x1A)) {
+    if (data[0] != INES_MAGIC[0] || data[1] != INES_MAGIC[1] || data[2] != INES_MAGIC[2] || data[3] != INES_MAGIC[3]) {
         std::cerr << "ROM: missing iNES magic number" << std::endl;
         return false;
     }
@@ -41,11 +52,18 @@ bool ROM::load(const std::string& path)
     const uint8_t flags7 = data[7];
 
     const bool has_trainer = flags6 & 0x04;
+    // Mapper id: low nibble comes from the high nibble of flags6, high nibble
+    // from the high nibble of flags7.
     const uint8_t parsed_mapper_id = (flags7 & 0xF0) | (flags6 >> 4);
 
     if (parsed_mapper_id != 0) {
         std::cerr << "ROM: mapper " << static_cast<int>(parsed_mapper_id) << " is not supported (only NROM/mapper 0)"
-                   << std::endl;
+                  << std::endl;
+        return false;
+    }
+
+    if (prg_rom_banks == 0) {
+        std::cerr << "ROM: header advertises zero PRG-ROM banks" << std::endl;
         return false;
     }
 
@@ -58,12 +76,7 @@ bool ROM::load(const std::string& path)
     const size_t chr_size = chr_rom_banks * CHR_ROM_BANK_SIZE;
 
     if (data.size() < offset + prg_size + chr_size) {
-        std::cerr << "ROM: file is smaller than advertised by its header" << std::endl;
-        return false;
-    }
-
-    if (prg_size == 0) {
-        std::cerr << "ROM: header advertises zero PRG-ROM banks" << std::endl;
+        std::cerr << "ROM: file is smaller than advertised by its header (truncated)" << std::endl;
         return false;
     }
 
@@ -90,7 +103,8 @@ uint8_t ROM::read(const uint16_t addr)
         return 0;
     }
 
-    // NROM: 16 KiB PRG-ROM images are mirrored across $8000-$BFFF and $C000-$FFFF;
-    // 32 KiB images fill $8000-$FFFF directly. The modulo handles both cases.
+    // NROM: 16KB PRG-ROM images are mirrored across $8000-$BFFF and $C000-$FFFF;
+    // 32KB images fill $8000-$FFFF directly. The modulo handles both cases since
+    // prg_rom.size() is either 16384 or 32768 (a multiple of the bank size).
     return prg_rom[(addr - 0x8000) % prg_rom.size()];
 }
