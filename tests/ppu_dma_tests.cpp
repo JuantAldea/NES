@@ -37,8 +37,19 @@ bool dma_test(uint8_t target_oam_addr)
 
     uint64_t pre_dma_cpu_cycles = 0;
     uint16_t pre_dma_cpu_pc = 0;
+
+    // Bounded so a regression that stops $4014 reaching the PPU fails the test
+    // instead of spinning forever. The DMA is requested 106 CPU cycles in, i.e.
+    // 106*12 bus cycles; this cap is comfortably above that.
+    constexpr uint64_t kMaxBusCyclesToDmaStart = 106 * 12 * 4;
+    uint64_t guard = 0;
     while (!console.ppu.dma_in_progress()) {
         console.clock();
+        if (++guard > kMaxBusCyclesToDmaStart) {
+            ADD_FAILURE() << "DMA never started within " << kMaxBusCyclesToDmaStart
+                          << " bus cycles: the write to $4014 is not reaching the PPU";
+            return false;
+        }
     }
 
     pre_dma_cpu_pc = console.cpu.registers.PC;
@@ -63,9 +74,16 @@ bool dma_test(uint8_t target_oam_addr)
 
     std::cout << "PC     " << std::hex << console.cpu.registers.PC << std::endl;
 
-    // finish DMA
+    // finish DMA (bounded for the same reason: a DMA that never completes must
+    // fail the test rather than hang it)
+    constexpr uint64_t kMaxBusCyclesToDmaEnd = 514 * 12 * 4;
+    guard = 0;
     while (console.ppu.dma_in_progress()) {
         console.clock();
+        if (++guard > kMaxBusCyclesToDmaEnd) {
+            ADD_FAILURE() << "DMA never completed within " << kMaxBusCyclesToDmaEnd << " bus cycles";
+            return false;
+        }
     }
 
     std::cout << "Cycles " << std::dec << console.cpu.total_cycles << std::endl;

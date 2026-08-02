@@ -61,8 +61,12 @@ bool ROM::load(const std::string& path)
         return false;
     }
 
-    if (prg_rom_banks == 0) {
-        std::cerr << "ROM: header advertises zero PRG-ROM banks\n";
+    // NROM carries either one 16KB PRG bank (mirrored across $8000-$FFFF) or
+    // two (filling it). Anything else is not NROM, however byte 4 reads: the
+    // CPU can only address 32KB of cartridge space, so a larger image would
+    // load with most of it permanently unreachable and no error.
+    if (prg_rom_banks == 0 || prg_rom_banks > 2) {
+        std::cerr << "ROM: NROM requires 1 or 2 PRG-ROM banks, header advertises " << prg_rom_banks << "\n";
         return false;
     }
 

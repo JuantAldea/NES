@@ -88,14 +88,11 @@ void Bus::clock()
 {
     ++total_cycles;
 
-    // TODO keep it easy, for now. -> no mid-frame PPU trickery
-    if (true || total_cycles % 2) {
-        clock_CPU();
-        clock_PPU();
-    } else {
-        clock_PPU();
-        clock_CPU();
-    }
+    // The CPU is always clocked before the PPU. Real hardware interleaves them
+    // by phase, which matters for mid-frame register writes; that is a problem
+    // for the rendering work, not for CPU-only execution.
+    clock_CPU();
+    clock_PPU();
 }
 
 void Bus::clock_PPU()

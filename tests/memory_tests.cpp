@@ -150,11 +150,178 @@ GTEST_TEST(testMemory, load_nestest_through_bus)
     EXPECT_EQ(console.read(0xC000), console.read(0x8000));
 }
 
+// Builds an iNES image on disk. Caller supplies the header bytes and the bank
+// payloads, so a test can pin exactly one header field at a time.
+struct SyntheticRom {
+    explicit SyntheticRom(const std::string& name) : path(std::string(NES_TEST_FILES_DIR) + "/" + name) {}
+    ~SyntheticRom() { std::remove(path.c_str()); }
+
+    SyntheticRom(const SyntheticRom&) = delete;
+    SyntheticRom& operator=(const SyntheticRom&) = delete;
+
+    // prg_fill/chr_fill let a test prove which region of the file a byte came
+    // from, which is what makes the trainer-offset check meaningful.
+    void write(uint8_t prg_banks, uint8_t chr_banks, uint8_t flags6, uint8_t flags7, uint8_t prg_fill = 0xAA,
+               uint8_t chr_fill = 0xBB, bool include_banks = true)
+    {
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        const uint8_t header[16] = {'N', 'E', 'S', 0x1A, prg_banks, chr_banks, flags6, flags7, 0, 0, 0, 0, 0, 0, 0, 0};
+        out.write(reinterpret_cast<const char*>(header), sizeof(header));
+
+        if (!include_banks) {
+            return;
+        }
+
+        if (flags6 & 0x04) {
+            // 512-byte trainer, filled with a value distinct from the PRG data
+            // so that misapplying the offset is detectable.
+            const std::vector<uint8_t> trainer(512, 0x5A);
+            out.write(reinterpret_cast<const char*>(trainer.data()), trainer.size());
+        }
+
+        const std::vector<uint8_t> prg(prg_banks * 16u * 1024u, prg_fill);
+        out.write(reinterpret_cast<const char*>(prg.data()), prg.size());
+        const std::vector<uint8_t> chr(chr_banks * 8u * 1024u, chr_fill);
+        out.write(reinterpret_cast<const char*>(chr.data()), chr.size());
+    }
+
+    std::string path;
+};
+
 GTEST_TEST(testMemory, reject_bad_magic)
 {
+    // Self-contained rather than reusing an unrelated fixture: pointing this at
+    // another test's file would make it pass on "could not open" if that file
+    // ever moved, i.e. pass for the wrong reason.
+    const std::string path = std::string(NES_TEST_FILES_DIR) + "/bad_magic_test.nes";
+    {
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        const uint8_t header[16] = {'N', 'O', 'P', 0xFF, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+        out.write(reinterpret_cast<const char*>(header), sizeof(header));
+        const std::vector<uint8_t> body(24 * 1024, 0);
+        out.write(reinterpret_cast<const char*>(body.data()), body.size());
+    }
+
     ROM rom(nullptr);
-    EXPECT_FALSE(rom.load(std::string(NES_TEST_FILES_DIR) + "/6502_functional_test.bin"));
+    EXPECT_FALSE(rom.load(path));
     EXPECT_FALSE(rom.loaded());
+
+    std::remove(path.c_str());
+}
+
+// The trainer is 512 bytes between the header and the PRG data. Getting the
+// offset wrong shifts every PRG byte, which is invisible unless the trainer and
+// the PRG carry different values.
+GTEST_TEST(testMemory, trainer_offset_is_skipped)
+{
+    SyntheticRom rom_file("trainer_test.nes");
+    rom_file.write(/*prg_banks=*/1, /*chr_banks=*/1, /*flags6=*/0x04, /*flags7=*/0, /*prg_fill=*/0xAA);
+
+    ROM rom(nullptr);
+    ASSERT_TRUE(rom.load(rom_file.path));
+    ASSERT_EQ(16384u, rom.prg_rom.size());
+    EXPECT_EQ(0xAA, rom.prg_rom.front()) << "PRG data starts at the trainer's bytes: offset not applied";
+    EXPECT_EQ(0xAA, rom.prg_rom.back());
+}
+
+// The truncation check must account for the CHR banks too, not just PRG.
+GTEST_TEST(testMemory, reject_file_truncated_within_chr)
+{
+    const std::string path = std::string(NES_TEST_FILES_DIR) + "/short_chr_test.nes";
+    {
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        // Header claims 1 PRG + 1 CHR bank, but only the PRG bank follows.
+        const uint8_t header[16] = {'N', 'E', 'S', 0x1A, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+        out.write(reinterpret_cast<const char*>(header), sizeof(header));
+        const std::vector<uint8_t> prg(16 * 1024, 0);
+        out.write(reinterpret_cast<const char*>(prg.data()), prg.size());
+    }
+
+    ROM rom(nullptr);
+    EXPECT_FALSE(rom.load(path)) << "CHR shortfall not detected: truncation check ignores chr_size";
+    EXPECT_FALSE(rom.loaded());
+
+    std::remove(path.c_str());
+}
+
+// Mapper id is (flags7 & 0xF0) | (flags6 >> 4). Only exercising the flags6
+// nibble leaves the high half of that expression untested.
+GTEST_TEST(testMemory, reject_mapper_encoded_in_flags7_high_nibble)
+{
+    SyntheticRom rom_file("mapper16_test.nes");
+    // flags6 nibble 0, flags7 high nibble 1 -> mapper 16.
+    rom_file.write(/*prg_banks=*/1, /*chr_banks=*/1, /*flags6=*/0x00, /*flags7=*/0x10);
+
+    ROM rom(nullptr);
+    EXPECT_FALSE(rom.load(rom_file.path)) << "mapper id ignores the flags7 high nibble";
+    EXPECT_FALSE(rom.loaded());
+}
+
+GTEST_TEST(testMemory, mirroring_flag_is_decoded)
+{
+    SyntheticRom horizontal("mirror_h_test.nes");
+    horizontal.write(1, 1, /*flags6=*/0x00, 0);
+    ROM rom_h(nullptr);
+    ASSERT_TRUE(rom_h.load(horizontal.path));
+    EXPECT_TRUE(rom_h.horizontal_mirroring) << "flags6 bit 0 clear means horizontal mirroring";
+
+    SyntheticRom vertical("mirror_v_test.nes");
+    vertical.write(1, 1, /*flags6=*/0x01, 0);
+    ROM rom_v(nullptr);
+    ASSERT_TRUE(rom_v.load(vertical.path));
+    EXPECT_FALSE(rom_v.horizontal_mirroring) << "flags6 bit 0 set means vertical mirroring";
+}
+
+// NROM addresses at most 32KB of PRG. A larger image would otherwise load with
+// most of it permanently unreachable and no error reported.
+GTEST_TEST(testMemory, reject_prg_bank_count_outside_nrom)
+{
+    SyntheticRom too_big("prg3_test.nes");
+    too_big.write(/*prg_banks=*/3, /*chr_banks=*/1, 0, 0);
+
+    ROM rom(nullptr);
+    EXPECT_FALSE(rom.load(too_big.path));
+    EXPECT_FALSE(rom.loaded());
+}
+
+// A failed load must not leave the previous cartridge resident while still
+// reporting loaded(). Every other ROM test uses a fresh object, so nothing
+// covered this documented guarantee.
+GTEST_TEST(testMemory, failed_load_after_success_fully_unloads)
+{
+    ROM rom(nullptr);
+    ASSERT_TRUE(rom.load(nestest_path()));
+    ASSERT_TRUE(rom.loaded());
+    ASSERT_EQ(16384u, rom.prg_rom.size());
+
+    EXPECT_FALSE(rom.load(std::string(NES_TEST_FILES_DIR) + "/does_not_exist.nes"));
+    EXPECT_FALSE(rom.loaded()) << "failed load left the previous cartridge resident";
+    EXPECT_TRUE(rom.prg_rom.empty());
+    EXPECT_TRUE(rom.chr_rom.empty());
+}
+
+// $4016-$401F and $4020-$5FFF have no device. Nothing asserted that they read
+// as open bus rather than aliasing into RAM or PRG-RAM.
+GTEST_TEST(testMemory, unmapped_ranges_are_open_bus)
+{
+    Bus console;
+
+    // Write through the unmapped address itself and read it straight back. If
+    // any device backs the range the value sticks and the read returns it;
+    // genuine open bus reads 0. Probing unrelated addresses does not work here
+    // - a wrong decode aliases $4016 to ram[$16] and $4020 to prg_ram[$20],
+    // which a test that only seeded $0000 and $6000 would never touch.
+    for (const uint16_t addr : {0x4016, 0x4017, 0x401F, 0x4020, 0x5000, 0x5FFF}) {
+        console.write(addr, 0xFF);
+        EXPECT_EQ(0x00, console.read(addr))
+            << "$" << std::hex << addr << " is backed by a device; expected open bus";
+    }
+
+    // And the discarded writes must not have landed anywhere observable.
+    console.write(0x0000, 0x11);
+    console.write(0x6000, 0x22);
+    EXPECT_EQ(0x11, console.read(0x0000));
+    EXPECT_EQ(0x22, console.read(0x6000));
 }
 
 GTEST_TEST(testMemory, reject_missing_file)

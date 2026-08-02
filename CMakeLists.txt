@@ -6,6 +6,15 @@ include(FetchContent)
 
 enable_testing()
 
+# Without an explicit build type CMake passes no optimisation *and* no NDEBUG,
+# which happens to keep asserts live - but that is incidental. Pin it, because
+# at least one regression test asserts that a formerly-aborting code path no
+# longer aborts, and NDEBUG would make that test vacuously pass.
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+    set(CMAKE_BUILD_TYPE Debug CACHE STRING "Build type" FORCE)
+    set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS Debug Release RelWithDebInfo MinSizeRel)
+endif()
+
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
