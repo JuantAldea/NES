@@ -165,10 +165,18 @@ bool CPU::step()
     // still reads at PC, it just discards what comes back and does not advance
     // PC.
     if (cycle == 1) {
+        // NMI outranks IRQ, and IRQ is masked by I. Both then run the same
+        // seven-cycle sequence, differing only in which vector it ends at.
         if (nmi_requested || (irq_requested && !get_flag(FLAGS::I))) {
             servicing_nmi = nmi_requested;
+
+            if (servicing_nmi) {
+                nmi_requested = false;
+            } else {
+                irq_requested = false;
+            }
+
             current_instruction = servicing_nmi ? &InstructionSet::NMI : &InstructionSet::IRQ;
-            (servicing_nmi ? nmi_requested : irq_requested) = false;
             schedule = Schedule::interrupt;
             read(registers.PC);
             return false;
