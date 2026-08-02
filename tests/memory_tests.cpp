@@ -47,6 +47,11 @@ GTEST_TEST(testMemory, ppu_register_mirroring_reaches_2007_mirror_at_3fff)
     // register as $2007 (PPUDATA), not fall through to RAM. The original
     // decode used `addr < 0x3FFF`, which excluded $3FFF from the PPU range.
     Bus console;
+    // $2006 writes are ignored during the post-reset lockout. This test is
+    // about address decoding, not lockout timing, so get past it first.
+    while (console.ppu.in_reset_write_lockout()) {
+        console.ppu.clock();
+    }
     console.write(PPU::PPUADDR, 0x00);
     console.write(PPU::PPUADDR, 0x10);
     console.write(PPU::PPUDATA, 0x42);

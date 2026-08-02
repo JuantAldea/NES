@@ -1,0 +1,439 @@
+#include "../include/bus.h"
+#include "gtest/gtest.h"
+
+// Regression tests for the PPU register file: the $2005/$2006 two-write
+// sequence, the $2002 read side effects, the VRAM address increment and the
+// post-reset write lockout.
+
+namespace tests
+{
+namespace
+{
+// Writes to PPUCTRL/PPUMASK/PPUSCROLL/PPUADDR are ignored until the reset
+// lockout expires, so most tests have to run the PPU past it first.
+void run_past_reset_lockout(PPU& ppu)
+{
+    while (ppu.in_reset_write_lockout()) {
+        ppu.clock();
+    }
+}
+
+void write_addr(PPU& ppu, uint8_t high, uint8_t low)
+{
+    ppu.write(PPU::PPUADDR, high);
+    ppu.write(PPU::PPUADDR, low);
+}
+}  // namespace
+
+// --- $2006 two-write sequence -------------------------------------------
+
+GTEST_TEST(testPPURegisters, ppuaddr_assembles_both_writes)
+{
+    Bus console;
+    run_past_reset_lockout(console.ppu);
+
+    write_addr(console.ppu, 0x21, 0x08);
+
+    EXPECT_EQ(0x2108, console.ppu.registers.PPUADDR);
+}
+
+GTEST_TEST(testPPURegisters, ppuaddr_holds_the_full_14_bit_range)
+{
+    Bus console;
+    run_past_reset_lockout(console.ppu);
+
+    // The nametables and the palette live well past the first 256 bytes of
+    // VRAM, so an 8-bit address register cannot reach them.
+    const uint16_t addresses[] = {0x2000, 0x23FF, 0x2400, 0x2800, 0x2C00, 0x3F00, 0x3F1F, 0x3FFF};
+
+    for (const uint16_t addr : addresses) {
+        write_addr(console.ppu, addr >> 8, addr & 0xFF);
+        EXPECT_EQ(addr, console.ppu.registers.PPUADDR) << "address " << std::hex << addr;
+
+        console.ppu.write(PPU::PPUDATA, 0xA5);
+        EXPECT_EQ(0xA5, console.ppu.VRAM[addr]) << "address " << std::hex << addr;
+    }
+}
+
+GTEST_TEST(testPPURegisters, ppuaddr_first_write_drops_the_top_two_bits)
+{
+    Bus console;
+    run_past_reset_lockout(console.ppu);
+
+    // The VRAM address is 14 bits wide; $C1 -> $01.
+    write_addr(console.ppu, 0xC1, 0x23);
+
+    EXPECT_EQ(0x0123, console.ppu.registers.PPUADDR);
+}
+
+GTEST_TEST(testPPURegisters, ppuaddr_writes_stay_within_vram)
+{
+    Bus console;
+    run_past_reset_lockout(console.ppu);
+
+    // Incrementing off the end of the 14-bit space wraps rather than running
+    // past the end of the VRAM array.
+    write_addr(console.ppu, 0x3F, 0xFF);
+    console.ppu.write(PPU::PPUDATA, 0x77);
+
+    EXPECT_EQ(0x77, console.ppu.VRAM[0x3FFF]);
+    EXPECT_EQ(0x0000, console.ppu.registers.PPUADDR);
+}
+
+// --- $2005 two-write sequence -------------------------------------------
+
+GTEST_TEST(testPPURegisters, ppuscroll_keeps_both_writes)
+{
+    Bus console;
+    run_past_reset_lockout(console.ppu);
+
+    console.ppu.write(PPU::PPUSCROLL, 0x7D);  // X
+    console.ppu.write(PPU::PPUSCROLL, 0x5E);  // Y
+
+    EXPECT_EQ(0x7D, console.ppu.scroll_x());
+    EXPECT_EQ(0x5E, console.ppu.scroll_y());
+    EXPECT_EQ(0x7D5E, console.ppu.registers.PPUSCROLL);
+}
+
+GTEST_TEST(testPPURegisters, ppuscroll_and_ppuaddr_share_the_write_toggle)
+{
+    Bus console;
+    run_past_reset_lockout(console.ppu);
+
+    console.ppu.write(PPU::PPUSCROLL, 0x11);  // consumes the first write slot
+    console.ppu.write(PPU::PPUADDR, 0x22);    // lands in the second slot
+
+    EXPECT_EQ(0x0022, console.ppu.registers.PPUADDR);
+    EXPECT_EQ(0x11, console.ppu.scroll_x());
+}
+
+// --- $2002 read resets the write toggle ---------------------------------
+
+GTEST_TEST(testPPURegisters, ppustatus_read_resets_the_write_toggle)
+{
+    Bus console;
+    run_past_reset_lockout(console.ppu);
+
+    EXPECT_TRUE(console.ppu.high_byte_input);
+
+    console.ppu.write(PPU::PPUADDR, 0x21);
+    EXPECT_FALSE(console.ppu.high_byte_input);
+
+    console.ppu.read(PPU::PPUSTATUS);
+    EXPECT_TRUE(console.ppu.high_byte_input);
+
+    // Because the toggle was reset, this is treated as a first write, so it
+    // only stages the high byte.
+    console.ppu.write(PPU::PPUADDR, 0x08);
+    EXPECT_EQ(0x0800, console.ppu.temp_addr);
+    EXPECT_EQ(0x0000, console.ppu.registers.PPUADDR);
+
+    console.ppu.write(PPU::PPUADDR, 0x08);
+    EXPECT_EQ(0x0808, console.ppu.registers.PPUADDR);
+}
+
+GTEST_TEST(testPPURegisters, ppuaddr_is_only_committed_by_the_second_write)
+{
+    Bus console;
+    run_past_reset_lockout(console.ppu);
+
+    write_addr(console.ppu, 0x20, 0x00);
+
+    // A half-finished write pair must not disturb the address PPUDATA uses.
+    console.ppu.write(PPU::PPUADDR, 0x3F);
+    EXPECT_EQ(0x2000, console.ppu.registers.PPUADDR);
+
+    console.ppu.write(PPU::PPUDATA, 0xC3);
+    EXPECT_EQ(0xC3, console.ppu.VRAM[0x2000]);
+    EXPECT_EQ(0x00, console.ppu.VRAM[0x3F00]);
+
+    console.ppu.write(PPU::PPUADDR, 0x00);
+    EXPECT_EQ(0x3F00, console.ppu.registers.PPUADDR);
+}
+
+GTEST_TEST(testPPURegisters, ppustatus_read_preserves_the_addresses)
+{
+    Bus console;
+    run_past_reset_lockout(console.ppu);
+
+    write_addr(console.ppu, 0x21, 0x08);
+    console.ppu.write(PPU::PPUSCROLL, 0x33);
+    console.ppu.write(PPU::PPUSCROLL, 0x44);
+
+    console.ppu.read(PPU::PPUSTATUS);
+
+    // Hardware clears only the write toggle; it leaves the addresses alone.
+    EXPECT_EQ(0x2108, console.ppu.registers.PPUADDR);
+    EXPECT_EQ(0x3344, console.ppu.registers.PPUSCROLL);
+
+    // The retained address is still the one PPUDATA uses.
+    console.ppu.write(PPU::PPUDATA, 0x5A);
+    EXPECT_EQ(0x5A, console.ppu.VRAM[0x2108]);
+}
+
+// --- VRAM address increment ---------------------------------------------
+
+GTEST_TEST(testPPURegisters, vertical_vram_step_is_32)
+{
+    EXPECT_EQ(32, PPU::Vertical);
+    EXPECT_EQ(1, PPU::Horizontal);
+}
+
+GTEST_TEST(testPPURegisters, ppuctrl_selects_the_vram_step)
+{
+    Bus console;
+    run_past_reset_lockout(console.ppu);
+
+    console.ppu.write(PPU::PPUCTRL, 0x00);
+    EXPECT_EQ(PPU::Horizontal, console.ppu.vram_step);
+
+    console.ppu.write(PPU::PPUCTRL, 0x04);
+    EXPECT_EQ(PPU::Vertical, console.ppu.vram_step);
+}
+
+GTEST_TEST(testPPURegisters, ppudata_write_honours_the_vertical_step)
+{
+    Bus console;
+    run_past_reset_lockout(console.ppu);
+
+    console.ppu.write(PPU::PPUCTRL, 0x04);  // increment by 32
+    write_addr(console.ppu, 0x20, 0x00);
+
+    console.ppu.write(PPU::PPUDATA, 0x01);
+    EXPECT_EQ(0x2020, console.ppu.registers.PPUADDR);
+    console.ppu.write(PPU::PPUDATA, 0x02);
+    EXPECT_EQ(0x2040, console.ppu.registers.PPUADDR);
+    console.ppu.write(PPU::PPUDATA, 0x03);
+    EXPECT_EQ(0x2060, console.ppu.registers.PPUADDR);
+
+    EXPECT_EQ(0x01, console.ppu.VRAM[0x2000]);
+    EXPECT_EQ(0x02, console.ppu.VRAM[0x2020]);
+    EXPECT_EQ(0x03, console.ppu.VRAM[0x2040]);
+    // Nothing should have landed at the horizontal-step positions.
+    EXPECT_EQ(0x00, console.ppu.VRAM[0x2001]);
+    EXPECT_EQ(0x00, console.ppu.VRAM[0x2002]);
+}
+
+GTEST_TEST(testPPURegisters, ppudata_read_and_write_use_the_same_step)
+{
+    Bus console;
+    run_past_reset_lockout(console.ppu);
+
+    for (const uint8_t ctrl : {uint8_t{0x00}, uint8_t{0x04}}) {
+        console.ppu.write(PPU::PPUCTRL, ctrl);
+        const uint16_t step = console.ppu.vram_step;
+
+        write_addr(console.ppu, 0x20, 0x00);
+        console.ppu.write(PPU::PPUDATA, 0xEE);
+        const uint16_t after_write = console.ppu.registers.PPUADDR;
+
+        write_addr(console.ppu, 0x20, 0x00);
+        // NB: the PPUDATA read buffer is not modelled yet, so a read returns
+        // VRAM directly instead of the previously buffered byte.
+        EXPECT_EQ(0xEE, console.ppu.read(PPU::PPUDATA)) << "ctrl " << std::hex << (unsigned)ctrl;
+        const uint16_t after_read = console.ppu.registers.PPUADDR;
+
+        EXPECT_EQ(0x2000 + step, after_write) << "ctrl " << std::hex << (unsigned)ctrl;
+        EXPECT_EQ(after_write, after_read) << "ctrl " << std::hex << (unsigned)ctrl;
+    }
+}
+
+// --- post-reset write lockout -------------------------------------------
+
+GTEST_TEST(testPPURegisters, reset_lockout_is_expressed_in_ppu_cycles)
+{
+    // ~29658 CPU cycles, and the PPU runs three times faster than the CPU.
+    EXPECT_EQ(29658u, PPU::reset_lockout_cpu_cycles);
+    EXPECT_EQ(88974u, PPU::reset_lockout_cycles);
+}
+
+GTEST_TEST(testPPURegisters, ppuctrl_writes_are_ignored_until_the_lockout_ends)
+{
+    Bus console;
+
+    EXPECT_TRUE(console.ppu.in_reset_write_lockout());
+    console.ppu.write(PPU::PPUCTRL, 0xFF);
+    EXPECT_EQ(0x00, console.ppu.registers.PPUCTRL);
+    // update_flags() must not have run either.
+    EXPECT_FALSE(console.ppu.MMI_on_V_Blank);
+
+    while (console.ppu.total_cycles < PPU::reset_lockout_cycles - 1) {
+        console.ppu.clock();
+    }
+    console.ppu.write(PPU::PPUCTRL, 0xFF);
+    EXPECT_EQ(0x00, console.ppu.registers.PPUCTRL) << "still one cycle short";
+
+    console.ppu.clock();
+    EXPECT_EQ(PPU::reset_lockout_cycles, console.ppu.total_cycles);
+    EXPECT_FALSE(console.ppu.in_reset_write_lockout());
+
+    console.ppu.write(PPU::PPUCTRL, 0xFF);
+    EXPECT_EQ(0xFF, console.ppu.registers.PPUCTRL);
+    EXPECT_TRUE(console.ppu.MMI_on_V_Blank);
+}
+
+GTEST_TEST(testPPURegisters, lockout_covers_mask_scroll_and_addr)
+{
+    Bus console;
+    ASSERT_TRUE(console.ppu.in_reset_write_lockout());
+
+    console.ppu.write(PPU::PPUMASK, 0xFF);
+    EXPECT_EQ(0x00, console.ppu.registers.PPUMASK);
+    EXPECT_FALSE(console.ppu.show_background);
+
+    console.ppu.write(PPU::PPUSCROLL, 0xFF);
+    console.ppu.write(PPU::PPUSCROLL, 0xFF);
+    EXPECT_EQ(0x0000, console.ppu.registers.PPUSCROLL);
+
+    write_addr(console.ppu, 0x21, 0x08);
+    EXPECT_EQ(0x0000, console.ppu.registers.PPUADDR);
+
+    // An ignored write must not consume a write-toggle slot either.
+    EXPECT_TRUE(console.ppu.high_byte_input);
+}
+
+GTEST_TEST(testPPURegisters, lockout_does_not_cover_oam_or_ppudata)
+{
+    Bus console;
+    ASSERT_TRUE(console.ppu.in_reset_write_lockout());
+
+    console.ppu.write(PPU::OAMADDR, 0x10);
+    EXPECT_EQ(0x10, console.ppu.registers.OAMADDR);
+
+    console.ppu.write(PPU::OAMDATA, 0x99);
+    EXPECT_EQ(0x99, console.ppu.OAM_memory[0x10]);
+
+    console.ppu.write(PPU::PPUDATA, 0x88);
+    EXPECT_EQ(0x88, console.ppu.VRAM[0x0000]);
+}
+
+// --- open bus ------------------------------------------------------------
+
+GTEST_TEST(testPPURegisters, ppustatus_merges_open_bus_into_the_low_five_bits)
+{
+    Bus console;
+    run_past_reset_lockout(console.ppu);
+
+    console.ppu.write(PPU::PPUCTRL, 0xFF);  // puts $FF on the I/O bus
+    console.ppu.set_vblank();
+
+    // Bits 7-5 come from the PPU, bits 4-0 from the bus latch.
+    EXPECT_EQ(0x9F, console.ppu.read(PPU::PPUSTATUS));
+}
+
+GTEST_TEST(testPPURegisters, ppustatus_read_clears_vblank)
+{
+    Bus console;
+    run_past_reset_lockout(console.ppu);
+
+    console.ppu.write(PPU::PPUCTRL, 0x00);  // clear the bus latch
+    console.ppu.set_vblank();
+
+    EXPECT_EQ(0x80, console.ppu.read(PPU::PPUSTATUS));
+    // Reading it clears vblank but leaves the other flags alone.
+    EXPECT_EQ(0x00, console.ppu.read(PPU::PPUSTATUS));
+}
+
+GTEST_TEST(testPPURegisters, ppustatus_read_keeps_sprite_flags)
+{
+    Bus console;
+    run_past_reset_lockout(console.ppu);
+
+    console.ppu.write(PPU::PPUCTRL, 0x00);
+    console.ppu.set_vblank();
+    console.ppu.set_sprite0_hit();
+    console.ppu.set_sprite_overflow();
+
+    EXPECT_EQ(0xE0, console.ppu.read(PPU::PPUSTATUS));
+    EXPECT_EQ(0x60, console.ppu.read(PPU::PPUSTATUS));
+}
+
+GTEST_TEST(testPPURegisters, write_only_registers_read_back_the_open_bus)
+{
+    Bus console;
+    run_past_reset_lockout(console.ppu);
+
+    console.ppu.write(PPU::PPUCTRL, 0x3C);
+
+    for (const uint16_t addr : {PPU::PPUCTRL, PPU::PPUMASK, PPU::OAMADDR, PPU::PPUSCROLL, PPU::PPUADDR, PPU::OAMDMA}) {
+        EXPECT_EQ(0x3C, console.ppu.read(addr)) << "register " << std::hex << addr;
+    }
+}
+
+GTEST_TEST(testPPURegisters, reads_refresh_the_open_bus)
+{
+    Bus console;
+    run_past_reset_lockout(console.ppu);
+
+    console.ppu.write(PPU::PPUCTRL, 0x00);
+    write_addr(console.ppu, 0x20, 0x00);
+    console.ppu.write(PPU::PPUDATA, 0x6B);
+
+    write_addr(console.ppu, 0x20, 0x00);
+    EXPECT_EQ(0x6B, console.ppu.read(PPU::PPUDATA));
+
+    // The value just read is now what a write-only register hands back.
+    EXPECT_EQ(0x6B, console.ppu.read(PPU::PPUMASK));
+}
+
+GTEST_TEST(testPPURegisters, writing_ppustatus_only_moves_the_open_bus)
+{
+    Bus console;
+    run_past_reset_lockout(console.ppu);
+
+    console.ppu.set_vblank();
+    console.ppu.write(PPU::PPUSTATUS, 0x1F);
+
+    // The flags are untouched, but the latch took the value.
+    EXPECT_EQ(0x9F, console.ppu.read(PPU::PPUSTATUS));
+}
+
+// --- PPUCTRL decoding ----------------------------------------------------
+
+GTEST_TEST(testPPURegisters, ppuctrl_decodes_nametable_and_pattern_tables)
+{
+    Bus console;
+    run_past_reset_lockout(console.ppu);
+
+    console.ppu.write(PPU::PPUCTRL, 0x00);
+    EXPECT_EQ(0x2000, console.ppu.base_nametable_addr);
+    EXPECT_EQ(0x0000, console.ppu.sprite_pattern_8x8_table_addr);
+    EXPECT_EQ(0x0000, console.ppu.bg_pattern_table_address);
+
+    console.ppu.write(PPU::PPUCTRL, 0x03);
+    EXPECT_EQ(0x2C00, console.ppu.base_nametable_addr);
+
+    // Bit 3 selects the sprite pattern table, bit 4 the background one:
+    // 0 -> $0000, 1 -> $1000.
+    console.ppu.write(PPU::PPUCTRL, 0x08);
+    EXPECT_EQ(0x1000, console.ppu.sprite_pattern_8x8_table_addr);
+    EXPECT_EQ(0x0000, console.ppu.bg_pattern_table_address);
+
+    console.ppu.write(PPU::PPUCTRL, 0x10);
+    EXPECT_EQ(0x0000, console.ppu.sprite_pattern_8x8_table_addr);
+    EXPECT_EQ(0x1000, console.ppu.bg_pattern_table_address);
+}
+
+GTEST_TEST(testPPURegisters, ppumask_decodes_its_flags)
+{
+    Bus console;
+    run_past_reset_lockout(console.ppu);
+
+    console.ppu.write(PPU::PPUMASK, 0xFF);
+    EXPECT_TRUE(console.ppu.greyscale);
+    EXPECT_TRUE(console.ppu.show_bg_in_leftmost);
+    EXPECT_TRUE(console.ppu.show_sprites_in_leftmost);
+    EXPECT_TRUE(console.ppu.show_background);
+    EXPECT_TRUE(console.ppu.show_sprites);
+    EXPECT_TRUE(console.ppu.emphasize_red);
+    EXPECT_TRUE(console.ppu.emphasize_green);
+    EXPECT_TRUE(console.ppu.emphasize_blue);
+
+    console.ppu.write(PPU::PPUMASK, 0x00);
+    EXPECT_FALSE(console.ppu.greyscale);
+    EXPECT_FALSE(console.ppu.show_background);
+    EXPECT_FALSE(console.ppu.show_sprites);
+    EXPECT_FALSE(console.ppu.emphasize_blue);
+}
+
+};  // namespace tests

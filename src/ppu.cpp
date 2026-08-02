@@ -166,14 +166,18 @@ void PPU::write(const uint16_t addr, const uint8_t data)
 #pragma GCC diagnostic ignored "-Wswitch"
     switch (reg) {
     case PPUCTRL:
-        // After power/reset, writes to this register are ignored for about 30,000 cycles.
-        if (total_cycles < 300000) {
+        // Ignored until the reset lockout expires. The write does not happen
+        // at all, so the decoded flags must not be refreshed either.
+        if (in_reset_write_lockout()) {
             break;
         }
         registers.PPUCTRL = data;
         update_flags();
         break;
     case PPUMASK:
+        if (in_reset_write_lockout()) {
+            break;
+        }
         registers.PPUMASK = data;
         update_flags();
         break;
@@ -186,28 +190,38 @@ void PPU::write(const uint16_t addr, const uint8_t data)
 
         break;
     case PPUSCROLL:
+        if (in_reset_write_lockout()) {
+            break;
+        }
+        // First write is the X scroll, second is the Y scroll.
         if (high_byte_input) {
-            registers.PPUSCROLL = 0;
-            registers.PPUSCROLL |= (data << 4);
+            registers.PPUSCROLL = (registers.PPUSCROLL & 0x00FF) | (data << 8);
         } else {
-            registers.PPUSCROLL &= 0xFF00;
-            registers.PPUSCROLL |= data;
+            registers.PPUSCROLL = (registers.PPUSCROLL & 0xFF00) | data;
         }
         high_byte_input = !high_byte_input;
         break;
     case PPUADDR:
+        if (in_reset_write_lockout()) {
+            break;
+        }
+        // First write is the most significant byte. The address is 14 bits, so
+        // the top two bits of that byte are discarded. The pair is staged in
+        // temp_addr and only committed once the second write lands.
         if (high_byte_input) {
-            registers.PPUADDR = 0;
-            registers.PPUADDR |= (data << 4);
+            temp_addr = (temp_addr & 0x00FF) | ((data & 0x3F) << 8);
         } else {
-            registers.PPUADDR &= 0xFF00;
-            registers.PPUADDR |= data;
+            temp_addr = (temp_addr & 0xFF00) | data;
+            registers.PPUADDR = temp_addr;
         }
         high_byte_input = !high_byte_input;
         break;
     case PPUDATA:
         // std::cout << "WRITE TO PPUDATA " << std::hex << "(" << (unsigned)registers.PPUDATA << ") <= " << std::hex << (unsigned)data << " PTR " << registers.PPUADDR << std::endl;
-        VRAM[registers.PPUADDR++] = data;
+        // Must use vram_step, not ++, so the write path agrees with the read
+        // path below.
+        VRAM[registers.PPUADDR & vram_addr_mask] = data;
+        registers.PPUADDR = (registers.PPUADDR + vram_step) & vram_addr_mask;
         break;
     case OAMDMA:
         registers.OAMDMA = data;
@@ -235,9 +249,10 @@ uint8_t PPU::read(const uint16_t addr)
         // the PPU data bus rather than real status bits.
         uint8_t data = (registers.PPUSTATUS & 0xE0) | (open_bus & 0x1F);
         registers.PPUSTATUS &= 0x7F;
-        registers.PPUSCROLL = 0x0;
-        registers.PPUADDR = 0x0;
-        update_flags();
+        // A PPUSTATUS read resets the $2005/$2006 write pair. It clears only
+        // the write toggle; hardware leaves the addresses themselves intact,
+        // so PPUSCROLL/PPUADDR must not be zeroed here.
+        high_byte_input = true;
         open_bus = data;
         return data;
     };
@@ -248,8 +263,8 @@ uint8_t PPU::read(const uint16_t addr)
         return open_bus;
 
     case PPUDATA: {
-        uint8_t data = VRAM[registers.PPUADDR];
-        registers.PPUADDR += vram_step;
+        uint8_t data = VRAM[registers.PPUADDR & vram_addr_mask];
+        registers.PPUADDR = (registers.PPUADDR + vram_step) & vram_addr_mask;
         open_bus = data;
         return data;
     }
@@ -271,8 +286,10 @@ void PPU::update_flags()
     // This function needs the PPU's own idea of what was last written.
     base_nametable_addr = 0x2000 + 0x400 * (registers.PPUCTRL & 0x3);
     vram_step = registers.PPUCTRL & 0x4 ? Vertical : Horizontal;
-    sprite_pattern_8x8_table_addr = (registers.PPUCTRL & 0x8) ? 0x0000 : 0x1000;
-    bg_pattern_table_address = (registers.PPUCTRL & 0x10) ? 0x0000 : 0x1000;
+    // Bit 3 selects the sprite pattern table and bit 4 the background one;
+    // in both cases 0 means $0000 and 1 means $1000.
+    sprite_pattern_8x8_table_addr = (registers.PPUCTRL & 0x8) ? 0x1000 : 0x0000;
+    bg_pattern_table_address = (registers.PPUCTRL & 0x10) ? 0x1000 : 0x0000;
     big_sprites = (registers.PPUCTRL & 0x20);
     // bit 6 PPU master/slave mode. Not used in NES.
     MMI_on_V_Blank = registers.PPUCTRL & 0x80;

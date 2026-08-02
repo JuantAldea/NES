@@ -59,8 +59,14 @@ public:
         uint8_t PPUSTATUS;
         uint8_t OAMADDR;
         uint8_t OAMDATA;
-        uint8_t PPUSCROLL;
-        uint8_t PPUADDR;
+        // Two-write registers. Both hold the value assembled from the write
+        // pair, so they need more than 8 bits: PPUADDR is a 14-bit VRAM
+        // address, PPUSCROLL packs X (first write) in the high byte and Y
+        // (second write) in the low byte. As uint8_t these could only reach
+        // the first 256 bytes of VRAM, leaving the nametables and palette
+        // unaddressable.
+        uint16_t PPUSCROLL;
+        uint16_t PPUADDR;
         uint8_t PPUDATA;
         uint8_t OAMDMA;
     } registers = {};
@@ -96,7 +102,19 @@ public:
 
     uint8_t& get_register(const RegisterMMap reg);
 
-    enum VRAMStep : uint8_t { Horizontal = 0x1, Vertical = 0x32 };
+    // PPUCTRL bit 2 selects an increment of 1 or 32. These are decimal
+    // quantities, not bit patterns: 0x32 would be 50.
+    enum VRAMStep : uint8_t { Horizontal = 1, Vertical = 32 };
+
+    static constexpr uint16_t vram_addr_mask = 0x3FFF;
+
+    // Writes to PPUCTRL, PPUMASK, PPUSCROLL and PPUADDR are ignored for about
+    // 29658 CPU cycles after power/reset. total_cycles counts PPU cycles, and
+    // the PPU runs three times faster than the CPU, so the threshold has to be
+    // converted into that clock domain.
+    static constexpr uint64_t reset_lockout_cpu_cycles = 29658;
+    static constexpr uint64_t reset_lockout_cycles = reset_lockout_cpu_cycles * 3;
+
     uint16_t base_nametable_addr = 0;
     uint16_t sprite_pattern_8x8_table_addr = 0;
     uint16_t bg_pattern_table_address = 0;
@@ -107,6 +125,10 @@ public:
     bool big_sprites = false;
     uint8_t vram_step = 1;
     bool high_byte_input = true;
+    // Staging register for the $2006 write pair. The first write only updates
+    // this; registers.PPUADDR is committed from it by the second write, so a
+    // PPUDATA access in between still uses the previous address.
+    uint16_t temp_addr = 0;
 
     bool greyscale = false;
     bool show_bg_in_leftmost = false;
@@ -117,7 +139,10 @@ public:
     bool emphasize_green = false;
     bool emphasize_blue = false;
 
-    uint8_t low_last_written;
+    bool in_reset_write_lockout() const { return total_cycles < reset_lockout_cycles; }
+
+    uint8_t scroll_x() const { return registers.PPUSCROLL >> 8; }
+    uint8_t scroll_y() const { return registers.PPUSCROLL & 0xFF; }
 
     void update_flags();
 };
