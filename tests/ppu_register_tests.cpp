@@ -436,4 +436,185 @@ GTEST_TEST(testPPURegisters, ppumask_decodes_its_flags)
     EXPECT_FALSE(console.ppu.emphasize_blue);
 }
 
+// --- frame state machine -------------------------------------------------
+//
+// PPU::clock used to declare `scanline` as a local, reset on every call, so
+// the state machine never left scanline 1: vblank was never entered and NMI
+// never raised. These pin the frame structure that fix restored.
+
+namespace
+{
+// Clocks until (scanline, cycle) is reached, with a bound so a broken state
+// machine fails instead of spinning forever.
+bool clock_until_dot(PPU& ppu, int target_scanline, int target_cycle)
+{
+    const uint64_t limit = 2ull * PPU::dots_per_scanline * PPU::scanlines_per_frame;
+    for (uint64_t i = 0; i < limit; ++i) {
+        if (ppu.scanline == target_scanline && ppu.cycle == target_cycle) {
+            return true;
+        }
+        ppu.clock();
+    }
+    return false;
+}
+}  // namespace
+
+GTEST_TEST(testPPUFrame, dot_counter_advances_and_wraps)
+{
+    Bus console;
+    PPU& ppu = console.ppu;
+
+    EXPECT_EQ(0, ppu.scanline);
+    EXPECT_EQ(0, ppu.cycle);
+
+    ppu.clock();
+    EXPECT_EQ(0, ppu.scanline);
+    EXPECT_EQ(1, ppu.cycle) << "cycle must advance between clocks";
+
+    // Run out the rest of the scanline; the next dot rolls onto scanline 1.
+    for (int i = 1; i < PPU::dots_per_scanline; ++i) {
+        ppu.clock();
+    }
+    EXPECT_EQ(1, ppu.scanline);
+    EXPECT_EQ(0, ppu.cycle);
+}
+
+GTEST_TEST(testPPUFrame, frame_wraps_after_262_scanlines)
+{
+    Bus console;
+    PPU& ppu = console.ppu;
+
+    // Rendering disabled, so no odd-frame dot is skipped and a frame is
+    // exactly 341 * 262 dots.
+    ASSERT_FALSE(ppu.rendering_enabled());
+    for (uint64_t i = 0; i < 1ull * PPU::dots_per_scanline * PPU::scanlines_per_frame; ++i) {
+        ppu.clock();
+    }
+
+    EXPECT_EQ(0, ppu.scanline);
+    EXPECT_EQ(0, ppu.cycle);
+    EXPECT_EQ(1u, ppu.frame);
+}
+
+GTEST_TEST(testPPUFrame, vblank_is_set_at_241_1_and_cleared_at_261_1)
+{
+    Bus console;
+    PPU& ppu = console.ppu;
+
+    ASSERT_TRUE(clock_until_dot(ppu, PPU::vblank_start_scanline, 1));
+    EXPECT_EQ(0x00, ppu.registers.PPUSTATUS & 0x80) << "vblank must not be set before dot 1 is processed";
+
+    ppu.clock();  // process (241, 1)
+    EXPECT_EQ(0x80, ppu.registers.PPUSTATUS & 0x80) << "vblank must be set at scanline 241 dot 1";
+
+    ASSERT_TRUE(clock_until_dot(ppu, PPU::pre_render_scanline, 1));
+    EXPECT_EQ(0x80, ppu.registers.PPUSTATUS & 0x80) << "vblank must persist through the vblank lines";
+
+    ppu.clock();  // process (261, 1)
+    EXPECT_EQ(0x00, ppu.registers.PPUSTATUS & 0x80) << "pre-render line must clear vblank";
+}
+
+GTEST_TEST(testPPUFrame, exactly_one_vblank_period_per_frame)
+{
+    Bus console;
+    PPU& ppu = console.ppu;
+
+    int rising_edges = 0;
+    bool previous = false;
+    const int frames = 3;
+    for (uint64_t i = 0; i < 1ull * frames * PPU::dots_per_scanline * PPU::scanlines_per_frame; ++i) {
+        ppu.clock();
+        const bool now = ppu.registers.PPUSTATUS & 0x80;
+        if (now && !previous) {
+            ++rising_edges;
+        }
+        previous = now;
+    }
+
+    EXPECT_EQ(frames, rising_edges);
+    EXPECT_EQ(static_cast<uint64_t>(frames), ppu.frame);
+}
+
+GTEST_TEST(testPPUFrame, pre_render_line_clears_sprite_flags)
+{
+    Bus console;
+    PPU& ppu = console.ppu;
+
+    ppu.set_sprite0_hit();
+    ppu.set_sprite_overflow();
+
+    ASSERT_TRUE(clock_until_dot(ppu, PPU::pre_render_scanline, 1));
+    ppu.clock();
+
+    EXPECT_EQ(0x00, ppu.registers.PPUSTATUS & 0x60);
+}
+
+GTEST_TEST(testPPUFrame, nmi_is_not_raised_while_ppuctrl_bit7_is_clear)
+{
+    Bus console;
+    PPU& ppu = console.ppu;
+
+    ASSERT_FALSE(ppu.MMI_on_V_Blank);
+    for (uint64_t i = 0; i < 2ull * PPU::dots_per_scanline * PPU::scanlines_per_frame; ++i) {
+        ppu.clock();
+        ASSERT_FALSE(console.cpu.nmi_pending()) << "NMI raised with PPUCTRL bit 7 clear, at scanline " << ppu.scanline;
+    }
+    EXPECT_EQ(2u, ppu.frame);
+}
+
+GTEST_TEST(testPPUFrame, nmi_is_raised_at_vblank_when_enabled)
+{
+    Bus console;
+    PPU& ppu = console.ppu;
+
+    // Get past the reset lockout so PPUCTRL is writable, then enable NMI
+    // outside of vblank so the enable itself does not raise one.
+    while (ppu.in_reset_write_lockout()) {
+        ppu.clock();
+    }
+    ASSERT_TRUE(clock_until_dot(ppu, 0, 0));
+    ppu.write(PPU::PPUCTRL, 0x80);
+    ASSERT_TRUE(ppu.MMI_on_V_Blank);
+    ASSERT_FALSE(console.cpu.nmi_pending());
+
+    ASSERT_TRUE(clock_until_dot(ppu, PPU::vblank_start_scanline, 1));
+    EXPECT_FALSE(console.cpu.nmi_pending()) << "not yet: dot 1 has not been processed";
+
+    ppu.clock();
+    EXPECT_TRUE(console.cpu.nmi_pending()) << "NMI must be raised at scanline 241 dot 1";
+}
+
+GTEST_TEST(testPPUFrame, enabling_nmi_during_vblank_raises_one_immediately)
+{
+    Bus console;
+    PPU& ppu = console.ppu;
+
+    while (ppu.in_reset_write_lockout()) {
+        ppu.clock();
+    }
+    ASSERT_TRUE(clock_until_dot(ppu, PPU::vblank_start_scanline, 1));
+    ppu.clock();
+    ASSERT_EQ(0x80, ppu.registers.PPUSTATUS & 0x80);
+    ASSERT_FALSE(console.cpu.nmi_pending()) << "bit 7 still clear";
+
+    ppu.write(PPU::PPUCTRL, 0x80);
+    EXPECT_TRUE(console.cpu.nmi_pending()) << "enabling bit 7 while vblank is set must raise an NMI";
+}
+
+GTEST_TEST(testPPUFrame, enabling_nmi_outside_vblank_does_not_raise_one)
+{
+    Bus console;
+    PPU& ppu = console.ppu;
+
+    while (ppu.in_reset_write_lockout()) {
+        ppu.clock();
+    }
+    // Land on a visible scanline, where the vblank flag is clear.
+    ASSERT_TRUE(clock_until_dot(ppu, 10, 0));
+    ASSERT_EQ(0x00, ppu.registers.PPUSTATUS & 0x80);
+
+    ppu.write(PPU::PPUCTRL, 0x80);
+    EXPECT_FALSE(console.cpu.nmi_pending());
+}
+
 };  // namespace tests

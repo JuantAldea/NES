@@ -146,5 +146,10 @@ protected:
     bool irq_requested = false;
 
 public:
+    // Observability for tests: whether an NMI has been requested but not yet
+    // taken. The PPU is expected to raise this only when PPUCTRL bit 7 asks
+    // for it, and that gating is easy to break silently.
+    bool nmi_pending() const { return nmi_requested; }
+
     friend class InstructionSet;
 };

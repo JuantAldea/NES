@@ -41,16 +41,32 @@ void PPU::clock()
         perform_OAM_DMA_cycle();
         //TODO return?
     }
-    int scanline = 1;
-    const int cycle = total_cycles % 341;
     //341 clocks/scanline
     // external PPU memory accessed every two clocks = 170 reads
     //+ 1 spare cycle
 
-    //Pre-render scanline
     switch (scanline) {
-        case -1:
-        case 261:
+        case 0 ... 239:
+            process_visible_scanline();
+            break;
+        case post_render_scanline:
+            // idle
+            break;
+        case vblank_start_scanline:
+            //NMI is raised on the second cycle of scanline 241
+            if (cycle == 1) {
+               set_vblank();
+               // The flag is set regardless; the CPU is only interrupted when
+               // PPUCTRL bit 7 asked for it.
+               if (MMI_on_V_Blank) {
+                   bus->cpu.raise_NMI();
+               }
+            }
+            break;
+        case 242 ... 260:
+            // TODO is it idle as well?
+            break;
+        case pre_render_scanline:
             // prefetch tile info for first two tiles
             if (cycle == 1) {
                clear_vblank();
@@ -58,29 +74,12 @@ void PPU::clock()
                clear_sprite_overflow();
             }
             break;
-        case 0 ... 239:
-            process_visible_scanline();
-            break;
-        case 240:
-            // Post-render scanline
-            // idle
-            break;
-        case 241:
-            //NMI is raised on the second cycle of scanline 241
-            if (cycle == 1) {
-               bus->cpu.raise_NMI();
-               set_vblank();
-            }
-            break;
-        case 242 ... 260:
-            // TODO is it idle as well?
-            break;
         default:
             std::cerr << "Scanline out of range: " << scanline << std::endl;
             break;
     }
 
-    scanline += (cycle == 0);
+    advance_dot();
     /*
 
     - Sprite DMA is 6144 clock cycles long (or in CPU clock cycles, 6144/12).
@@ -95,10 +94,37 @@ void PPU::clock()
     */
 }
 
+void PPU::advance_dot()
+{
+    // On odd frames the final dot of the pre-render line, (261, 340), is
+    // skipped while rendering is enabled, making those frames one dot short.
+    const bool skips_last_dot =
+        scanline == pre_render_scanline && cycle == dots_per_scanline - 2 && (frame % 2) == 1 && rendering_enabled();
+
+    if (skips_last_dot) {
+        cycle = 0;
+        scanline = 0;
+        ++frame;
+        return;
+    }
+
+    ++cycle;
+    if (cycle < dots_per_scanline) {
+        return;
+    }
+
+    cycle = 0;
+    ++scanline;
+    if (scanline < scanlines_per_frame) {
+        return;
+    }
+
+    scanline = 0;
+    ++frame;
+}
+
 void PPU::process_visible_scanline()
 {
-    // 341 PPU cycles per scanline
-    const int cycle = total_cycles % 341;
     // render background and sprite. Visible scanlines
     if (cycle == 0) {
         //idle
@@ -171,8 +197,16 @@ void PPU::write(const uint16_t addr, const uint8_t data)
         if (in_reset_write_lockout()) {
             break;
         }
-        registers.PPUCTRL = data;
-        update_flags();
+        {
+            const bool nmi_was_enabled = MMI_on_V_Blank;
+            registers.PPUCTRL = data;
+            update_flags();
+            // Enabling NMI while the vblank flag is still set raises one
+            // immediately, rather than waiting for the next frame.
+            if (!nmi_was_enabled && MMI_on_V_Blank && (registers.PPUSTATUS & 0x80)) {
+                bus->cpu.raise_NMI();
+            }
+        }
         break;
     case PPUMASK:
         if (in_reset_write_lockout()) {

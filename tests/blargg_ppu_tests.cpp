@@ -4,11 +4,20 @@
 // enable/suppression, and odd-frame behaviour. They report their result through
 // PRG-RAM rather than the screen, so they are fully headless.
 //
-// THESE TESTS ARE EXPECTED TO FAIL RIGHT NOW. PPU::clock declares `scanline` as
-// a local that is reset on every call, so the state machine never advances past
-// a visible scanline: vblank is never set and NMI is never raised. Every ROM
-// here will therefore time out. That is the measurement, not a defect in this
-// file -- the count of passing ROMs is the scalar the PPU work drives upward.
+// THESE TESTS ARE EXPECTED TO FAIL RIGHT NOW, but no longer for the original
+// reason. PPU::clock's frame state machine now works: scanline/cycle persist
+// across calls, vblank is set at (241,1) and cleared at (261,1) exactly once
+// per frame, and NMI is raised only when PPUCTRL bit 7 asks for it. See
+// testPPUFrame in ppu_register_tests.cpp, which pins all of that.
+//
+// These ROMs still time out because they measure vbl set/clear and NMI timing
+// to single-cycle resolution, and CPU::clock performs an instruction's entire
+// memory effect on its last cycle instead of distributing accesses across the
+// cycles of the instruction. Closing that gap -- plus $2002-read/vblank race
+// suppression -- is what these ROMs are now waiting on.
+//
+// That is the measurement, not a defect in this file -- the count of passing
+// ROMs is the scalar the PPU work drives upward.
 // Do NOT weaken these assertions to make the suite green.
 #include <cstdint>
 #include <fstream>
@@ -171,9 +180,10 @@ TEST_P(BlarggPpuVblNmi, reports_pass)
                << std::hex << static_cast<int>(result.final_ppustatus) << std::dec << ", CPU ran " << result.cpu_cycles
                << " cycles, ending at PC=$" << std::hex << result.final_pc << std::dec
                << ".\n"
-                  "  Expected while PPU::clock keeps `scanline` as a local reset every\n"
-                  "  call: vblank is never set and NMI is never raised, so these ROMs\n"
-                  "  cannot make progress.";
+                  "  The frame state machine itself works: vblank sets at (241,1) and\n"
+                  "  clears at (261,1) once per frame. Expected while CPU::clock applies\n"
+                  "  an instruction's entire memory effect on its last cycle instead of\n"
+                  "  per-cycle, which these ROMs measure to single-cycle resolution.";
     }
 
     if (result.needs_reset) {

@@ -120,6 +120,26 @@ public:
     uint16_t bg_pattern_table_address = 0;
     uint64_t total_cycles = 0;
 
+    // Position within the frame. These have to persist across clock() calls:
+    // as locals the state machine could never advance, so vblank was never
+    // entered and NMI never raised.
+    //
+    // An NTSC frame is 262 scanlines (0-261) of 341 dots (0-340): 0-239 are
+    // visible, 240 is post-render, 241 starts vblank, and 261 is the
+    // pre-render line that clears the status flags.
+    static constexpr int dots_per_scanline = 341;
+    static constexpr int scanlines_per_frame = 262;
+    static constexpr int post_render_scanline = 240;
+    static constexpr int vblank_start_scanline = 241;
+    static constexpr int pre_render_scanline = 261;
+
+    int scanline = 0;
+    int cycle = 0;
+    uint64_t frame = 0;
+
+    bool rendering_enabled() const { return show_background || show_sprites; }
+    void advance_dot();
+
     bool MMI_on_V_Blank = false;
     bool increase_vertical = false;
     bool big_sprites = false;
