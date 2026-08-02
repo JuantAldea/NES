@@ -22,8 +22,10 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
+#include <cstdio>
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
@@ -44,11 +46,49 @@ namespace
 // assume a bare 6502 with RAM everywhere, and so does the timing table.
 // ---------------------------------------------------------------------------
 
+// One bus access: the 6502 performs exactly one per cycle, so a trace of these
+// is equivalent to a cycle-by-cycle description of the instruction. Verified
+// against all 900,000 vectors: accesses-per-instruction always equals the
+// documented cycle count.
+struct BusAccess {
+    uint16_t addr = 0;
+    uint8_t value = 0;
+    bool is_write = false;
+
+    bool operator==(const BusAccess&) const = default;
+};
+
+std::string to_string(const BusAccess& a)
+{
+    char buf[40];
+    std::snprintf(buf, sizeof(buf), "%s $%04X = $%02X", a.is_write ? "write" : "read ", a.addr, a.value);
+    return buf;
+}
+
 struct FlatMemory {
     std::array<uint8_t, 64 * 1024> memory{};
 
-    uint8_t read(const uint16_t addr) const { return memory[addr]; }
-    void write(const uint16_t addr, const uint8_t data) { memory[addr] = data; }
+    // Every access the CPU makes, in order. Recording here rather than inside
+    // the CPU keeps the observation completely outside the code under test.
+    std::vector<BusAccess> trace;
+    bool recording = false;
+
+    uint8_t read(const uint16_t addr)
+    {
+        const uint8_t value = memory[addr];
+        if (recording) {
+            trace.push_back(BusAccess{addr, value, false});
+        }
+        return value;
+    }
+
+    void write(const uint16_t addr, const uint8_t data)
+    {
+        memory[addr] = data;
+        if (recording) {
+            trace.push_back(BusAccess{addr, data, true});
+        }
+    }
 };
 
 CPU make_cpu(FlatMemory& mem)
@@ -214,7 +254,11 @@ struct VectorCase {
     std::string name;
     CpuState initial;
     CpuState expected;
-    size_t cycle_count = 0;
+    // The full expected bus trace. Its length is the instruction's cycle count,
+    // since the 6502 performs exactly one bus access per cycle.
+    std::vector<BusAccess> cycles;
+
+    size_t cycle_count() const { return cycles.size(); }
 };
 
 class JsonParser
@@ -361,9 +405,12 @@ private:
         return ram;
     }
 
-    size_t parse_cycle_count()
+    // Parses the whole per-cycle bus trace rather than just its length. Each
+    // entry is [address, value, "read"|"write"] and describes the single bus
+    // access the 6502 performs on that cycle.
+    std::vector<BusAccess> parse_cycle_trace()
     {
-        size_t count = 0;
+        std::vector<BusAccess> trace;
 
         skip_ws();
         expect('[');
@@ -371,22 +418,26 @@ private:
 
         if (peek() == ']') {
             advance();
-            return count;
+            return trace;
         }
 
         while (true) {
             skip_ws();
             expect('[');
-            parse_number();
+            const long addr = parse_number();
             skip_ws();
             expect(',');
-            parse_number();
+            const long value = parse_number();
             skip_ws();
             expect(',');
-            parse_string();
+            const std::string kind = parse_string();
             skip_ws();
             expect(']');
-            ++count;
+
+            if (kind != "read" && kind != "write") {
+                fail("unrecognised bus access kind: " + kind);
+            }
+            trace.push_back(BusAccess{static_cast<uint16_t>(addr), static_cast<uint8_t>(value), kind == "write"});
 
             skip_ws();
             if (peek() == ',') {
@@ -398,7 +449,7 @@ private:
             break;
         }
 
-        return count;
+        return trace;
     }
 
     CpuState parse_state()
@@ -475,7 +526,7 @@ private:
             } else if (key == "final") {
                 test_case.expected = parse_state();
             } else if (key == "cycles") {
-                test_case.cycle_count = parse_cycle_count();
+                test_case.cycles = parse_cycle_trace();
                 seen_cycles = true;
             } else {
                 fail("unknown key in test case: " + key);
@@ -560,8 +611,8 @@ TEST_P(SingleStepVectors, matches_hardware_vectors)
         // Collect every mismatch for this case, then report the case once.
         std::ostringstream problems;
 
-        if (cycles != test_case.cycle_count) {
-            problems << "\n  cycles:   expected " << test_case.cycle_count << ", got " << cycles;
+        if (cycles != test_case.cycle_count()) {
+            problems << "\n  cycles:   expected " << test_case.cycle_count() << ", got " << cycles;
         }
         if (cpu.registers.PC != test_case.expected.pc) {
             problems << "\n  PC:       expected " << std::hex << test_case.expected.pc << ", got " << cpu.registers.PC
@@ -607,6 +658,117 @@ TEST_P(SingleStepVectors, matches_hardware_vectors)
     EXPECT_EQ(failures, 0u) << failures << " of " << cases.size() << " vectors failed for opcode $" << opcode_hex
                             << (failures > kMaxReported ? " (only the first 5 shown)" : "");
 }
+
+// ---------------------------------------------------------------------------
+// Per-cycle bus trace.
+//
+// The test above checks where an instruction ENDS UP. This one checks HOW IT
+// GETS THERE: the address, value and direction of the single bus access the
+// 6502 performs on each of its cycles.
+//
+// That distinction is the whole point. This core performs an instruction's
+// memory effect in two lumps -- all reads during addressing on the first cycle,
+// the rest on the last -- which lands on the correct final state via the wrong
+// accesses at the wrong times. Real hardware also issues accesses that this
+// core does not make at all: the dummy read at the un-carried address when an
+// indexed read crosses a page, and the dummy write of the OLD value that every
+// read-modify-write performs before writing the new one. Those phantom accesses
+// are observable: a dummy read of $2002 clears vblank, a dummy write to $2007
+// corrupts VRAM. They are why Blargg's PPU timing ROMs fail.
+//
+// EXPECTED TO FAIL BROADLY until the CPU is cycle-stepped. The number of
+// opcodes passing here is the scalar that work drives upward. Do NOT weaken
+// this to make the suite green.
+// ---------------------------------------------------------------------------
+
+class SingleStepBusTrace : public ::testing::TestWithParam<std::string>
+{
+};
+
+// All 256 opcodes. Unlike the final-state suite above, which is restricted to
+// the opcodes this core reworked, the trace suite covers everything: the cycle
+// schedule is a property of the addressing mode and access class, so a gap
+// anywhere hides a whole family of wrong schedules.
+std::vector<std::string> all_opcodes()
+{
+    std::vector<std::string> out;
+    out.reserve(256);
+    for (int i = 0; i < 256; ++i) {
+        char buf[3];
+        std::snprintf(buf, sizeof(buf), "%02x", i);
+        out.emplace_back(buf);
+    }
+    return out;
+}
+
+TEST_P(SingleStepBusTrace, matches_hardware_bus_trace)
+{
+    const std::string opcode_hex = GetParam();
+    const std::string path = vectors_path(opcode_hex);
+
+    std::ifstream file(path);
+    if (!file.is_open()) {
+        GTEST_SKIP() << "vectors absent: " << path << " (run tests/test_files/fetch_single_step_tests.sh)";
+    }
+
+    std::ostringstream buffer;
+    buffer << file.rdbuf();
+    const std::vector<VectorCase> cases = JsonParser(buffer.str()).parse_cases();
+    ASSERT_FALSE(cases.empty()) << "no cases parsed from " << path;
+
+    FlatMemory mem;
+    CPU cpu = make_cpu(mem);
+
+    size_t failures = 0;
+    constexpr size_t kMaxReported = 2;
+
+    for (const VectorCase& test_case : cases) {
+        mem.memory.fill(0);
+        for (const auto& [addr, value] : test_case.initial.ram) {
+            mem.memory[addr] = value;
+        }
+
+        cpu.registers.PC = test_case.initial.pc;
+        cpu.registers.SP = test_case.initial.s;
+        cpu.registers.A = test_case.initial.a;
+        cpu.registers.X = test_case.initial.x;
+        cpu.registers.Y = test_case.initial.y;
+        cpu.registers.P = test_case.initial.p;
+        cpu.cycles_left = 0;
+
+        mem.trace.clear();
+        mem.recording = true;
+        run_one_instruction(cpu);
+        mem.recording = false;
+
+        if (mem.trace == test_case.cycles) {
+            continue;
+        }
+
+        ++failures;
+        if (failures <= kMaxReported) {
+            std::ostringstream detail;
+            const size_t n = std::max(mem.trace.size(), test_case.cycles.size());
+            for (size_t i = 0; i < n; ++i) {
+                const bool have_exp = i < test_case.cycles.size();
+                const bool have_got = i < mem.trace.size();
+                const bool same = have_exp && have_got && test_case.cycles[i] == mem.trace[i];
+                detail << "\n    cycle " << (i + 1) << (same ? "   " : " * ")
+                       << (have_exp ? to_string(test_case.cycles[i]) : std::string("(none)")) << "   |   "
+                       << (have_got ? to_string(mem.trace[i]) : std::string("(none)"));
+            }
+            ADD_FAILURE() << "opcode $" << opcode_hex << " case \"" << test_case.name << "\""
+                          << "\n  expected " << test_case.cycles.size() << " accesses, made " << mem.trace.size()
+                          << "\n    cycle    EXPECTED (hardware)      |   ACTUAL (this core)" << detail.str();
+        }
+    }
+
+    EXPECT_EQ(failures, 0u) << failures << " of " << cases.size() << " vectors had a wrong bus trace for opcode $"
+                            << opcode_hex << (failures > kMaxReported ? " (only the first 2 shown)" : "");
+}
+
+INSTANTIATE_TEST_SUITE_P(AllOpcodes, SingleStepBusTrace, ::testing::ValuesIn(all_opcodes()),
+                         [](const ::testing::TestParamInfo<std::string>& info) { return "op_" + info.param; });
 
 // Every opcode implemented or restructured by this core that has vectors
 // fetched for it. Kept in sync with tests/test_files/fetch_single_step_tests.sh.

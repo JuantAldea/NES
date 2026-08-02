@@ -7,12 +7,18 @@
 # checking "SLO does ASL then ORA" against an assertion that SLO does ASL then
 # ORA.
 #
-# Only the opcodes the suite actually exercises are fetched (~5 MB each, ~360 MB
-# total) rather than cloning the whole ~1.4 GB repository. Everything lands in
+# All 256 opcodes are fetched (~4 MB each, ~1.1 GB total) by direct download
+# rather than by cloning the repository. Everything lands in
 # tests/test_files/single_step_tests/ and is gitignored.
 #
+# The full set is needed because the per-cycle bus trace is checked, not only
+# the final CPU state. A cycle schedule is a property of the addressing mode and
+# access class, and the trickiest sequences -- JSR, RTS, RTI, BRK, and the
+# read-modify-write forms with their dummy write of the old value -- are exactly
+# the ones the earlier 90-opcode subset omitted.
+#
 # The upstream files are not checksum-pinned the way the nestest assets are:
-# there are 90 of them and upstream regenerates them wholesale on occasion. The
+# there are 256 of them and upstream regenerates them wholesale on occasion. The
 # tests validate the shape of what they parse instead, so a truncated or
 # malformed download fails as a parse error rather than as a silent pass.
 #
@@ -23,14 +29,9 @@ DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 DEST="$DIR/single_step_tests"
 BASE="https://raw.githubusercontent.com/SingleStepTests/65x02/main/nes6502/v1"
 
-# The opcodes under test: every illegal opcode implemented in src/cpu.cpp, all
-# eight conditional branches, the stack/flow instructions whose flag handling
-# changed, and the indexed read/store/read-modify-write forms that the page
-# cross ("oops") cycle classification hinges on.
-OPCODES="03 07 0f 13 17 1b 1f 23 27 2f 33 37 3b 3f 43 47 4f 53 57 5b 5f
-63 67 6f 73 77 7b 7f 83 87 8f 97 a3 a7 af b3 b7 bf c3 c7 cf d3 d7 db df
-e3 e7 ef f3 f7 fb ff 0b 2b 4b 10 30 50 70 90 b0 d0 f0 40 28 08 68 48
-bd b9 b1 9d 99 91 1e 3e 5e 7e de fe bc be a9 69 e9 c9 2a 6a 4a 0a"
+# Every opcode $00-$ff, including the twelve JAM/STP opcodes (upstream provides
+# vectors for those too).
+OPCODES=$(awk 'BEGIN { for (i = 0; i < 256; i++) printf "%02x\n", i }')
 
 mkdir -p "$DEST"
 
@@ -46,19 +47,40 @@ fi
 
 echo "fetching $missing opcode vector file(s) into $DEST ..."
 
+failed=""
 for op in $OPCODES; do
     if [ -s "$DEST/$op.json" ]; then
         continue
     fi
 
-    if ! curl -fsSL --retry 3 --max-time 300 -o "$DEST/$op.json.tmp" "$BASE/$op.json"; then
+    # --retry-all-errors matters here: a mid-transfer TLS teardown is reported
+    # as a non-HTTP error, which plain --retry will not retry, and one such
+    # blip previously aborted the whole run 115 files in.
+    if ! curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 --max-time 300 \
+              -o "$DEST/$op.json.tmp" "$BASE/$op.json"; then
         rm -f "$DEST/$op.json.tmp"
-        echo "failed to fetch $op.json from $BASE" >&2
-        exit 1
+        echo "  FAILED: $op.json" >&2
+        failed="$failed $op"
+        continue
     fi
 
     mv "$DEST/$op.json.tmp" "$DEST/$op.json"
     echo "  ok: $op.json"
 done
 
-echo "done: $(ls "$DEST" | wc -l) files in $DEST"
+count=$(ls "$DEST" | wc -l | tr -d ' ')
+
+# Fail loudly on an incomplete set. A partial fetch previously looked like a
+# success and left the suite quietly checking a subset of the opcodes.
+if [ -n "$failed" ]; then
+    echo "incomplete:$failed could not be fetched ($count/256 present)" >&2
+    echo "re-run this script to retry only the missing files" >&2
+    exit 1
+fi
+
+if [ "$count" -ne 256 ]; then
+    echo "incomplete: $count/256 files present in $DEST" >&2
+    exit 1
+fi
+
+echo "done: $count files in $DEST"
