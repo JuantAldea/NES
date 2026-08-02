@@ -9,31 +9,32 @@
 #include "cpu.h"
 #include "device.h"
 
+// One row of the opcode table: what the instruction is called, how it finds its
+// operand, and what it does with it.
+//
+// Deliberately absent: a cycle count, an addressing routine, and a flag for the
+// "oops" cycle.
+//
+// Timing is not something an opcode declares. The 6502 drives the bus on every
+// cycle it runs, so an instruction's length is exactly the number of accesses
+// it makes - and those come from the cycle schedule CPU::step() runs, chosen
+// from `addr_type` together with what the mnemonic does to memory. A count
+// restated here would only be somewhere for the truth to be contradicted.
+//
+// Nor is there an addressing function, because addressing is not a step that
+// happens before the instruction: it is spread across the instruction's first
+// cycles, one byte per cycle, interleaved with the instruction's own work. JSR
+// reads the low byte of its target on cycle 2 and the high byte on cycle 6,
+// with three stack accesses in between; there is no moment at which "the
+// addressing mode runs".
+//
+// The published per-opcode timings still exist as an oracle - in
+// tests/cpu_cycle_tests.cpp, transcribed from a reference by hand, precisely so
+// that they are not derived from this file.
 struct Instruction {
     std::string name;
     Addressing addr_type;
     std::function<void(CPU&)> operation = nullptr;
-    std::function<void(CPU&)> addressing = nullptr;
-    uint8_t cycles;
-
-    // The "oops" cycle: some instructions spend one extra cycle when the
-    // effective address computation crosses a page boundary, because the CPU
-    // speculatively reads from the un-carried address first and then has to
-    // repeat the read once the high byte is fixed up.
-    //
-    // This is NOT universal. It applies only to instructions that *read* their
-    // operand (LDA abs,X and friends). Stores and read-modify-writes always
-    // perform the fix-up read, so their cost is fixed and already includes it:
-    // STA abs,X is 5 cycles whether or not it crosses a page, and ASL abs,X is
-    // always 7. Marking those would over-count.
-    //
-    // The eight conditional branches reuse this flag for their own variable
-    // cost (+1 when taken, +1 more when the target is on a different page);
-    // see CPU::extra_cycles_for_current_instruction().
-    //
-    // Defaulted to false so that only the instructions that actually pay the
-    // penalty have to name it, rather than every one of the 256 table rows.
-    bool extra_cycle_on_page_cross = false;
 };
 
 struct InstructionSet {

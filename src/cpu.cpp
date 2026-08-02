@@ -21,21 +21,6 @@ void CPU::raise_NMI() { nmi_requested = true; }
 
 void CPU::raise_IRQ() { irq_requested = true; }
 
-void CPU::execute_current_instruction(const bool update_debugger)
-{
-    //std::cout << std::hex << "PC before executing " << (unsigned)current_op_code << "->" << registers.PC <<std::endl;
-
-    // execute
-    current_instruction->operation(*this);
-    //std::cout << std::hex << "PC after executing " << (unsigned)current_op_code << "->" << registers.PC <<std::endl;
-
-    set_flag(FLAGS::U, true);
-
-    if (update_debugger) {
-        signal_update();
-    }
-}
-
 // True when the current instruction is one of the eight conditional branches
 // and its condition holds, i.e. the branch will be taken.
 //
@@ -47,11 +32,6 @@ void CPU::execute_current_instruction(const bool update_debugger)
 //     $30 BMI     00  1    N == 1        $B0 BCS     10  1    C == 1
 //     $50 BVC     01  0    V == 0        $D0 BNE     11  0    Z == 0
 //     $70 BVS     01  1    V == 1        $F0 BEQ     11  1    Z == 1
-//
-// Evaluating the condition here, at decode time, is equivalent to evaluating it
-// when the operation runs: no branch reads or writes anything but PC, so the
-// tested flag cannot change in between. That equivalence is what lets the whole
-// cycle count be known up front - see clock() for why that matters.
 //
 // Only ever called for opcodes whose addressing mode is `relative`, which is
 // exactly this set of eight. cpu_cycle_tests.cpp pins this against the
@@ -66,73 +46,623 @@ bool CPU::branch_is_taken() const
     return get_flag(flag) == branch_on;
 }
 
-// The variable part of the current instruction's cost, in cycles, computed at
-// decode time. Zero unless the instruction is flagged as paying the "oops"
-// cycle (see Instruction::extra_cycle_on_page_cross).
-uint8_t CPU::extra_cycles_for_current_instruction() const
+// Which of the ~30 access schedules an opcode follows.
+//
+// Derived from the instruction table rather than transcribed as a 256-row list
+// of its own: the schedule is a function of the addressing mode and of what the
+// operation does to memory, both of which the table already states. Writing it
+// out again by hand would be 256 more chances to disagree with it.
+//
+// The access class comes from the mnemonic. Only two small closed sets are not
+// plain reads: the stores, and the read-modify-writes. Everything else - loads,
+// compares, ALU operations, and the undocumented NOPs that still fetch an
+// operand they discard - reads.
+CPU::Schedule CPU::schedule_for(const uint8_t opcode)
 {
-    if (!current_instruction->extra_cycle_on_page_cross) {
-        return 0;
+    const Instruction& instruction = InstructionSet::Table[opcode];
+    const std::string& name = instruction.name;
+    const Addressing mode = instruction.addr_type;
+
+    // Control flow: each of these has a sequence no addressing mode describes.
+    if (name == "BRK") return Schedule::software_interrupt;
+    if (name == "JSR") return Schedule::jump_subroutine;
+    if (name == "RTS") return Schedule::return_subroutine;
+    if (name == "RTI") return Schedule::return_interrupt;
+    if (name == "STP") return Schedule::jam;
+    if (name == "PHA" || name == "PHP") return Schedule::push;
+    if (name == "PLA" || name == "PLP") return Schedule::pull;
+    if (name == "JMP") {
+        return mode == Addressing::absolute ? Schedule::jump_absolute : Schedule::jump_indirect;
     }
+    if (mode == Addressing::relative) return Schedule::branch;
 
-    // A taken branch costs one extra cycle, and one more if the branch target
-    // lands on a different page than the instruction that follows the branch.
-    // A branch that is not taken costs nothing extra.
-    if (current_instruction->addr_type == Addressing::relative) {
-        if (!branch_is_taken()) {
-            return 0;
-        }
+    // The accumulator forms of the shifts are encoded as `implicit` and touch
+    // no memory, so they must be classified before the access class is
+    // consulted - ASL A is not a read-modify-write of anything.
+    if (mode == Addressing::implicit) return Schedule::implied;
+    if (mode == Addressing::immediate) return Schedule::immediate;
 
-        const uint16_t target = registers.PC + static_cast<int16_t>(fetched_operand);
-        return ((target & 0xFF00) != (registers.PC & 0xFF00)) ? 2 : 1;
+    const bool writes = name == "STA" || name == "STX" || name == "STY" || name == "SAX" || name == "AHX" ||
+                        name == "SHX" || name == "SHY" || name == "TAS";
+    const bool modifies = name == "ASL" || name == "LSR" || name == "ROL" || name == "ROR" || name == "INC" ||
+                          name == "DEC" || name == "SLO" || name == "SRE" || name == "RLA" || name == "RRA" ||
+                          name == "ISC" || name == "DCP";
+
+    // Picks the read/write/read-modify-write member of one addressing mode's
+    // family of three, which are laid out adjacently in the enum.
+    const auto by_access_class = [writes, modifies](const Schedule read_form) {
+        const int offset = writes ? 1 : (modifies ? 2 : 0);
+        return static_cast<Schedule>(static_cast<uint8_t>(read_form) + offset);
+    };
+
+    switch (mode) {
+        case Addressing::zero_page: return by_access_class(Schedule::zero_page_read);
+        case Addressing::zero_page_X:
+        case Addressing::zero_page_Y: return by_access_class(Schedule::zero_page_indexed_read);
+        case Addressing::absolute: return by_access_class(Schedule::absolute_read);
+        case Addressing::absolute_X:
+        case Addressing::absolute_Y: return by_access_class(Schedule::absolute_indexed_read);
+        case Addressing::indexed_indirect: return by_access_class(Schedule::indexed_indirect_read);
+        case Addressing::indirect_indexed: return by_access_class(Schedule::indirect_indexed_read);
+        default: return Schedule::implied;
     }
-
-    return page_crossed ? 1 : 0;
 }
 
+void CPU::run_operation() { current_instruction->operation(*this); }
+
+uint8_t CPU::index_register() const
+{
+    switch (current_instruction->addr_type) {
+        case Addressing::absolute_X:
+        case Addressing::zero_page_X:
+        case Addressing::indexed_indirect: return registers.X;
+        case Addressing::absolute_Y:
+        case Addressing::zero_page_Y:
+        case Addressing::indirect_indexed: return registers.Y;
+        default: return 0;
+    }
+}
+
+// One cycle. Exactly one bus access, every time.
+//
+// The 6502 has no idle cycles: it drives the address bus on every one of them,
+// so an instruction's cycle count is not something to track separately - it
+// falls out of the number of accesses its schedule makes. That is why there is
+// no counter here to get out of step with the accesses, and why `cycles_left`
+// is only ever a boundary marker.
 bool CPU::clock(bool trace)
 {
     ++total_cycles;
 
-    // fetch & decode
     if (cycles_left == 0) {
-        // Cleared before addressing runs; the indexed modes set it.
+        cycles_left = 1;
+        cycle = 0;
         page_crossed = false;
-
-        if (nmi_requested) {
-            current_instruction = &InstructionSet::NMI;
-            nmi_requested = false;
-        } else if (irq_requested && !get_flag(FLAGS::I)) {
-            current_instruction = &InstructionSet::IRQ;
-            irq_requested = false;
-        } else {
-            current_op_code = read(registers.PC++);
-            current_instruction = &InstructionSet::Table[current_op_code];
-            current_instruction->addressing(*this);
-        }
-
-        // The full cost of the instruction has to be known now, before any
-        // cycle of it is counted, because the operation runs on the *last*
-        // cycle. An operation that tried to extend its own budget by bumping
-        // cycles_left would push it from 0 back to 1 after having already
-        // executed; the next clock() would then see a non-zero cycles_left,
-        // skip fetch/decode, and silently run the same instruction a second
-        // time. Computing it up front makes that unrepresentable.
-        cycles_left = current_instruction->cycles + extra_cycles_for_current_instruction();
     }
 
-    --cycles_left;
+    ++cycle;
 
-    //std::cout << current_instruction->name << "(" << (unsigned)current_instruction->cycles - cycles_left << "/" << (unsigned)current_instruction->cycles << ") -> " << std::hex << (unsigned)current_op_code << " " << std::hex << (unsigned)registers.PC << std::endl;
-
-    if (cycles_left != 0) {
+    if (!step()) {
         return false;
     }
 
-    //execute during the last cycle
-    execute_current_instruction(trace);
+    // The instruction is over. U is not a real flag, but it reads as set, so
+    // pin it once per instruction rather than in each of the 79 operations.
+    cycles_left = 0;
+    set_flag(FLAGS::U, true);
+
+    if (trace) {
+        signal_update();
+    }
 
     return true;
+}
+
+bool CPU::step()
+{
+    // Cycle 1 is the same for every instruction: fetch the opcode. An interrupt
+    // that is about to be taken hijacks it - the CPU still drives the bus and
+    // still reads at PC, it just discards what comes back and does not advance
+    // PC.
+    if (cycle == 1) {
+        if (nmi_requested || (irq_requested && !get_flag(FLAGS::I))) {
+            servicing_nmi = nmi_requested;
+            current_instruction = servicing_nmi ? &InstructionSet::NMI : &InstructionSet::IRQ;
+            (servicing_nmi ? nmi_requested : irq_requested) = false;
+            schedule = Schedule::interrupt;
+            read(registers.PC);
+            return false;
+        }
+
+        current_op_code = read(registers.PC++);
+        current_instruction = &InstructionSet::Table[current_op_code];
+        schedule = schedule_for(current_op_code);
+        return false;
+    }
+
+    switch (schedule) {
+        // -------------------------------------------------------------------
+        // No operand, or an operand that is the next program byte.
+        // -------------------------------------------------------------------
+
+        // The second cycle still reads - at PC, which is left where it is. This
+        // is the access an emulator that "does nothing" on implied cycles
+        // silently omits.
+        case Schedule::implied:
+            read(registers.PC);
+            run_operation();
+            return true;
+
+        case Schedule::immediate:
+            fetched_operand = registers.PC;
+            latched_value = read(registers.PC++);
+            run_operation();
+            return true;
+
+        // -------------------------------------------------------------------
+        // Zero page.
+        // -------------------------------------------------------------------
+
+        case Schedule::zero_page_read:
+            if (cycle == 2) {
+                fetched_operand = read(registers.PC++);
+                return false;
+            }
+            latched_value = read(fetched_operand);
+            run_operation();
+            return true;
+
+        case Schedule::zero_page_write:
+            if (cycle == 2) {
+                fetched_operand = read(registers.PC++);
+                return false;
+            }
+            run_operation();
+            write(fetched_operand, latched_value);
+            return true;
+
+        case Schedule::zero_page_rmw:
+            switch (cycle) {
+                case 2: fetched_operand = read(registers.PC++); return false;
+                case 3: latched_value = read(fetched_operand); return false;
+                // The dummy write. The value is the one just read, unmodified:
+                // the ALU is still working on it during this cycle.
+                case 4: write(fetched_operand, latched_value); return false;
+                default: run_operation(); write(fetched_operand, latched_value); return true;
+            }
+
+        // -------------------------------------------------------------------
+        // Zero page, indexed. The index is added within the page, and the CPU
+        // reads at the un-indexed address first while it does the addition.
+        // -------------------------------------------------------------------
+
+        case Schedule::zero_page_indexed_read:
+            switch (cycle) {
+                case 2: zero_page_pointer = read(registers.PC++); return false;
+                case 3:
+                    read(zero_page_pointer);
+                    fetched_operand = static_cast<uint8_t>(zero_page_pointer + index_register());
+                    return false;
+                default: latched_value = read(fetched_operand); run_operation(); return true;
+            }
+
+        case Schedule::zero_page_indexed_write:
+            switch (cycle) {
+                case 2: zero_page_pointer = read(registers.PC++); return false;
+                case 3:
+                    read(zero_page_pointer);
+                    fetched_operand = static_cast<uint8_t>(zero_page_pointer + index_register());
+                    return false;
+                default: run_operation(); write(fetched_operand, latched_value); return true;
+            }
+
+        case Schedule::zero_page_indexed_rmw:
+            switch (cycle) {
+                case 2: zero_page_pointer = read(registers.PC++); return false;
+                case 3:
+                    read(zero_page_pointer);
+                    fetched_operand = static_cast<uint8_t>(zero_page_pointer + index_register());
+                    return false;
+                case 4: latched_value = read(fetched_operand); return false;
+                case 5: write(fetched_operand, latched_value); return false;
+                default: run_operation(); write(fetched_operand, latched_value); return true;
+            }
+
+        // -------------------------------------------------------------------
+        // Absolute.
+        // -------------------------------------------------------------------
+
+        case Schedule::absolute_read:
+            switch (cycle) {
+                case 2: base_low = read(registers.PC++); return false;
+                case 3:
+                    base_high = read(registers.PC++);
+                    fetched_operand = static_cast<uint16_t>(base_high << 8) | base_low;
+                    return false;
+                default: latched_value = read(fetched_operand); run_operation(); return true;
+            }
+
+        case Schedule::absolute_write:
+            switch (cycle) {
+                case 2: base_low = read(registers.PC++); return false;
+                case 3:
+                    base_high = read(registers.PC++);
+                    fetched_operand = static_cast<uint16_t>(base_high << 8) | base_low;
+                    return false;
+                default: run_operation(); write(fetched_operand, latched_value); return true;
+            }
+
+        case Schedule::absolute_rmw:
+            switch (cycle) {
+                case 2: base_low = read(registers.PC++); return false;
+                case 3:
+                    base_high = read(registers.PC++);
+                    fetched_operand = static_cast<uint16_t>(base_high << 8) | base_low;
+                    return false;
+                case 4: latched_value = read(fetched_operand); return false;
+                case 5: write(fetched_operand, latched_value); return false;
+                default: run_operation(); write(fetched_operand, latched_value); return true;
+            }
+
+        // -------------------------------------------------------------------
+        // Absolute, indexed.
+        //
+        // The index is added to the low byte only, and the CPU accesses that
+        // un-carried address on the next cycle while the carry propagates. For
+        // a read that speculative access is the operand read itself, and the
+        // instruction is over unless the carry made it wrong - which is exactly
+        // what the "oops" cycle is. Stores and read-modify-writes cannot
+        // speculate (they would write to the wrong address), so for them the
+        // access is discarded and the fix-up cycle is unconditional. That, not
+        // an accounting convention, is why their cost does not vary.
+        // -------------------------------------------------------------------
+
+        case Schedule::absolute_indexed_read:
+            switch (cycle) {
+                case 2: base_low = read(registers.PC++); return false;
+                case 3: base_high = read(registers.PC++); resolve_indexed_address(); return false;
+                case 4:
+                    latched_value = read(fetched_operand);
+                    if (!page_crossed) {
+                        run_operation();
+                        return true;
+                    }
+                    fetched_operand += 0x0100;
+                    return false;
+                default: latched_value = read(fetched_operand); run_operation(); return true;
+            }
+
+        case Schedule::absolute_indexed_write:
+            switch (cycle) {
+                case 2: base_low = read(registers.PC++); return false;
+                case 3: base_high = read(registers.PC++); resolve_indexed_address(); return false;
+                case 4: read(fetched_operand); fix_up_indexed_address(); return false;
+                default: run_operation(); write(fetched_operand, latched_value); return true;
+            }
+
+        case Schedule::absolute_indexed_rmw:
+            switch (cycle) {
+                case 2: base_low = read(registers.PC++); return false;
+                case 3: base_high = read(registers.PC++); resolve_indexed_address(); return false;
+                case 4: read(fetched_operand); fix_up_indexed_address(); return false;
+                case 5: latched_value = read(fetched_operand); return false;
+                case 6: write(fetched_operand, latched_value); return false;
+                default: run_operation(); write(fetched_operand, latched_value); return true;
+            }
+
+        // -------------------------------------------------------------------
+        // (zero page,X): the index is added to the pointer, not to the address
+        // it holds, so there is no page to cross and the cost is fixed.
+        // -------------------------------------------------------------------
+
+        case Schedule::indexed_indirect_read:
+            if (read_indexed_indirect_pointer()) {
+                latched_value = read(fetched_operand);
+                run_operation();
+                return true;
+            }
+            return false;
+
+        case Schedule::indexed_indirect_write:
+            if (read_indexed_indirect_pointer()) {
+                run_operation();
+                write(fetched_operand, latched_value);
+                return true;
+            }
+            return false;
+
+        case Schedule::indexed_indirect_rmw:
+            if (!read_indexed_indirect_pointer()) {
+                return false;
+            }
+            switch (cycle) {
+                case 6: latched_value = read(fetched_operand); return false;
+                case 7: write(fetched_operand, latched_value); return false;
+                default: run_operation(); write(fetched_operand, latched_value); return true;
+            }
+
+        // -------------------------------------------------------------------
+        // (zero page),Y: the index is added to the address the pointer holds,
+        // so this indexes like the absolute forms and behaves the same way
+        // about the carry.
+        // -------------------------------------------------------------------
+
+        case Schedule::indirect_indexed_read:
+            switch (cycle) {
+                case 2: zero_page_pointer = read(registers.PC++); return false;
+                case 3: base_low = read(zero_page_pointer); return false;
+                case 4:
+                    base_high = read(static_cast<uint8_t>(zero_page_pointer + 1));
+                    resolve_indexed_address();
+                    return false;
+                case 5:
+                    latched_value = read(fetched_operand);
+                    if (!page_crossed) {
+                        run_operation();
+                        return true;
+                    }
+                    fetched_operand += 0x0100;
+                    return false;
+                default: latched_value = read(fetched_operand); run_operation(); return true;
+            }
+
+        case Schedule::indirect_indexed_write:
+            switch (cycle) {
+                case 2: zero_page_pointer = read(registers.PC++); return false;
+                case 3: base_low = read(zero_page_pointer); return false;
+                case 4:
+                    base_high = read(static_cast<uint8_t>(zero_page_pointer + 1));
+                    resolve_indexed_address();
+                    return false;
+                case 5: read(fetched_operand); fix_up_indexed_address(); return false;
+                default: run_operation(); write(fetched_operand, latched_value); return true;
+            }
+
+        case Schedule::indirect_indexed_rmw:
+            switch (cycle) {
+                case 2: zero_page_pointer = read(registers.PC++); return false;
+                case 3: base_low = read(zero_page_pointer); return false;
+                case 4:
+                    base_high = read(static_cast<uint8_t>(zero_page_pointer + 1));
+                    resolve_indexed_address();
+                    return false;
+                case 5: read(fetched_operand); fix_up_indexed_address(); return false;
+                case 6: latched_value = read(fetched_operand); return false;
+                case 7: write(fetched_operand, latched_value); return false;
+                default: run_operation(); write(fetched_operand, latched_value); return true;
+            }
+
+        // -------------------------------------------------------------------
+        // Control flow.
+        // -------------------------------------------------------------------
+
+        // A branch adds the offset to PC in two halves, one cycle apart, and
+        // reads at the intermediate address in between - so a taken branch onto
+        // another page reads once from an address that is not its target and
+        // not where it came from.
+        case Schedule::branch:
+            if (cycle == 2) {
+                const uint8_t offset = read(registers.PC++);
+                fetched_operand = (offset & 0x80) ? (0xFF00 | offset) : offset;
+
+                if (!branch_is_taken()) {
+                    return true;
+                }
+                return false;
+            }
+
+            if (cycle == 3) {
+                read(registers.PC);
+
+                const uint16_t from = registers.PC;
+                run_operation();  // the branch itself, which moves PC to the target
+                branch_target = registers.PC;
+
+                if ((branch_target & 0xFF00) == (from & 0xFF00)) {
+                    return true;
+                }
+
+                // Only the low byte has landed yet.
+                registers.PC = (from & 0xFF00) | (branch_target & 0x00FF);
+                return false;
+            }
+
+            read(registers.PC);
+            registers.PC = branch_target;
+            return true;
+
+        case Schedule::jump_absolute:
+            if (cycle == 2) {
+                base_low = read(registers.PC++);
+                return false;
+            }
+            base_high = read(registers.PC++);
+            fetched_operand = static_cast<uint16_t>(base_high << 8) | base_low;
+            run_operation();
+            return true;
+
+        case Schedule::jump_indirect:
+            switch (cycle) {
+                case 2: base_low = read(registers.PC++); return false;
+                case 3:
+                    base_high = read(registers.PC++);
+                    indirect_pointer = static_cast<uint16_t>(base_high << 8) | base_low;
+                    return false;
+                case 4: base_low = read(indirect_pointer); return false;
+                // The famous bug: the pointer increment does not carry out of
+                // the low byte, so a pointer of $xxFF takes its high byte from
+                // $xx00.
+                default:
+                    base_high = read((indirect_pointer & 0xFF00) | static_cast<uint8_t>(indirect_pointer + 1));
+                    fetched_operand = static_cast<uint16_t>(base_high << 8) | base_low;
+                    run_operation();
+                    return true;
+            }
+
+        // JSR interleaves its two operand fetches around the pushes: the low
+        // byte of the target is read on cycle 2, but the high byte not until
+        // cycle 6, after the return address is already on the stack. The
+        // address pushed is that of the last byte of the JSR, one short of the
+        // instruction that follows it.
+        case Schedule::jump_subroutine:
+            switch (cycle) {
+                case 2: base_low = read(registers.PC++); return false;
+                case 3: read(STACK_BASE_ADDR + registers.SP); return false;
+                case 4: push_stack(high_byte(registers.PC)); return false;
+                case 5: push_stack(low_byte(registers.PC)); return false;
+                default:
+                    base_high = read(registers.PC);
+                    fetched_operand = static_cast<uint16_t>(base_high << 8) | base_low;
+                    run_operation();
+                    return true;
+            }
+
+        case Schedule::return_subroutine:
+            switch (cycle) {
+                case 2: read(registers.PC); return false;
+                case 3: read(STACK_BASE_ADDR + registers.SP); return false;
+                case 4: base_low = pop_stack(); return false;
+                case 5: base_high = pop_stack(); return false;
+                // The last cycle reads at the popped address before stepping
+                // past it: JSR pushed the address of its own last byte, so the
+                // return address is one further on.
+                default:
+                    fetched_operand = static_cast<uint16_t>(base_high << 8) | base_low;
+                    read(fetched_operand);
+                    run_operation();
+                    return true;
+            }
+
+        case Schedule::return_interrupt:
+            switch (cycle) {
+                case 2: read(registers.PC); return false;
+                case 3: read(STACK_BASE_ADDR + registers.SP); return false;
+                case 4: set_P_from_pulled(pop_stack()); return false;
+                case 5: base_low = pop_stack(); return false;
+                // Unlike RTS there is no adjustment: an interrupt pushed the
+                // address it was going to run next, not the one before it.
+                default:
+                    base_high = pop_stack();
+                    fetched_operand = static_cast<uint16_t>(base_high << 8) | base_low;
+                    run_operation();
+                    return true;
+            }
+
+        // BRK reads and discards the byte after the opcode - which is why it is
+        // a two-byte instruction despite having no operand - and pushes a
+        // return address past it.
+        case Schedule::software_interrupt:
+            switch (cycle) {
+                case 2: read(registers.PC++); return false;
+                case 3: push_stack(high_byte(registers.PC)); return false;
+                case 4: push_stack(low_byte(registers.PC)); return false;
+                case 5:
+                    // B exists only in the copy of P that reaches the stack.
+                    push_stack(registers.P | static_cast<uint8_t>(FLAGS::B));
+                    set_flag(FLAGS::I, true);
+                    return false;
+                case 6: base_low = read(0xFFFE); return false;
+                default:
+                    base_high = read(0xFFFF);
+                    fetched_operand = static_cast<uint16_t>(base_high << 8) | base_low;
+                    run_operation();
+                    return true;
+            }
+
+        case Schedule::push:
+            if (cycle == 2) {
+                read(registers.PC);
+                return false;
+            }
+            run_operation();  // performs the single write
+            return true;
+
+        case Schedule::pull:
+            switch (cycle) {
+                case 2: read(registers.PC); return false;
+                // SP is pre-incremented by the pull, so this reads the slot
+                // above the one the value will come from.
+                case 3: read(STACK_BASE_ADDR + registers.SP); return false;
+                default: run_operation(); return true;  // performs the single read
+            }
+
+        // Hardware takes an interrupt by running a BRK whose opcode fetch was
+        // suppressed: same seven cycles, same pushes, but PC is not advanced
+        // and the pushed copy of P has B clear.
+        case Schedule::interrupt:
+            switch (cycle) {
+                case 2: read(registers.PC); return false;
+                case 3: push_stack(high_byte(registers.PC)); return false;
+                case 4: push_stack(low_byte(registers.PC)); return false;
+                case 5:
+                    push_stack(registers.P & ~static_cast<uint8_t>(FLAGS::B));
+                    set_flag(FLAGS::I, true);
+                    return false;
+                case 6: base_low = read(servicing_nmi ? 0xFFFA : 0xFFFE); return false;
+                default:
+                    base_high = read(servicing_nmi ? 0xFFFB : 0xFFFF);
+                    fetched_operand = static_cast<uint16_t>(base_high << 8) | base_low;
+                    run_operation();
+                    return true;
+            }
+
+        // The undocumented "jam" opcodes stop the sequencer. The address bus is
+        // left driven, and what it settles into is this fixed pattern - the
+        // last few cycles of a vector fetch, repeating. Modelled rather than
+        // hung so the emulator stays steppable; SingleStepTests captures the
+        // same eleven accesses for all twelve jam opcodes.
+        case Schedule::jam:
+            switch (cycle) {
+                case 2: read(registers.PC); return false;
+                case 3: read(0xFFFF); return false;
+                case 4:
+                case 5: read(0xFFFE); return false;
+                default: read(0xFFFF); return cycle == 11;
+            }
+    }
+
+    return true;
+}
+
+// Splits the indexed address computation the way the hardware does: the index
+// goes into the low byte now, and the carry into the high byte a cycle later.
+// Leaves fetched_operand holding the un-carried address, which is the one the
+// next cycle accesses.
+void CPU::resolve_indexed_address()
+{
+    const uint16_t indexed_low = static_cast<uint16_t>(base_low) + index_register();
+    page_crossed = indexed_low > 0xFF;
+    fetched_operand = static_cast<uint16_t>(base_high << 8) | static_cast<uint8_t>(indexed_low);
+}
+
+void CPU::fix_up_indexed_address()
+{
+    if (page_crossed) {
+        fetched_operand += 0x0100;
+    }
+}
+
+// Cycles 2 to 5 of the (zero page,X) modes, which are identical whatever the
+// instruction then does with the address. Returns true once the address is
+// resolved, i.e. on the cycle the caller should start its own access.
+bool CPU::read_indexed_indirect_pointer()
+{
+    switch (cycle) {
+        case 2: zero_page_pointer = read(registers.PC++); return false;
+        case 3:
+            // The un-indexed pointer is read and discarded while X is added.
+            read(zero_page_pointer);
+            zero_page_pointer = static_cast<uint8_t>(zero_page_pointer + registers.X);
+            return false;
+        case 4: base_low = read(zero_page_pointer); return false;
+        case 5:
+            // The pointer's high byte wraps within zero page: a pointer at $FF
+            // takes it from $00, not $0100.
+            base_high = read(static_cast<uint8_t>(zero_page_pointer + 1));
+            fetched_operand = static_cast<uint16_t>(base_high << 8) | base_low;
+            return false;
+        default: return true;
+    }
 }
 
 void CPU::reset()
@@ -150,16 +680,22 @@ void CPU::reset()
     registers.PC = static_cast<uint16_t>(read(0xFFFC)) | (static_cast<uint16_t>(read(0xFFFD)) << 8);
     current_op_code = read(registers.PC);
 
+    cycles_left = 0;
+
     signal_update();
 }
-
-uint8_t CPU::fetch_byte() { return read(registers.PC++); }
-
-uint16_t CPU::fetch_2bytes() { return fetch_byte() | (static_cast<uint16_t>(fetch_byte()) << 8); }
 
 void CPU::push_stack(const uint8_t byte) { write(STACK_BASE_ADDR + (registers.SP--), byte); }
 
 uint8_t CPU::pop_stack() { return read(STACK_BASE_ADDR + (++registers.SP)); }
+
+// B does not exist as a real bit in P; it only ever appears in the copy pushed
+// onto the stack. Pulling one back has to discard it and leave U set. PLP and
+// RTI both go through here so they cannot disagree.
+void CPU::set_P_from_pulled(const uint8_t pulled)
+{
+    registers.P = (pulled & ~static_cast<uint8_t>(FLAGS::B)) | static_cast<uint8_t>(FLAGS::U);
+}
 
 void CPU::set_flag(const FLAGS flag, const bool value)
 {
@@ -172,80 +708,11 @@ void CPU::set_flag(const FLAGS flag, const bool value)
 
 bool CPU::get_flag(const FLAGS flag) const { return registers.P & static_cast<uint8_t>(flag); }
 
-/* OP addressing modes */
-// nothing to do here. Operand implied by the operation.
-void CPU::addressing_implicit() { ; }
-
-void CPU::addressing_immediate() { fetched_operand = register_PC()++; }
-
-void CPU::addressing_zero_page() { fetched_operand = fetch_byte(); }
-
-void CPU::addressing_zero_page_X() { fetched_operand = (fetch_byte() + registers.X) % 256; }
-
-void CPU::addressing_zero_page_Y() { fetched_operand = (fetch_byte() + registers.Y) % 256; }
-
-void CPU::addressing_relative()
-{
-    fetched_operand = fetch_byte();
-    if (fetched_operand & 0x80) {
-        fetched_operand |= 0xff00;
-    }
-}
-
-void CPU::addressing_absolute() { fetched_operand = fetch_2bytes(); }
-
-void CPU::addressing_absolute_X()
-{
-    const uint16_t base_ptr = fetch_2bytes();
-    fetched_operand = base_ptr + registers.X;
-
-    // Recorded, not charged: whether crossing a page actually costs a cycle
-    // depends on the instruction, not the addressing mode. clock() decides.
-    page_crossed = (fetched_operand & 0xFF00) != (base_ptr & 0xFF00);
-}
-
-void CPU::addressing_absolute_Y()
-{
-    const uint16_t base_ptr = fetch_2bytes();
-    fetched_operand = base_ptr + registers.Y;
-
-    page_crossed = (fetched_operand & 0xFF00) != (base_ptr & 0xFF00);
-}
-
-void CPU::addressing_indirect()
-{
-    // only used for JMP, also buggy
-    const uint16_t ptr = fetch_2bytes();
-    const uint8_t low = read(ptr);
-    const uint8_t hi = ((ptr & 0x00FF) == 0xFF) ? read(ptr & 0xFF00) : read(ptr + 1);
-    fetched_operand = (static_cast<uint16_t>(hi) << 8) | low;
-}
-
-void CPU::addressing_indexed_indirect()
-{
-    const uint16_t pointer = fetch_byte() + registers.X;
-    fetched_operand = read((pointer + 1) % 256) * 256 + read(pointer % 256);
-}
-
-void CPU::addressing_indirect_indexed()
-{
-    const uint16_t pointer = fetch_byte();
-
-    // The pointer is a zero-page address and its high byte is fetched from the
-    // *next* zero-page location, wrapping within the page: for a pointer of
-    // $FF the high byte comes from $00, not $0100. The wrap therefore belongs
-    // on the address being read, not on the byte that comes back.
-    const uint16_t base_ptr = read((pointer + 1) % 256) * 256 + read(pointer);
-    fetched_operand = base_ptr + registers.Y;
-
-    page_crossed = (fetched_operand & 0xFF00) != (base_ptr & 0xFF00);
-}
-
 /* Operations */
 
-void CPU::ADC() { ADC_SBC_internal(read(fetched_operand)); }
+void CPU::ADC() { ADC_SBC_internal(operand_value()); }
 
-void CPU::SBC() { ADC_SBC_internal(read(fetched_operand) ^ 0xFF); }
+void CPU::SBC() { ADC_SBC_internal(operand_value() ^ 0xFF); }
 
 void CPU::ADC_SBC_internal(const uint8_t value)
 {
@@ -261,7 +728,7 @@ void CPU::ADC_SBC_internal(const uint8_t value)
 /*
 void CPU::ADC()
 {
-    const uint8_t value = read(fetched_operand);
+    const uint8_t value = operand_value();
     uint16_t temp = static_cast<uint16_t>(registers.A) + value + get_flag(FLAGS::C);
 
     if (get_flag(FLAGS::D)) {
@@ -287,7 +754,7 @@ void CPU::ADC()
 
 void CPU::SBC()
 {
-    const uint8_t value = read(fetched_operand) ^ 0xFF;
+    const uint8_t value = operand_value() ^ 0xFF;
     //same as ADC
     uint16_t temp = static_cast<uint16_t>(registers.A) + value + get_flag(FLAGS::C);
     const uint8_t result = temp & 0xFF;
@@ -312,44 +779,44 @@ void CPU::SBC()
 
 void CPU::AND()
 {
-    registers.A &= read(fetched_operand);
+    registers.A &= operand_value();
     set_flag(FLAGS::Z, !registers.A);
     set_flag(FLAGS::N, registers.A & 0x80);
 }
 
 void CPU::ORA()
 {
-    registers.A |= read(fetched_operand);
+    registers.A |= operand_value();
     set_flag(FLAGS::Z, !registers.A);
     set_flag(FLAGS::N, registers.A & 0x80);
 }
 
 void CPU::EOR()
 {
-    registers.A ^= read(fetched_operand);
+    registers.A ^= operand_value();
     set_flag(FLAGS::Z, !registers.A);
     set_flag(FLAGS::N, registers.A & 0x80);
 }
 
 void CPU::CMP()
 {
-    uint8_t result = registers.A - read(fetched_operand);
+    uint8_t result = registers.A - operand_value();
     set_flag(FLAGS::Z, !result);
     set_flag(FLAGS::N, result & 0x80);
-    set_flag(FLAGS::C, registers.A >= read(fetched_operand));
+    set_flag(FLAGS::C, registers.A >= operand_value());
 }
 
 void CPU::CPX()
 {
-    uint8_t result = registers.X - read(fetched_operand);
+    uint8_t result = registers.X - operand_value();
     set_flag(FLAGS::Z, !result);
     set_flag(FLAGS::N, result & 0x80);
-    set_flag(FLAGS::C, registers.X >= read(fetched_operand));
+    set_flag(FLAGS::C, registers.X >= operand_value());
 }
 
 void CPU::CPY()
 {
-    uint8_t data = read(fetched_operand);
+    uint8_t data = operand_value();
     uint8_t result = registers.Y - data;
     set_flag(FLAGS::Z, !result);
     set_flag(FLAGS::N, result & 0x80);
@@ -358,10 +825,10 @@ void CPU::CPY()
 
 void CPU::DEC()
 {
-    uint8_t result = read(fetched_operand) - 1;
+    uint8_t result = operand_value() - 1;
     set_flag(FLAGS::Z, !result);
     set_flag(FLAGS::N, result & 0x80);
-    write(fetched_operand, result);
+    store_result(result);
 }
 
 void CPU::DEX()
@@ -380,10 +847,10 @@ void CPU::DEY()
 
 void CPU::INC()
 {
-    uint8_t result = read(fetched_operand) + 1;
+    uint8_t result = operand_value() + 1;
     set_flag(FLAGS::Z, !result);
     set_flag(FLAGS::N, result & 0x80);
-    write(fetched_operand, result);
+    store_result(result);
 }
 
 void CPU::INX()
@@ -404,7 +871,7 @@ void CPU::ASL()
 {
     bool addressing_is_implicit = InstructionSet::Table[current_op_code].addr_type == Addressing::implicit;
 
-    uint8_t value = addressing_is_implicit ? registers.A : read(fetched_operand);
+    uint8_t value = addressing_is_implicit ? registers.A : operand_value();
     set_flag(FLAGS::C, value & 0x80);
     value <<= 1;
     set_flag(FLAGS::N, value & 0x80);
@@ -413,7 +880,7 @@ void CPU::ASL()
     if (addressing_is_implicit) {
         registers.A = value;
     } else {
-        write(fetched_operand, value);
+        store_result(value);
     }
 }
 
@@ -421,7 +888,7 @@ void CPU::ROL()
 {
     bool addressing_is_implicit = InstructionSet::Table[current_op_code].addr_type == Addressing::implicit;
 
-    uint8_t value = addressing_is_implicit ? registers.A : read(fetched_operand);
+    uint8_t value = addressing_is_implicit ? registers.A : operand_value();
 
     auto carry = get_flag(FLAGS::C);
     set_flag(FLAGS::C, value & 0x80);
@@ -433,7 +900,7 @@ void CPU::ROL()
     if (addressing_is_implicit) {
         registers.A = value;
     } else {
-        write(fetched_operand, value);
+        store_result(value);
     }
 }
 
@@ -441,7 +908,7 @@ void CPU::LSR()
 {
     bool addressing_is_implicit = InstructionSet::Table[current_op_code].addr_type == Addressing::implicit;
 
-    uint8_t value = addressing_is_implicit ? registers.A : read(fetched_operand);
+    uint8_t value = addressing_is_implicit ? registers.A : operand_value();
 
     set_flag(FLAGS::C, value & 0x1);
     value >>= 1;
@@ -451,7 +918,7 @@ void CPU::LSR()
     if (addressing_is_implicit) {
         registers.A = value;
     } else {
-        write(fetched_operand, value);
+        store_result(value);
     }
 }
 
@@ -459,7 +926,7 @@ void CPU::ROR()
 {
     bool addressing_is_implicit = InstructionSet::Table[current_op_code].addr_type == Addressing::implicit;
 
-    uint8_t value = addressing_is_implicit ? registers.A : read(fetched_operand);
+    uint8_t value = addressing_is_implicit ? registers.A : operand_value();
 
     auto carry = get_flag(FLAGS::C);
     set_flag(FLAGS::C, value & 0x1);
@@ -471,36 +938,36 @@ void CPU::ROR()
     if (addressing_is_implicit) {
         registers.A = value;
     } else {
-        write(fetched_operand, value);
+        store_result(value);
     }
 }
 
 void CPU::LDA()
 {
-    registers.A = read(fetched_operand);
+    registers.A = operand_value();
     set_flag(FLAGS::N, registers.A & 0x80);
     set_flag(FLAGS::Z, registers.A == 0);
 }
 
-void CPU::STA() { write(fetched_operand, registers.A); }
+void CPU::STA() { store_result(registers.A); }
 
 void CPU::LDX()
 {
-    registers.X = read(fetched_operand);
+    registers.X = operand_value();
     set_flag(FLAGS::N, registers.X & 0x80);
     set_flag(FLAGS::Z, registers.X == 0);
 }
 
-void CPU::STX() { write(fetched_operand, registers.X); }
+void CPU::STX() { store_result(registers.X); }
 
 void CPU::LDY()
 {
-    registers.Y = read(fetched_operand);
+    registers.Y = operand_value();
     set_flag(FLAGS::N, registers.Y & 0x80);
     set_flag(FLAGS::Z, registers.Y == 0);
 }
 
-void CPU::STY() { write(fetched_operand, registers.Y); }
+void CPU::STY() { store_result(registers.Y); }
 
 void CPU::TAX()
 {
@@ -548,7 +1015,7 @@ void CPU::PLA()
 
 void CPU::PHA() { push_stack(registers.A); }
 
-void CPU::PLP() { registers.P = (pop_stack() & ~static_cast<uint8_t>(FLAGS::B)) | static_cast<uint8_t>(FLAGS::U); }
+void CPU::PLP() { set_P_from_pulled(pop_stack()); }
 
 void CPU::PHP() { push_stack(registers.P | static_cast<uint8_t>(FLAGS::B)); }
 
@@ -608,71 +1075,40 @@ void CPU::BEQ()
     }
 }
 
-void CPU::BRK()
-{
-    ++registers.PC;
-    push_stack(static_cast<uint8_t>(registers.PC >> 8));
-    push_stack(static_cast<uint8_t>(registers.PC & 0xFF));
+/* Control flow.
+ *
+ * These six are the one place where an "operation" is not separable from its
+ * timing: the pushes, the pulls and the vector fetch ARE the instruction, and
+ * they happen on specific cycles. The schedule in step() performs them, one
+ * access per cycle. What is left here is the state change that lands on the
+ * final cycle, once the schedule has resolved the destination into
+ * fetched_operand.
+ */
 
-    // Flag B only exists in the STACK, when pushed by BRK or PHP
-    push_stack(registers.P | static_cast<uint8_t>(FLAGS::B));
-
-    // BRK does set the interrupt-disable I flag like an IRQ does, and if you have the CMOS 6502 (65C02), it will also
-    // clear the decimal D flag.
-    set_flag(FLAGS::I, true);
-    // set_flag(FLAGS::D, false);
-
-    registers.PC = (static_cast<uint16_t>(read(0xFFFF)) << 8) | read(0xFFFE);
-}
+// The pushes and both vector reads happen on cycles 3 to 7; I is set after P
+// reaches the stack, so the copy pushed has the old value.
+void CPU::BRK() { registers.PC = fetched_operand; }
 
 void CPU::RESET() { registers.PC = static_cast<uint16_t>(read(0xFFFD)) << 8 | read(0xFFFC); }
 
-void CPU::NMI()
-{
-    push_stack(static_cast<uint8_t>(registers.PC >> 8));
-    push_stack(static_cast<uint8_t>(registers.PC & 0xFF));
-    push_stack(registers.P & ~static_cast<uint8_t>(FLAGS::B));
-    set_flag(FLAGS::I, true);
-    // set_flag(FLAGS::D, false);
+void CPU::NMI() { registers.PC = fetched_operand; }
 
-    registers.PC = static_cast<uint16_t>(read(0xFFFB)) << 8 | read(0xFFFA);
-}
+void CPU::IRQ() { registers.PC = fetched_operand; }
 
-void CPU::IRQ()
-{
-    push_stack(static_cast<uint8_t>(registers.PC >> 8));
-    push_stack(static_cast<uint8_t>(registers.PC & 0xFF));
-    push_stack(registers.P & ~static_cast<uint8_t>(FLAGS::B));
-    set_flag(FLAGS::I, true);
-    // set_flag(FLAGS::D, false);
+// P is pulled on cycle 4, through the same path PLP uses.
+void CPU::RTI() { registers.PC = fetched_operand; }
 
-    registers.PC = (static_cast<uint16_t>(read(0xFFFF)) << 8) | read(0xFFFE);
-}
+void CPU::JSR() { registers.PC = fetched_operand; }
 
-void CPU::RTI()
-{
-    // B does not exist as a real bit in P; it only ever appears in the copy
-    // pushed onto the stack. Pulling it back has to discard it and leave U set,
-    // exactly as PLP does.
-    registers.P = (pop_stack() & ~static_cast<uint8_t>(FLAGS::B)) | static_cast<uint8_t>(FLAGS::U);
-    registers.PC = pop_stack() | (static_cast<uint16_t>(pop_stack()) << 8);
-}
-
-void CPU::JSR()
-{
-    // push return_address - 1!
-    push_stack(high_byte(registers.PC - 1));
-    push_stack(low_byte(registers.PC - 1));
-    registers.PC = fetched_operand;
-}
-
-void CPU::RTS() { registers.PC = (pop_stack() | (static_cast<uint16_t>(pop_stack()) << 8)) + 1; }
+// JSR pushes the address of its own last byte rather than the one after it, so
+// the pulled address is one short of where execution resumes.
+void CPU::RTS() { registers.PC = fetched_operand + 1; }
 
 void CPU::JMP() { registers.PC = fetched_operand; }
 
 void CPU::BIT()
 {
-    uint8_t value = read(fetched_operand);
+    uint8_t value = operand_value();
     set_flag(FLAGS::Z, !(registers.A & value));
     set_flag(FLAGS::N, value & 0x80);
     set_flag(FLAGS::V, value & 0x40);
@@ -737,7 +1173,7 @@ void CPU::RRA()
 
 // Stores A & X. Affects no flags - it is a store, and neither operand is
 // modified.
-void CPU::SAX() { write(fetched_operand, registers.A & registers.X); }
+void CPU::SAX() { store_result(registers.A & registers.X); }
 
 // Loads both A and X with the same value.
 void CPU::LAX()
@@ -779,33 +1215,67 @@ void CPU::ALR()
     set_flag(FLAGS::Z, registers.A == 0);
 }
 
+/* The unstable stores.
+ *
+ * These four AND the value being stored with the high byte of the *base*
+ * address plus one - a value that is on an internal bus at the moment the store
+ * happens, not anything the programmer asked for. Worse, when indexing carried,
+ * the high byte of the destination is replaced by that same value, so the store
+ * lands on a page nobody named:
+ *
+ *     SHA ($18),Y   pointer -> $708B, Y = $FD, so the address is $7188
+ *                   value = A & X & ($70 + 1)  =  $40
+ *                   the carry never reaches the address, which becomes $4088
+ *
+ * They are famous for being chip- and temperature-dependent, but the part that
+ * varies is a further AND with the data left floating on the bus, which only
+ * shows up when the value would otherwise have bits the floating bus does not.
+ * The behaviour encoded here is what SingleStepTests captures, and it matches
+ * all 10,000 vectors for each of the four - so it is an oracle-backed
+ * behaviour, not a guess. The address is rewritten in place because the
+ * schedule performs the write from fetched_operand after this runs.
+ */
+void CPU::unstable_store(const uint8_t source)
+{
+    const uint8_t value = source & static_cast<uint8_t>(base_high + 1);
+
+    if (page_crossed) {
+        fetched_operand = static_cast<uint16_t>(value << 8) | low_byte(fetched_operand);
+    }
+
+    store_result(value);
+}
+
+void CPU::AHX() { unstable_store(registers.A & registers.X); }
+
+void CPU::SHX() { unstable_store(registers.X); }
+
+void CPU::SHY() { unstable_store(registers.Y); }
+
+// Sets SP to A & X as well, then stores like AHX.
+void CPU::TAS()
+{
+    registers.SP = registers.A & registers.X;
+    unstable_store(registers.SP);
+}
+
 /* The remainder are deliberately left unimplemented.
  *
- * These are unstable on real hardware: their results depend on analogue effects
- * (a "magic constant" that varies between chips, temperature and the data left
- * floating on the bus), so there is no single correct behaviour to encode and
- * no oracle to test against. nestest does not execute any of them. Guessing
+ * These depend on analogue effects (a "magic constant" that varies between
+ * chips, temperature and the data left floating on the bus), so there is no
+ * single correct behaviour to encode and no oracle to test against. nestest
+ * does not execute any of them, and none of them writes to memory, so the bus
+ * trace of each is just its operand fetch and is correct regardless. Guessing
  * would produce code that looks authoritative while being wrong on some
  * fraction of real machines, so they stay as documented no-ops.
  */
 
-// Halts the CPU until reset ("jam"/"KIL"). Modelled as a no-op rather than
-// hanging the emulator.
+// Halts the CPU until reset ("jam"/"KIL"). The halted bus pattern is modelled
+// by the schedule; there is no state change to make here.
 void CPU::STP() { ; }
 
 // (A | magic) & X & immediate - magic constant is chip-dependent.
 void CPU::XAA() { ; }
-
-// Stores A & X & (high byte of address + 1); the +1 is skipped when the
-// address computation crossed a page, and the store target itself can change.
-void CPU::AHX() { ; }
-
-// As AHX, with X and Y respectively.
-void CPU::SHX() { ; }
-void CPU::SHY() { ; }
-
-// Sets SP to A & X, then stores like AHX.
-void CPU::TAS() { ; }
 
 // Loads A, X and SP with (memory & SP); unstable on some units.
 void CPU::LAS() { ; }
