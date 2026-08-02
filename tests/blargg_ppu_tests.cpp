@@ -4,21 +4,23 @@
 // enable/suppression, and odd-frame behaviour. They report their result through
 // PRG-RAM rather than the screen, so they are fully headless.
 //
-// THESE TESTS ARE EXPECTED TO FAIL RIGHT NOW, but no longer for the original
-// reason. PPU::clock's frame state machine now works: scanline/cycle persist
-// across calls, vblank is set at (241,1) and cleared at (261,1) exactly once
-// per frame, and NMI is raised only when PPUCTRL bit 7 asks for it. See
-// testPPUFrame in ppu_register_tests.cpp, which pins all of that.
+// SOME OF THESE TESTS ARE EXPECTED TO FAIL. The count that passes is the
+// scalar the PPU work drives upward. Do NOT weaken these assertions to make
+// the suite green.
 //
-// These ROMs still time out because they measure vbl set/clear and NMI timing
-// to single-cycle resolution, and CPU::clock performs an instruction's entire
-// memory effect on its last cycle instead of distributing accesses across the
-// cycles of the instruction. Closing that gap -- plus $2002-read/vblank race
-// suppression -- is what these ROMs are now waiting on.
+// The frame state machine works: scanline/cycle persist across calls, vblank is
+// set at (241,1) and cleared at (261,1) exactly once per frame, and NMI is
+// raised only when PPUCTRL bit 7 asks for it. See testPPUFrame in
+// ppu_register_tests.cpp. 01-vbl_basics and 09-even_odd_frames pass on that
+// alone.
 //
-// That is the measurement, not a defect in this file -- the count of passing
-// ROMs is the scalar the PPU work drives upward.
-// Do NOT weaken these assertions to make the suite green.
+// The remainder fail on sub-instruction timing rather than on frame timing:
+// CPU::clock applies an instruction's entire memory effect on its last cycle
+// instead of distributing bus accesses across the instruction's cycles, so a
+// $2002 read lands at the wrong dot. 02-vbl_set_time measures exactly that,
+// and 04-nmi_control reports "Immediate occurence should be after NEXT
+// instruction" -- both consequences of the same gap. Closing it means making
+// the CPU core cycle-stepped, which is a CPU-domain change, not a PPU one.
 #include <cstdint>
 #include <fstream>
 #include <string>
@@ -48,11 +50,16 @@ constexpr uint8_t kStatusRunning = 0x80;
 constexpr uint8_t kStatusNeedsReset = 0x81;
 
 // One frame is 341 dots x 262 scanlines; Bus::clock ticks the PPU every 4th
-// bus cycle, so a frame is 341 * 262 * 4 bus cycles. These ROMs settle well
-// inside 60 frames when the PPU works; the cap only exists so a non-advancing
-// PPU fails with a diagnosis instead of hanging the suite forever.
+// bus cycle, so a frame is 341 * 262 * 4 bus cycles.
+//
+// The cap must be generous. These ROMs spend many frames measuring before they
+// report: 01-vbl_basics does not answer until frame 142 and 02-vbl_set_time not
+// until 161. An earlier 60-frame cap turned both into "timed out", which read
+// as a dead PPU when in fact one of them passes -- the harness was
+// under-reporting real progress. The cap exists only so a genuinely stuck PPU
+// fails with a diagnosis instead of hanging the suite.
 constexpr uint64_t kBusCyclesPerFrame = 341ull * 262ull * 4ull;
-constexpr uint64_t kMaxFrames = 60;
+constexpr uint64_t kMaxFrames = 400;
 
 struct BlarggResult {
     bool completed = false;    // signature appeared and status left the running state
