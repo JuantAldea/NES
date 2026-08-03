@@ -103,6 +103,11 @@ public:
     // and consumed by that same dot's tick. Nothing else ever sees it.
     bool suppress_vblank_flag_set = false;
 
+    // Whether rendering was enabled when the pre-render line last passed the
+    // dot at which the odd-frame skip is decided. Latched rather than read at
+    // the jump, because the two are one dot apart; see PPU::advance_dot.
+    bool odd_frame_skip_armed = false;
+
     void set_sprite0_hit() { registers.PPUSTATUS |= 0x40; }
     void clear_sprite0_hit() { registers.PPUSTATUS &= ~0x40; }
 
@@ -144,6 +149,9 @@ public:
     static constexpr int post_render_scanline = 240;
     static constexpr int vblank_start_scanline = 241;
     static constexpr int pre_render_scanline = 261;
+    // The dot on the pre-render line at which the odd-frame clock skip is
+    // decided, one ahead of the (261,339) -> (0,0) jump that carries it out.
+    static constexpr int odd_frame_skip_decision_dot = 338;
 
     int scanline = 0;
     int cycle = 0;

@@ -102,10 +102,25 @@ void PPU::clock()
 
 void PPU::advance_dot()
 {
+    // The PPU commits to the shortened frame one dot BEFORE it acts on it, and
+    // the difference is measurable: 10-even_odd_timing toggles PPUMASK a dot
+    // either side of here and counts the clocks that result.
+    //
+    // Sampling rendering_enabled() at the jump itself would be one dot late.
+    // The CPU's bus access is placed just ahead of its dot's tick (see
+    // Bus::clock), so a $2001 write aligned to dot 339 would still be visible
+    // by the end of that dot - and the ROM says it must not be. Latching at
+    // the end of dot 338 is what excludes it. The window is exactly one dot
+    // wide in each direction: latching at 337 or earlier makes the ROM report
+    // "clock is skipped too soon", at 339 or later "too late".
+    if (scanline == pre_render_scanline && cycle == odd_frame_skip_decision_dot) {
+        odd_frame_skip_armed = rendering_enabled();
+    }
+
     // On odd frames the final dot of the pre-render line, (261, 340), is
     // skipped while rendering is enabled, making those frames one dot short.
     const bool skips_last_dot =
-        scanline == pre_render_scanline && cycle == dots_per_scanline - 2 && (frame % 2) == 1 && rendering_enabled();
+        scanline == pre_render_scanline && cycle == dots_per_scanline - 2 && (frame % 2) == 1 && odd_frame_skip_armed;
 
     if (skips_last_dot) {
         cycle = 0;
