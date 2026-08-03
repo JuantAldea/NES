@@ -45,8 +45,10 @@ Bus::DecodedAddress Bus::decode(const uint16_t addr)
     } else if (addr == 0x4014) {
         return {&ppu, addr};
     } else if (addr <= 0x401F) {
-        // $4016/$4017 controllers and the remaining APU/IO test range are not
-        // implemented yet; treat as open bus rather than routing to RAM/APU.
+        // $4016 (controller 1) and the $4018-$401F test range are not
+        // implemented; treat as open bus rather than routing to RAM/APU.
+        // $4017 is handled above: it is the APU frame counter on write, and
+        // controller 2 on read, which the APU reports as open bus.
         return {nullptr, addr};
     } else if (addr < 0x6000) {
         // Cartridge expansion area; no device backs it.

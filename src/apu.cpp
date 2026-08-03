@@ -9,16 +9,15 @@
 // the flag is set at 29828, the last envelope/length clock happens at 29829,
 // and the counter wraps at 29830, with the line held low across all three.
 //
-// Mode 1 (5-step) never asserts /IRQ at all.
+// Mode 1 (5-step) never asserts /IRQ. Its step 4 (29829) clocks nothing at all,
+// which is why there is no constant for it.
 namespace
 {
 constexpr uint32_t kQuarter1 = 7457;
 constexpr uint32_t kQuarter2 = 14913;
 constexpr uint32_t kQuarter3 = 22371;
-constexpr uint32_t kMode0IrqFirst = 29828;
-constexpr uint32_t kMode0Last = 29830;
+constexpr uint32_t kMode0Step4 = 29829;
 constexpr uint32_t kMode1Step5 = 37281;
-constexpr uint32_t kMode1Last = 37282;
 }  // namespace
 
 void APU::set_frame_irq(const bool asserted)
@@ -29,15 +28,28 @@ void APU::set_frame_irq(const bool asserted)
     // CPU keeps taking the interrupt until the handler acknowledges by reading
     // $4015. Setting a flag without driving the line would produce an interrupt
     // that fires once and never again.
-    if (bus != nullptr) {
-        bus->cpu.set_IRQ_line(frame_irq_flag);
-    }
+    //
+    // NOTE: this drives the CPU's /IRQ input directly, which is only correct
+    // while the APU frame counter is its ONLY source. /IRQ is a wire-OR of
+    // several open-drain sources on hardware (DMC, and mapper counters such as
+    // MMC3's). The second one to arrive will need the CPU to OR per-source
+    // bits, because otherwise one source acknowledging releases the other's
+    // assertion.
+    bus->cpu.set_IRQ_line(frame_irq_flag);
 }
+
+// The envelope and linear counter clock. No channels exist yet.
+void APU::clock_quarter_frame() {}
+
+// The length counter and sweep clock. No channels exist yet.
+void APU::clock_half_frame() {}
 
 void APU::clock()
 {
+    ++apu_cycles;
+
     // A pending $4017 write takes effect here rather than at the write, having
-    // been delayed 3 or 4 cycles.
+    // been delayed 3 or 4 CPU cycles.
     if (reset_countdown > 0) {
         --reset_countdown;
         if (reset_countdown == 0) {
@@ -45,11 +57,17 @@ void APU::clock()
             five_step_mode = pending_five_step_mode;
             frame_cycle = 0;
 
-            // Switching to 5-step clocks the sequence immediately; 4-step does
-            // not. No channels exist to clock yet, but the distinction matters
-            // for where the sequence restarts.
+            // Switching to 5-step clocks the whole sequence immediately;
+            // switching to 4-step does not.
+            //
+            // This calls the unit clocks directly and NOT clock_sequencer():
+            // that dispatches on frame_cycle, which is 0 here and matches no
+            // boundary, so routing through it would make this a silent no-op
+            // that only becomes visible - as a missing clock - once the
+            // channels exist.
             if (five_step_mode) {
-                clock_sequencer();
+                clock_quarter_frame();
+                clock_half_frame();
             }
             return;
         }
@@ -61,29 +79,43 @@ void APU::clock()
 
 void APU::clock_sequencer()
 {
+    if (frame_cycle == kQuarter1 || frame_cycle == kQuarter3) {
+        clock_quarter_frame();
+        return;
+    }
+
+    if (frame_cycle == kQuarter2) {
+        clock_quarter_frame();
+        clock_half_frame();
+        return;
+    }
+
     if (!five_step_mode) {
-        // The IRQ window spans the last three cycles of the sequence.
-        if (!irq_inhibit && frame_cycle >= kMode0IrqFirst && frame_cycle <= kMode0Last) {
+        if (frame_cycle == kMode0Step4) {
+            clock_quarter_frame();
+            clock_half_frame();
+        }
+
+        // The IRQ window spans the last three cycles of the sequence, so a
+        // $4015 read placed anywhere in it sees the flag.
+        if (!irq_inhibit && frame_cycle >= mode0_irq_cycle && frame_cycle <= mode0_length) {
             set_frame_irq(true);
         }
 
-        if (frame_cycle >= kMode0Last) {
+        if (frame_cycle >= mode0_length) {
             frame_cycle = 0;
         }
         return;
     }
 
-    if (frame_cycle >= kMode1Last) {
-        frame_cycle = 0;
+    if (frame_cycle == kMode1Step5) {
+        clock_quarter_frame();
+        clock_half_frame();
     }
 
-    // kQuarter1/2/3 and kMode1Step5 are where the envelope, sweep and length
-    // units would be clocked. Referenced so the boundaries are not silently
-    // lost when those units arrive.
-    (void)kQuarter1;
-    (void)kQuarter2;
-    (void)kQuarter3;
-    (void)kMode1Step5;
+    if (frame_cycle >= mode1_length) {
+        frame_cycle = 0;
+    }
 }
 
 void APU::write(const uint16_t addr, const uint8_t data)
@@ -94,20 +126,26 @@ void APU::write(const uint16_t addr, const uint8_t data)
         // does not exist yet; it does NOT touch the frame interrupt.
         break;
 
-    case FRAMECOUNTER:
+    case FRAMECOUNTER: {
         pending_five_step_mode = (data & 0x80) != 0;
         irq_inhibit = (data & 0x40) != 0;
 
         // Setting the inhibit bit clears any frame interrupt already pending -
-        // this is one of the two ways software acknowledges it.
+        // one of the two ways software acknowledges it.
         if (irq_inhibit) {
             set_frame_irq(false);
         }
 
-        // The divider reset is delayed 3 cycles when the write lands on an odd
-        // CPU cycle and 4 when it lands on an even one.
-        reset_countdown = (bus != nullptr && (bus->cpu.total_cycles % 2) != 0) ? 3 : 4;
+        // The parity that matters is the CPU cycle the write LANDS on. This
+        // runs from Bus::clock's CPU step, before APU::clock has ticked for the
+        // current cycle, so apu_cycles is still the previous one - hence the
+        // +1. Getting this wrong is invisible in isolation: it shifts the reset
+        // by one cycle, which is why apu_tests pins the parity DIFFERENCE
+        // rather than only an absolute cycle.
+        const bool write_cycle_is_odd = ((apu_cycles + 1) % 2) != 0;
+        reset_countdown = write_cycle_is_odd ? write_delay_odd_cycle : write_delay_even_cycle;
         break;
+    }
 
     default:
         // The channel registers ($4000-$4013) are accepted and discarded.
@@ -118,7 +156,9 @@ void APU::write(const uint16_t addr, const uint8_t data)
 uint8_t APU::read(const uint16_t addr)
 {
     if (addr != APUSTATUS) {
-        // The rest of the APU range is write-only and reads as open bus.
+        // The rest of the range this device is mapped to is write-only and
+        // reads as open bus. That includes $4017, which is the frame counter on
+        // write but controller 2 on read - the controller is not implemented.
         return 0;
     }
 
@@ -126,9 +166,13 @@ uint8_t APU::read(const uint16_t addr)
     // bits 0-4 the channel length-counter statuses; none exist yet.
     const uint8_t status = frame_irq_flag ? 0x40 : 0x00;
 
-    // Reading acknowledges: the flag clears and the line is released. The
-    // hardware race where a read landing exactly on the cycle the flag is set
-    // returns it set without clearing is not modelled.
+    // Reading acknowledges: the flag clears and the line is released.
+    //
+    // One deviation: on hardware a read landing on the same cycle the flag is
+    // set returns bit 6 SET and does not clear it. Here the CPU's read runs
+    // before APU::clock in the same tick, so such a read returns bit 6 clear
+    // and the flag is then set. The bit is reported one cycle late rather than
+    // one cycle early.
     set_frame_irq(false);
 
     return status;

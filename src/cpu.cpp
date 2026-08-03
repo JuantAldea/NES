@@ -799,8 +799,13 @@ void CPU::reset()
     // instruction after reset would be an NMI.
     nmi_requested = false;
     irq_requested = false;
-    irq_line = false;
     servicing_nmi = false;
+
+    // irq_line is deliberately NOT cleared. It is a wire held low by a device,
+    // not CPU state: RESET does not reach into the APU and cancel its pending
+    // frame interrupt. Clearing it here would drop a real pending interrupt
+    // while $4015 still reported it, leaving the two out of step until the
+    // next sequence re-drove the line.
     nmi_committed = false;
     nmi_poll = false;
     irq_poll = false;
