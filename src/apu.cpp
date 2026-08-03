@@ -136,13 +136,13 @@ void APU::write(const uint16_t addr, const uint8_t data)
             set_frame_irq(false);
         }
 
-        // The parity that matters is the CPU cycle the write LANDS on. This
-        // runs from Bus::clock's CPU step, before APU::clock has ticked for the
-        // current cycle, so apu_cycles is still the previous one - hence the
-        // +1. Getting this wrong is invisible in isolation: it shifts the reset
-        // by one cycle, which is why apu_tests pins the parity DIFFERENCE
-        // rather than only an absolute cycle.
-        const bool write_cycle_is_odd = ((apu_cycles + 1) % 2) != 0;
+        // The parity that matters is the CPU cycle the write LANDS on.
+        // APU::clock has already ticked for that cycle by the time Bus::clock
+        // runs the CPU's store, so apu_cycles IS it. Getting this wrong is
+        // invisible in isolation: it shifts the reset by one cycle, which is
+        // why apu_tests pins the parity DIFFERENCE rather than only an absolute
+        // cycle.
+        const bool write_cycle_is_odd = (apu_cycles % 2) != 0;
         reset_countdown = write_cycle_is_odd ? write_delay_odd_cycle : write_delay_even_cycle;
         break;
     }
@@ -168,11 +168,12 @@ uint8_t APU::read(const uint16_t addr)
 
     // Reading acknowledges: the flag clears and the line is released.
     //
-    // One deviation: on hardware a read landing on the same cycle the flag is
-    // set returns bit 6 SET and does not clear it. Here the CPU's read runs
-    // before APU::clock in the same tick, so such a read returns bit 6 clear
-    // and the flag is then set. The bit is reported one cycle late rather than
-    // one cycle early.
+    // A read landing on the same cycle the flag is set returns bit 6 SET, as it
+    // does on hardware: APU::clock has already run for this cycle by the time
+    // Bus::clock issues the CPU's read. What is still missing is that on
+    // hardware such a read does not clear the flag either. That is unobservable
+    // in mode 0, whose window re-asserts on the next two cycles anyway; it
+    // would show only on a read placed on the window's LAST cycle.
     set_frame_irq(false);
 
     return status;

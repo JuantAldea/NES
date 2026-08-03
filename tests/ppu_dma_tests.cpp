@@ -167,4 +167,69 @@ GTEST_TEST(testDMA, dma_takes_513_or_514_cpu_cycles)
     }
 }
 
+
+// The phase OAM DMA aligns to is a property of the bus, and the bus keeps
+// counting while the CPU is halted. CPU::total_cycles does not - so after one
+// 513-cycle transfer it trails the real cycle count by an ODD number, and every
+// later DMA reads the opposite parity from the one it is actually on.
+//
+// A single DMA from reset cannot see this; the test above runs exactly one.
+// This one runs two, and the second is the one that matters.
+//
+// Cycle arithmetic, all of it from the program below and the 6502's documented
+// instruction lengths:
+//
+//   1-2      LDA #$02
+//   3-6      STA $4014, whose write is its fourth cycle -> lands on cycle 6,
+//            an even cycle, so the first transfer is 513 cycles
+//   7-519    the first transfer (513 stolen cycles)
+//   520-521  NOP
+//   522-525  STA $4014 again -> lands on cycle 525, an odd cycle, so the second
+//            transfer is 514 cycles
+//
+// Note 6 and 525 differ in parity only because 513 is odd. Taking the parity
+// from CPU::total_cycles instead gives 6 and 12 - both even - and a second
+// transfer of 513.
+GTEST_TEST(testDMA, a_second_dma_takes_its_phase_from_the_bus_not_from_the_halted_cpu)
+{
+    Bus console;
+
+    const uint8_t program[11] = {
+        0xA9, 0x02,        // LDA #$02
+        0x8D, 0x14, 0x40,  // STA $4014
+        0xEA,              // NOP
+        0x8D, 0x14, 0x40,  // STA $4014
+        0x4C, 0x09,        // JMP $xx09 (self; low byte fixed up below)
+    };
+    console.write_ram(0x0400, sizeof(program), program);
+    console.write(0x040B, 0x04);
+
+    console.cpu.registers.PC = 0x0400;
+    console.cpu.cycles_left = 0;
+
+    uint64_t length[2] = {0, 0};
+    uint64_t started_on[2] = {0, 0};
+
+    for (int transfer = 0; transfer < 2; ++transfer) {
+        while (!console.ppu.dma_in_progress()) {
+            console.clock();
+        }
+        started_on[transfer] = console.cpu_cycles;
+        const uint64_t bus_cycles_before = console.total_cycles;
+
+        while (console.ppu.dma_in_progress()) {
+            console.clock();
+        }
+        length[transfer] = (console.total_cycles - bus_cycles_before) / 12;
+    }
+
+    EXPECT_EQ(started_on[0], 6u) << "the first $4014 write does not land where the arithmetic above says";
+    EXPECT_EQ(started_on[1], 525u) << "the second $4014 write does not land where the arithmetic above says";
+
+    EXPECT_EQ(length[0], 513u) << "a $4014 write on an even CPU cycle transfers in 513 cycles";
+    EXPECT_EQ(length[1], 514u)
+        << "the second transfer began on an odd CPU cycle and must take 514; getting 513 means the parity was "
+           "taken from a counter that stopped during the first transfer";
+}
+
 };  // namespace tests

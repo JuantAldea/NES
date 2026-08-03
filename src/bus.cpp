@@ -132,17 +132,35 @@ void Bus::clock()
     const bool dma_holds_the_bus = ppu.dma_in_progress();
     const bool cpu_cycle = cpu_tick && !dma_holds_the_bus;
 
+    // The frame counter divides the CPU clock and keeps running while DMA holds
+    // the bus - it is not gated on the CPU executing, any more than the /NMI
+    // edge detector is. Bus::cpu_cycles is that same divider, and is the phase
+    // reference OAM DMA aligns to.
+    //
+    // Both advance BEFORE the CPU's bus access, not after. The frame interrupt
+    // flag belongs to the start of the cycle it is set on, so a $4015 read
+    // placed on that very cycle reads it back set - which is what hardware
+    // does, and what blargg's sync_apu relies on to decide whether to burn an
+    // extra clock:
+    //
+    //     lda #$40
+    //     bit SNDCHN      ; the read lands exactly on cycle 29828
+    //     bne :+          ; +1 clock iff the flag is already set
+    //
+    // With the APU clocked after the access instead, that read returned zero,
+    // the branch fell through, and every cpu_interrupts_v2 ROM that calls
+    // sync_apu ran one CPU cycle out of step with the frame counter for the
+    // rest of the test - which is exactly the one-cycle skew 4-irq_and_dma
+    // reported.
+    if (cpu_tick) {
+        ++cpu_cycles;
+        apu.clock();
+    }
+
     if (cpu_cycle) {
         clock_CPU();
     } else if (cpu_tick) {
         ppu.perform_OAM_DMA_cycle();
-    }
-
-    // The frame counter divides the CPU clock and keeps running while DMA holds
-    // the bus - it is not gated on the CPU executing, any more than the /NMI
-    // edge detector is.
-    if (cpu_tick) {
-        apu.clock();
     }
 
     clock_PPU();

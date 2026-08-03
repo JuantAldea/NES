@@ -167,9 +167,16 @@ void PPU::process_visible_scanline()
 //
 // The parity is the CPU's, not the PPU's. Taking it from the dot counter made
 // it effectively arbitrary.
+//
+// It also has to come from Bus::cpu_cycles rather than CPU::total_cycles. The
+// two agree only until the first DMA: CPU::total_cycles does not advance while
+// the CPU is halted, so after a 513-cycle transfer it is an odd number of
+// cycles behind the real bus and every later DMA picks the wrong phase. That
+// is invisible in a test that runs one DMA from reset and fatal in a ROM that
+// runs several.
 void PPU::request_OAM_DMA()
 {
-    remaining_dma_cycles = 513 + (bus->cpu.total_cycles % 2);
+    remaining_dma_cycles = 513 + (bus->cpu_cycles % 2);
     dma_current_memory_source_addr = registers.OAMDMA << 8;
 }
 

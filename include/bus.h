@@ -16,6 +16,15 @@ public:
     bool load_cartridge(const std::string& path);
     uint64_t total_cycles = 0;
 
+    // CPU cycles elapsed, counting the ones OAM DMA steals - which CPU::clock
+    // never sees, so CPU::total_cycles does not count them.
+    //
+    // This is the divide-by-two everything phase-sensitive on the CPU bus hangs
+    // off: the APU frame counter's get/put alignment and OAM DMA's are the same
+    // one. Deriving DMA's from CPU::total_cycles made the two disagree by the
+    // length of every DMA that had already run.
+    uint64_t cpu_cycles = 0;
+
     void clock();
     void clock_CPU();
     void clock_PPU();

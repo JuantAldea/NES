@@ -42,11 +42,11 @@ public:
     static constexpr uint32_t mode0_irq_cycle = 29828;
 
     // A $4017 write resets the divider 3 or 4 CPU cycles later, depending on
-    // the parity of the cycle it landed on. The values here are one higher
-    // because Bus::clock runs the CPU's store before APU::clock in the same
-    // tick, so the write cycle itself consumes the first decrement.
-    static constexpr int8_t write_delay_odd_cycle = 4;
-    static constexpr int8_t write_delay_even_cycle = 5;
+    // the parity of the cycle it landed on. APU::clock has already ticked for
+    // the write cycle by the time the store runs, so the first decrement is on
+    // the cycle after the write and these are the hardware figures unmodified.
+    static constexpr int8_t write_delay_odd_cycle = 3;
+    static constexpr int8_t write_delay_even_cycle = 4;
 
 private:
     void clock_sequencer();

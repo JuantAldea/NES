@@ -195,6 +195,85 @@ GTEST_TEST(testAPU, five_step_mode_never_asserts_the_frame_irq)
         << "5-step mode has no IRQ step at all";
 }
 
+// The frame interrupt flag belongs to the START of the cycle it is set on: a
+// $4015 read placed on that very cycle reads it back SET.
+//
+// This is not a curiosity. blargg's sync_apu - which every cpu_interrupts_v2
+// ROM calls before it measures anything - is built on it:
+//
+//     sta SNDMODE     ; $4017 = 0, restarting the sequence
+//     delay 29825
+//     lda #$40
+//     bit SNDCHN      ; the read lands exactly on the first IRQ-window cycle
+//     bne :+          ; burn one extra clock iff the flag is already set
+//
+// The branch is how the routine cancels out the divider's unknown phase. Read
+// the flag back clear here and the branch falls through, the routine's
+// compensation is skipped, and every later instruction in the ROM sits one CPU
+// cycle away from where the frame counter thinks it is.
+//
+// The cycle numbers below are the same arithmetic as
+// four_step_mode_asserts_the_frame_irq_on_the_right_cycle:
+//
+//   29838 = 6 (the cycle STA $4017 writes) + 4 (even-cycle divider reset delay)
+//               + 29828 (first cycle of mode 0's IRQ window)
+//
+// and LDA abs reads on its fourth cycle, so an LDA starting on cycle 29835
+// reads on 29838.
+namespace
+{
+// Runs the $4017 program below, then forces an LDA $4015 to start on
+// `start_cycle`, and returns the value it loaded.
+uint8_t lda_4015_starting_on_cycle(const uint64_t start_cycle)
+{
+    Bus console;
+
+    //          cycles      cumulative CPU cycle after the instruction
+    //  LDA #$00   2                       2
+    //  STA $4017  4                       6   <- the write lands on cycle 6
+    //  JMP self   3
+    const uint8_t program[8] = {0xA9, 0x00, 0x8D, 0x17, 0x40, 0x4C, 0x05, 0x04};
+    console.write_ram(0x0400, sizeof(program), program);
+
+    // LDA $4015, parked somewhere the spin loop will never reach on its own.
+    const uint8_t reader[3] = {0xAD, 0x15, 0x40};
+    console.write_ram(0x0500, sizeof(reader), reader);
+
+    console.cpu.registers.PC = 0x0400;
+    console.cpu.cycles_left = 0;
+    console.cpu.registers.A = 0xFF;
+
+    // Spin until the CPU cycle before the one the LDA is to start on, then
+    // redirect it. Breaking into the JMP self loop part-way through is safe:
+    // cycles_left is a boundary marker, and zeroing it forces a fresh fetch.
+    while (console.cpu.total_cycles < start_cycle - 1) {
+        console.clock();
+    }
+    console.cpu.registers.PC = 0x0500;
+    console.cpu.cycles_left = 0;
+
+    while (console.cpu.total_cycles < start_cycle + 3) {
+        console.clock();
+    }
+
+    return console.cpu.registers.A;
+}
+}  // namespace
+
+GTEST_TEST(testAPU, a_4015_read_on_the_cycle_the_flag_is_set_reads_it_back_set)
+{
+    EXPECT_EQ(lda_4015_starting_on_cycle(29835) & 0x40, 0x40)
+        << "a $4015 read on cycle 29838 must see the frame interrupt flag";
+}
+
+// The other side of the same edge, so the assertion above pins a cycle rather
+// than a half-open range: one cycle earlier the flag is not there yet.
+GTEST_TEST(testAPU, a_4015_read_one_cycle_before_the_flag_is_set_reads_it_back_clear)
+{
+    EXPECT_EQ(lda_4015_starting_on_cycle(29834) & 0x40, 0x00)
+        << "a $4015 read on cycle 29837 is one cycle too early to see the flag";
+}
+
 GTEST_TEST(testAPU, reading_4015_acknowledges_the_frame_irq)
 {
     Bus console;
