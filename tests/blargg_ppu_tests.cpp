@@ -4,23 +4,29 @@
 // enable/suppression, and odd-frame behaviour. They report their result through
 // PRG-RAM rather than the screen, so they are fully headless.
 //
-// SOME OF THESE TESTS ARE EXPECTED TO FAIL. The count that passes is the
-// scalar the PPU work drives upward. Do NOT weaken these assertions to make
-// the suite green.
+// ALL TEN PASS. This file is now a regression guard rather than a target: it
+// measures to single-cycle resolution, so almost any drift in the CPU/PPU
+// timing relationship surfaces here first. A failure is a real regression, not
+// an expected gap. Do NOT weaken these assertions to make the suite green.
 //
-// The frame state machine works: scanline/cycle persist across calls, vblank is
-// set at (241,1) and cleared at (261,1) exactly once per frame, and NMI is
-// raised only when PPUCTRL bit 7 asks for it. See testPPUFrame in
-// ppu_register_tests.cpp. 01-vbl_basics and 09-even_odd_frames pass on that
-// alone.
+// Four properties these ROMs are the only tests to pin down, all of which had
+// to be right before the last seven went green:
+//   - /NMI is a level, not an edge. The PPU drives a line the CPU samples, so
+//     an assertion can be revoked before the CPU acts on it. That is what makes
+//     NMI suppression (06-suppression) expressible at all.
+//   - Interrupts are polled on an instruction's penultimate cycle, not at the
+//     instruction boundary. 04-nmi_control measures this directly, and says so:
+//     "Immediate occurence should be after NEXT instruction".
+//   - The CPU's bus access and its interrupt sample are one PPU dot apart, not
+//     simultaneous (05-nmi_timing, 07/08-nmi_on/off_timing).
+//   - The odd-frame clock skip samples rendering state one dot before the skip
+//     rather than at it (10-even_odd_timing).
 //
-// The remainder fail on sub-instruction timing rather than on frame timing:
-// CPU::clock applies an instruction's entire memory effect on its last cycle
-// instead of distributing bus accesses across the instruction's cycles, so a
-// $2002 read lands at the wrong dot. 02-vbl_set_time measures exactly that,
-// and 04-nmi_control reports "Immediate occurence should be after NEXT
-// instruction" -- both consequences of the same gap. Closing it means making
-// the CPU core cycle-stepped, which is a CPU-domain change, not a PPU one.
+// An earlier version of this comment blamed the failures on CPU::clock applying
+// an instruction's whole memory effect on its last cycle. That was wrong - the
+// core was already cycle-stepped, one bus access per cycle. The four properties
+// above were the actual gap, which is worth remembering: a plausible diagnosis
+// that survives because nobody re-derives it is expensive.
 #include <cstdint>
 #include <fstream>
 #include <string>
