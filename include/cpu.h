@@ -126,14 +126,14 @@ protected:
 
     void BRK(); void NOP();
 
-    void RESET(); void NMI(); void IRQ();
+    void NMI(); void IRQ();
 
     //purely unoficial
     void STP(); void SLO(); void ANC(); void RLA();
     void LAX(); void AXS(); void DCP();
     void SAX(); void RRA(); void SRE(); void ALR();
     void ARR(); void ISC(); void AHX(); void SHX();
-    void SHY(); void TAS(); void XAA(); void LAS();
+    void SHY(); void TAS(); void XAA(); void LAS(); void LXA();
 private:
     void ADC_SBC_internal(const uint8_t value);
     void unstable_store(const uint8_t source);
@@ -209,8 +209,41 @@ private:
         push,           // 3
         pull,           // 4
         interrupt,      // 7   NMI/IRQ
-        jam,            // the CPU halts; the bus is left repeating a vector fetch
+
+        // NOT a halt. On real NMOS hardware KIL/JAM stops the sequencer until
+        // RESET; this runs a fixed-length access pattern and then lets the CPU
+        // carry on fetching. The length matches what the test vectors record,
+        // which is itself an artefact of their generator giving up rather than a
+        // hardware figure. Nothing in this emulator currently needs a true halt,
+        // but do not read this as modelling one.
+        jam,
     };
+
+    // schedule_for() selects the read/write/read-modify-write member of an
+    // addressing mode's family by adding 0, 1 or 2 to the read form, so the
+    // three must stay adjacent and in that order. Inserting an enumerator in
+    // the middle would otherwise silently mis-schedule a whole family.
+    static_assert(static_cast<int>(Schedule::zero_page_write) == static_cast<int>(Schedule::zero_page_read) + 1 &&
+                      static_cast<int>(Schedule::zero_page_rmw) == static_cast<int>(Schedule::zero_page_read) + 2 &&
+                      static_cast<int>(Schedule::zero_page_indexed_write) ==
+                          static_cast<int>(Schedule::zero_page_indexed_read) + 1 &&
+                      static_cast<int>(Schedule::zero_page_indexed_rmw) ==
+                          static_cast<int>(Schedule::zero_page_indexed_read) + 2 &&
+                      static_cast<int>(Schedule::absolute_write) == static_cast<int>(Schedule::absolute_read) + 1 &&
+                      static_cast<int>(Schedule::absolute_rmw) == static_cast<int>(Schedule::absolute_read) + 2 &&
+                      static_cast<int>(Schedule::absolute_indexed_write) ==
+                          static_cast<int>(Schedule::absolute_indexed_read) + 1 &&
+                      static_cast<int>(Schedule::absolute_indexed_rmw) ==
+                          static_cast<int>(Schedule::absolute_indexed_read) + 2 &&
+                      static_cast<int>(Schedule::indexed_indirect_write) ==
+                          static_cast<int>(Schedule::indexed_indirect_read) + 1 &&
+                      static_cast<int>(Schedule::indexed_indirect_rmw) ==
+                          static_cast<int>(Schedule::indexed_indirect_read) + 2 &&
+                      static_cast<int>(Schedule::indirect_indexed_write) ==
+                          static_cast<int>(Schedule::indirect_indexed_read) + 1 &&
+                      static_cast<int>(Schedule::indirect_indexed_rmw) ==
+                          static_cast<int>(Schedule::indirect_indexed_read) + 2,
+                  "Schedule read/write/rmw forms must stay adjacent in that order");
 
     static Schedule schedule_for(const uint8_t opcode);
 

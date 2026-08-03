@@ -690,6 +690,13 @@ void CPU::reset()
 
     cycles_left = 0;
 
+    // Pending interrupts do not survive a reset. Without this, a raise_NMI()
+    // that arrived before reset() would still be latched, and the first
+    // instruction after reset would be an NMI.
+    nmi_requested = false;
+    irq_requested = false;
+    servicing_nmi = false;
+
     signal_update();
 }
 
@@ -1097,8 +1104,6 @@ void CPU::BEQ()
 // reaches the stack, so the copy pushed has the old value.
 void CPU::BRK() { registers.PC = fetched_operand; }
 
-void CPU::RESET() { registers.PC = static_cast<uint16_t>(read(0xFFFD)) << 8 | read(0xFFFC); }
-
 void CPU::NMI() { registers.PC = fetched_operand; }
 
 void CPU::IRQ() { registers.PC = fetched_operand; }
@@ -1267,31 +1272,80 @@ void CPU::TAS()
     unstable_store(registers.SP);
 }
 
-/* The remainder are deliberately left unimplemented.
+/* The remaining undocumented opcodes.
  *
- * These depend on analogue effects (a "magic constant" that varies between
- * chips, temperature and the data left floating on the bus), so there is no
- * single correct behaviour to encode and no oracle to test against. nestest
- * does not execute any of them, and none of them writes to memory, so the bus
- * trace of each is just its operand fetch and is correct regardless. Guessing
- * would produce code that looks authoritative while being wrong on some
- * fraction of real machines, so they stay as documented no-ops.
+ * These were previously left as no-ops on the grounds that there was "no oracle
+ * to test against". That was wrong: the SingleStepTests vectors in this repo
+ * cover all 256 opcodes, and each of the behaviours below was derived from them
+ * and then checked against 10,000 cases apiece rather than guessed.
  */
 
-// Halts the CPU until reset ("jam"/"KIL"). The halted bus pattern is modelled
-// by the schedule; there is no state change to make here.
+// Halts the CPU until RESET ("jam"/"KIL"). The bus pattern of a halted CPU is
+// produced by Schedule::jam; there is no register state to change here.
 void CPU::STP() { ; }
 
-// (A | magic) & X & immediate - magic constant is chip-dependent.
-void CPU::XAA() { ; }
+// LXA/ATX: A = X = (A | magic) & immediate.
+//
+// The magic constant is a genuine analogue effect - on real hardware it depends
+// on the chip, its temperature and what is floating on the bus, and is commonly
+// observed as $EE or $FF. $EE is what the test vectors encode and what most
+// emulators use; it is a defensible choice, not a hardware invariant. Code that
+// relies on this opcode is relying on undefined behaviour.
+void CPU::LXA()
+{
+    const uint8_t result = (registers.A | 0xEE) & operand_value();
+    registers.A = result;
+    registers.X = result;
+    set_flag(FLAGS::Z, result == 0);
+    set_flag(FLAGS::N, result & 0x80);
+}
 
-// Loads A, X and SP with (memory & SP); unstable on some units.
-void CPU::LAS() { ; }
+// XAA/ANE: A = (A | magic) & X & immediate. Same magic-constant caveat as LXA.
+void CPU::XAA()
+{
+    const uint8_t result = (registers.A | 0xEE) & registers.X & operand_value();
+    registers.A = result;
+    set_flag(FLAGS::Z, result == 0);
+    set_flag(FLAGS::N, result & 0x80);
+}
 
-// ARR and AXS are stable, but nestest does not reach them and they are not
-// required here; left unimplemented rather than added without an oracle.
-void CPU::ARR() { ; }
-void CPU::AXS() { ; }
+// LAS/LAR: A = X = SP = memory & SP.
+void CPU::LAS()
+{
+    const uint8_t result = operand_value() & registers.SP;
+    registers.A = result;
+    registers.X = result;
+    registers.SP = result;
+    set_flag(FLAGS::Z, result == 0);
+    set_flag(FLAGS::N, result & 0x80);
+}
+
+// ARR: AND then rotate right through carry, with its own idiosyncratic flags -
+// C is bit 6 of the result and V is bit 6 XOR bit 5, which is why this cannot
+// just be written as AND followed by ROR.
+void CPU::ARR()
+{
+    const uint8_t result =
+        static_cast<uint8_t>(((registers.A & operand_value()) >> 1) | (get_flag(FLAGS::C) ? 0x80 : 0x00));
+    registers.A = result;
+    set_flag(FLAGS::C, result & 0x40);
+    set_flag(FLAGS::V, ((result >> 6) ^ (result >> 5)) & 0x01);
+    set_flag(FLAGS::Z, result == 0);
+    set_flag(FLAGS::N, result & 0x80);
+}
+
+// AXS/SBX: X = (A & X) - immediate, setting flags like a compare (no borrow in,
+// and V untouched).
+void CPU::AXS()
+{
+    const uint8_t lhs = registers.A & registers.X;
+    const uint8_t rhs = operand_value();
+    const uint8_t result = static_cast<uint8_t>(lhs - rhs);
+    registers.X = result;
+    set_flag(FLAGS::C, lhs >= rhs);
+    set_flag(FLAGS::Z, result == 0);
+    set_flag(FLAGS::N, result & 0x80);
+}
 
 std::ostream& operator<<(std::ostream& os, const CPU& cpu)
 {

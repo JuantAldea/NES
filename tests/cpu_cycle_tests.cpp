@@ -565,7 +565,7 @@ std::string vectors_path(const std::string& opcode_hex)
 // Layer 1: run every SingleStepTests case for one opcode.
 // ---------------------------------------------------------------------------
 
-class SingleStepVectors : public ::testing::TestWithParam<const char*>
+class SingleStepVectors : public ::testing::TestWithParam<std::string>
 {
 };
 
@@ -772,78 +772,18 @@ INSTANTIATE_TEST_SUITE_P(AllOpcodes, SingleStepBusTrace, ::testing::ValuesIn(all
 
 // Every opcode implemented or restructured by this core that has vectors
 // fetched for it. Kept in sync with tests/test_files/fetch_single_step_tests.sh.
-INSTANTIATE_TEST_SUITE_P(IllegalOpcodes,
-                         SingleStepVectors,
-                         ::testing::Values("03",
-                                           "07",
-                                           "0f",
-                                           "13",
-                                           "17",
-                                           "1b",
-                                           "1f",  // SLO
-                                           "23",
-                                           "27",
-                                           "2f",
-                                           "33",
-                                           "37",
-                                           "3b",
-                                           "3f",  // RLA
-                                           "43",
-                                           "47",
-                                           "4f",
-                                           "53",
-                                           "57",
-                                           "5b",
-                                           "5f",  // SRE
-                                           "63",
-                                           "67",
-                                           "6f",
-                                           "73",
-                                           "77",
-                                           "7b",
-                                           "7f",  // RRA
-                                           "83",
-                                           "87",
-                                           "8f",
-                                           "97",  // SAX
-                                           "a3",
-                                           "a7",
-                                           "af",
-                                           "b3",
-                                           "b7",
-                                           "bf",  // LAX
-                                           "c3",
-                                           "c7",
-                                           "cf",
-                                           "d3",
-                                           "d7",
-                                           "db",
-                                           "df",  // DCP
-                                           "e3",
-                                           "e7",
-                                           "ef",
-                                           "f3",
-                                           "f7",
-                                           "fb",
-                                           "ff",  // ISC
-                                           "0b",
-                                           "2b",
-                                           "4b"));  // ANC, ALR
-
-INSTANTIATE_TEST_SUITE_P(Branches,
-                         SingleStepVectors,
-                         ::testing::Values("10", "30", "50", "70", "90", "b0", "d0", "f0"));
-
-INSTANTIATE_TEST_SUITE_P(StackAndFlags, SingleStepVectors, ::testing::Values("40", "28", "08", "68", "48"));
-
-INSTANTIATE_TEST_SUITE_P(
-    IndexedAddressing,
-    SingleStepVectors,
-    ::testing::Values("bd", "b9", "b1", "9d", "99", "91", "1e", "3e", "5e", "7e", "de", "fe", "bc", "be"));
-
-INSTANTIATE_TEST_SUITE_P(CoreOperations,
-                         SingleStepVectors,
-                         ::testing::Values("a9", "69", "e9", "c9", "2a", "6a", "4a", "0a"));
+// Every opcode, not a hand-maintained subset.
+//
+// This suite used to list ~90 opcodes chosen by which ones a past change had
+// touched. That let $AB sit wrong indefinitely: it was mapped to LAX (A = imm;
+// X = A) instead of LXA ((A | magic) & imm), and 4422 of its 10,000 vectors
+// disagreed - but "ab" was not in the list, and its bus trace is a bare operand
+// fetch that is correct either way, so nothing caught it.
+//
+// A hand-maintained list of what to verify will always drift behind the code it
+// verifies. Running all 256 costs about a minute and removes the failure mode.
+INSTANTIATE_TEST_SUITE_P(AllOpcodes, SingleStepVectors, ::testing::ValuesIn(all_opcodes()),
+                         [](const ::testing::TestParamInfo<std::string>& info) { return "op_" + info.param; });
 
 // ---------------------------------------------------------------------------
 // Layer 2: cycle counts against the hand-transcribed reference table.

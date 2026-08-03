@@ -180,7 +180,7 @@ const std::valarray<Instruction> InstructionSet::Table{
     {"TAY", Addressing::implicit, &c::TAY},
     {"LDA", Addressing::immediate, &c::LDA},
     {"TAX", Addressing::implicit, &c::TAX},
-    {"LAX", Addressing::immediate, &c::LAX},
+    {"LXA", Addressing::immediate, &c::LXA},
     {"LDY", Addressing::absolute, &c::LDY},
     {"LDA", Addressing::absolute, &c::LDA},
     {"LDX", Addressing::absolute, &c::LDX},
