@@ -119,8 +119,10 @@ void Bus::clock()
 {
     ++total_cycles;
 
+    const bool cpu_tick = total_cycles % 12 == 0;
+
     // A CPU cycle is stolen outright while OAM DMA holds the bus.
-    const bool cpu_cycle = (total_cycles % 12 == 0) && !ppu.dma_in_progress();
+    const bool cpu_cycle = cpu_tick && !ppu.dma_in_progress();
 
     if (cpu_cycle) {
         clock_CPU();
@@ -130,6 +132,15 @@ void Bus::clock()
 
     if (cpu_cycle) {
         cpu.sample_interrupts();
+    } else if (cpu_tick) {
+        // The CPU is halted for DMA, but the /NMI edge detector is not part of
+        // its execution unit - stealing bus cycles does not stop it latching an
+        // edge. Only the poll (deciding to act on the latch) belongs to a cycle
+        // the CPU actually runs. Without this, an /NMI pulse that both fell and
+        // rose inside a DMA would be lost entirely, and that window grows
+        // threefold once the DMA length is corrected: it currently runs ~171
+        // CPU cycles instead of 513.
+        cpu.latch_nmi_edge();
     }
 }
 

@@ -59,13 +59,30 @@ void CPU::raise_IRQ() { irq_requested = true; }
 //      (04-nmi_control's "Immediate occurence should be after NEXT
 //      instruction"), and why CLI/SEI/PLP - which write I on their last cycle
 //      - are polled against I's *old* value.
-void CPU::sample_interrupts()
+// The edge-detector half of sampling, separated so it can also run on CPU
+// cycles the CPU does not execute (those stolen by OAM DMA). Once an edge has
+// been seen here it can no longer be revoked by the line going back high.
+void CPU::latch_nmi_edge()
 {
     if (nmi_requested) {
         nmi_committed = true;
     }
+}
+
+void CPU::sample_interrupts()
+{
+    latch_nmi_edge();
 
     if (completed_instruction_this_cycle) {
+        return;
+    }
+
+    // An interrupt sequence does not poll. This is what guarantees that at
+    // least one instruction of the handler executes before another interrupt
+    // is serviced - without it, a second edge arriving mid-sequence is taken
+    // at the sequence's own boundary and the handler never runs an
+    // instruction at all. BRK is an interrupt sequence for this purpose too.
+    if (schedule == Schedule::interrupt || schedule == Schedule::software_interrupt) {
         return;
     }
 

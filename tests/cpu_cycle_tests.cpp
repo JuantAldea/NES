@@ -1223,6 +1223,83 @@ TEST(CpuInterrupts, irq_takes_seven_cycles)
         << "a hardware interrupt pushes P with B clear; a BRK would have set it";
 }
 
+// An interrupt sequence performs no interrupt polling of its own, which is what
+// guarantees at least one instruction of the handler runs before another
+// interrupt is serviced. Without that, an NMI arriving during a BRK is taken at
+// the BRK's own boundary and the handler never executes an instruction.
+//
+// Only the Blargg ROMs covered this, and only indirectly. Injecting the edge at
+// every cycle of the sequence is cheap and pins it directly.
+TEST(CpuInterrupts, an_interrupt_sequence_does_not_poll)
+{
+    for (int inject_at = 1; inject_at <= 7; ++inject_at) {
+        FlatMemory mem;
+        CPU cpu = make_cpu(mem);
+
+        mem.memory[0x1000] = 0x00;  // BRK
+        mem.memory[0x8000] = 0xEA;  // handler: NOP
+        mem.memory[0x8001] = 0xEA;
+        mem.memory[0xFFFA] = 0x00;  // NMI   -> $9000
+        mem.memory[0xFFFB] = 0x90;
+        mem.memory[0xFFFE] = 0x00;  // BRK   -> $8000
+        mem.memory[0xFFFF] = 0x80;
+
+        cpu.registers.PC = 0x1000;
+        cpu.registers.SP = 0xFD;
+        cpu.registers.P = 0x24;
+        cpu.cycles_left = 0;
+
+        // Step the BRK, raising /NMI on the chosen cycle of its sequence.
+        for (int cycle = 1;; ++cycle) {
+            if (cycle == inject_at) {
+                cpu.raise_NMI();
+            }
+            if (cpu.clock(false)) {
+                break;
+            }
+            ASSERT_LT(cycle, 32) << "BRK did not complete";
+        }
+        ASSERT_EQ(cpu.registers.PC, 0x8000) << "BRK should vector to its handler";
+
+        EXPECT_EQ(run_one_instruction(cpu), 2u)
+            << "NMI raised on BRK cycle " << inject_at
+            << " was serviced before the handler ran an instruction; an interrupt sequence must not poll";
+        EXPECT_EQ(cpu.registers.PC, 0x8001) << "the handler's first instruction should have executed";
+    }
+}
+
+// The corollary of polling on the penultimate cycle: an edge arriving on an
+// instruction's *final* cycle is not seen until the next instruction's poll, so
+// it is deferred by a whole instruction. This is what 04-nmi_control means by
+// "Immediate occurence should be after NEXT instruction".
+TEST(CpuInterrupts, an_edge_on_the_final_cycle_is_deferred_one_instruction)
+{
+    FlatMemory mem;
+    CPU cpu = make_cpu(mem);
+
+    mem.memory[0x1000] = 0xEA;  // NOP - raise on its final (2nd) cycle
+    mem.memory[0x1001] = 0xEA;  // NOP - runs anyway
+    mem.memory[0x1002] = 0xEA;
+    mem.memory[0xFFFA] = 0x00;
+    mem.memory[0xFFFB] = 0x90;
+
+    cpu.registers.PC = 0x1000;
+    cpu.registers.SP = 0xFD;
+    cpu.registers.P = 0x24;
+    cpu.cycles_left = 0;
+
+    ASSERT_FALSE(cpu.clock(false)) << "a 2-cycle NOP should not complete on cycle 1";
+    cpu.raise_NMI();               // arrives on the final cycle
+    ASSERT_TRUE(cpu.clock(false));  // completes it
+    ASSERT_EQ(cpu.registers.PC, 0x1001);
+
+    EXPECT_EQ(run_one_instruction(cpu), 2u) << "an edge on the final cycle must not be taken at that boundary";
+    EXPECT_EQ(cpu.registers.PC, 0x1002) << "the following instruction should have run first";
+
+    EXPECT_EQ(run_one_instruction(cpu), 7u) << "and only then is the NMI serviced";
+    EXPECT_EQ(cpu.registers.PC, 0x9000);
+}
+
 TEST(CpuReset, power_on_state_matches_hardware)
 {
     FlatMemory mem;

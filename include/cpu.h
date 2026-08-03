@@ -65,6 +65,7 @@ public:
     // the sample one PPU dot later than the access; without one, CPU::clock
     // calls it at the end of every cycle.
     void sample_interrupts();
+    void latch_nmi_edge();
 
     // Set by Bus, which owns the sample point. Left false, the PPU-less
     // harnesses (nestest, SingleStepTests, Klaus2m5) stay self-contained.
