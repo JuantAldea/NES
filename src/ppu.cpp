@@ -53,14 +53,17 @@ void PPU::clock()
             // idle
             break;
         case vblank_start_scanline:
-            //NMI is raised on the second cycle of scanline 241
+            // The vblank flag is set on the second dot of scanline 241.
             if (cycle == 1) {
-               set_vblank();
-               // The flag is set regardless; the CPU is only interrupted when
-               // PPUCTRL bit 7 asked for it.
-               if (MMI_on_V_Blank) {
-                   bus->cpu.raise_NMI();
-               }
+                // ...unless the CPU read $2002 on this very dot. The read's
+                // clear and the PPU's set race, and the clear wins: the flag
+                // is not set at all, and stays clear for the whole of this
+                // vblank. This is 02-vbl_set_time's row 04 ("- -") and
+                // 06-suppression's ("flag never set, no NMI").
+                if (!suppress_vblank_flag_set) {
+                    set_vblank();
+                }
+                suppress_vblank_flag_set = false;
             }
             break;
         case 242 ... 260:
@@ -80,6 +83,9 @@ void PPU::clock()
     }
 
     advance_dot();
+
+    // Anything above may have moved the vblank flag, and /NMI follows it.
+    update_nmi_line();
     /*
 
     - Sprite DMA is 6144 clock cycles long (or in CPU clock cycles, 6144/12).
@@ -197,16 +203,17 @@ void PPU::write(const uint16_t addr, const uint8_t data)
         if (in_reset_write_lockout()) {
             break;
         }
-        {
-            const bool nmi_was_enabled = MMI_on_V_Blank;
-            registers.PPUCTRL = data;
-            update_flags();
-            // Enabling NMI while the vblank flag is still set raises one
-            // immediately, rather than waiting for the next frame.
-            if (!nmi_was_enabled && MMI_on_V_Blank && (registers.PPUSTATUS & 0x80)) {
-                bus->cpu.raise_NMI();
-            }
-        }
+        // Bit 7 is one of the two inputs to /NMI, so this write can move the
+        // line in either direction. Enabling while the vblank flag is already
+        // set drives it low immediately - that is 04-nmi_control's "Should
+        // occur immediately if enabled while VBL flag is set" - and disabling
+        // takes it back high, which is how 08-nmi_off_timing cancels an NMI
+        // that has been asserted but not yet sampled. Writing $80 when NMI is
+        // already enabled is not an edge and must not produce a second
+        // interrupt; update_nmi_line, being edge-triggered, gets that for
+        // free rather than needing a "was it already enabled" guard.
+        registers.PPUCTRL = data;
+        update_flags();
         break;
     case PPUMASK:
         if (in_reset_write_lockout()) {
@@ -264,6 +271,26 @@ void PPU::write(const uint16_t addr, const uint8_t data)
         break;
     }
 #pragma GCC diagnostic pop
+
+    update_nmi_line();
+}
+
+// /NMI is a level: the PPU pulls it low for as long as the vblank flag is set
+// and PPUCTRL bit 7 asks for an interrupt. Only its edges are interesting to
+// the CPU, so this reports them and nothing else.
+void PPU::update_nmi_line()
+{
+    const bool asserted = nmi_line_asserted();
+    if (asserted == nmi_line) {
+        return;
+    }
+
+    nmi_line = asserted;
+    if (asserted) {
+        bus->cpu.raise_NMI();
+    } else {
+        bus->cpu.lower_NMI();
+    }
 }
 
 uint8_t PPU::read(const uint16_t addr)
@@ -279,6 +306,15 @@ uint8_t PPU::read(const uint16_t addr)
 #pragma GCC diagnostic ignored "-Wswitch"
     switch (reg) {
     case PPUSTATUS: {
+        // A read landing on the exact dot the vblank flag would be set kills
+        // the set outright. The CPU's access is placed just ahead of that
+        // dot's tick (see Bus::clock), so the flag is not set yet and this
+        // read reports it clear either way; the flag on `this` is what stops
+        // the tick from setting it a moment later.
+        if (scanline == vblank_start_scanline && cycle == 1) {
+            suppress_vblank_flag_set = true;
+        }
+
         // Bits 0-4 are unused/open bus: they reflect the last value driven on
         // the PPU data bus rather than real status bits.
         uint8_t data = (registers.PPUSTATUS & 0xE0) | (open_bus & 0x1F);
@@ -288,6 +324,11 @@ uint8_t PPU::read(const uint16_t addr)
         // so PPUSCROLL/PPUADDR must not be zeroed here.
         high_byte_input = true;
         open_bus = data;
+
+        // Clearing the flag releases /NMI. If the CPU has not sampled the
+        // assertion yet, this is what suppresses the interrupt entirely
+        // (06-suppression rows 05 and 06: flag reads back set, no NMI).
+        update_nmi_line();
         return data;
     };
     case OAMDATA:

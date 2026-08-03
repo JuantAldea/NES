@@ -54,8 +54,21 @@ public:
 
     // int8_t interrupt_delay = 0;
 
+    // The /NMI line's two edges. Only the falling one latches; see the
+    // definitions in cpu.cpp for why that latch stays revocable until sampled.
     void raise_NMI();
+    void lower_NMI();
     void raise_IRQ();
+
+    // Edge-commits and polls the interrupt lines. Runs once per CPU cycle,
+    // after that cycle's bus access. A Bus drives this itself so it can place
+    // the sample one PPU dot later than the access; without one, CPU::clock
+    // calls it at the end of every cycle.
+    void sample_interrupts();
+
+    // Set by Bus, which owns the sample point. Left false, the PPU-less
+    // harnesses (nestest, SingleStepTests, Klaus2m5) stay self-contained.
+    bool external_interrupt_sampling = false;
 
     void set_flag(const FLAGS flag, const bool value);
     bool get_flag(const FLAGS flag) const;
@@ -160,8 +173,22 @@ protected:
     void push_stack(const uint8_t byte);
     uint8_t pop_stack();
 
+    // A latched /NMI falling edge, waiting to be polled.
     bool nmi_requested = false;
     bool irq_requested = false;
+
+    // Whether a sample has already seen nmi_requested, at which point the line
+    // going back high can no longer take it away.
+    bool nmi_committed = false;
+
+    // The result of the poll taken on the penultimate cycle. These, not the
+    // live lines, are what an instruction boundary acts on.
+    bool nmi_poll = false;
+    bool irq_poll = false;
+
+    // Whether the cycle that just ran finished its instruction, i.e. whether
+    // the sample that follows it is a penultimate-cycle poll or not.
+    bool completed_instruction_this_cycle = false;
 
 private:
     // The per-cycle access schedules.

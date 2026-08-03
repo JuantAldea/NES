@@ -9,6 +9,9 @@ Bus::Bus()
       prg_ram{this},
       rom{this}
 {
+    // Bus::clock places the interrupt sample one PPU dot after the CPU's bus
+    // access, which the CPU cannot do for itself.
+    cpu.external_interrupt_sampling = true;
     cpu.reset();
 }
 
@@ -84,15 +87,50 @@ uint8_t Bus::read(const uint16_t addr)
     return 0;
 }
 
+// One master-clock tick. The CPU divides it by 12 and the PPU by 4, so a CPU
+// cycle spans exactly three PPU dots.
+//
+// The CPU does two things per cycle that land at DIFFERENT points in that
+// three-dot window, and collapsing them into one is what made the NMI timing
+// wrong:
+//
+//   * its single bus access, placed immediately BEFORE the dot that shares its
+//     master tick;
+//   * its interrupt sample, immediately AFTER that same dot.
+//
+// One dot of separation, no more. It is not a free parameter - the ROMs pin it
+// exactly. Take the dot at which the vblank flag is set, S, and let A be the
+// dot a $2002 read is placed just ahead of:
+//
+//   A = S    the read and the set collide; the flag never sets   (02 row 04)
+//   A = S+1  flag reads back set, but no NMI                     (06 row 05)
+//   A = S+2  likewise                                            (06 row 06)
+//   A = S+3  NMI occurs normally                                 (06 row 07)
+//
+// Rows 05 and 06 require the sample to be no more than one dot past the access
+// (any later and the previous cycle's sample would already have caught the
+// assertion); row 07 requires it to be at least one dot past (any earlier and
+// the previous cycle's sample, taken at A = S, would miss a flag set on that
+// very dot). Only +1 satisfies both.
+//
+// The access phase itself - CPU on master ticks divisible by 12, ahead of the
+// PPU - is the one the ROMs agree with, and is left alone.
 void Bus::clock()
 {
     ++total_cycles;
 
-    // The CPU is always clocked before the PPU. Real hardware interleaves them
-    // by phase, which matters for mid-frame register writes; that is a problem
-    // for the rendering work, not for CPU-only execution.
-    clock_CPU();
+    // A CPU cycle is stolen outright while OAM DMA holds the bus.
+    const bool cpu_cycle = (total_cycles % 12 == 0) && !ppu.dma_in_progress();
+
+    if (cpu_cycle) {
+        clock_CPU();
+    }
+
     clock_PPU();
+
+    if (cpu_cycle) {
+        cpu.sample_interrupts();
+    }
 }
 
 void Bus::clock_PPU()

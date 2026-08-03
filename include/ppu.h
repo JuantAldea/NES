@@ -91,6 +91,18 @@ public:
     void set_vblank() { registers.PPUSTATUS |= 0x80; }
     void clear_vblank() { registers.PPUSTATUS &= ~0x80; }
 
+    // /NMI is pulled low while the vblank flag is set and PPUCTRL bit 7 asks
+    // for an interrupt. The CPU cares only about the edges, which
+    // update_nmi_line reports; `nmi_line` remembers the level so it can tell
+    // an edge from a repeat.
+    bool nmi_line_asserted() const { return MMI_on_V_Blank && (registers.PPUSTATUS & 0x80); }
+    void update_nmi_line();
+    bool nmi_line = false;
+
+    // Set by a $2002 read that lands on the dot the vblank flag would be set,
+    // and consumed by that same dot's tick. Nothing else ever sees it.
+    bool suppress_vblank_flag_set = false;
+
     void set_sprite0_hit() { registers.PPUSTATUS |= 0x40; }
     void clear_sprite0_hit() { registers.PPUSTATUS &= ~0x40; }
 

@@ -17,9 +17,61 @@ void CPU::register_update_signal_callback(std::function<void(void)> callback)
     signal_update = callback != nullptr ? callback : [] {};
 }
 
+// The NMI input is edge-sensitive: what the CPU latches is the /NMI line going
+// low, not the fact that it is low. raise_NMI is that falling edge.
 void CPU::raise_NMI() { nmi_requested = true; }
 
+// And this is the line going back high.
+//
+// On hardware the edge detector samples /NMI once per cycle, so a pulse that
+// begins and ends between two samples is never seen at all. That is the whole
+// mechanism behind NMI suppression: the PPU asserts /NMI when the vblank flag
+// is set with NMI enabled, and a $2002 read a dot or two later takes it back
+// high before the CPU ever looks.
+//
+// Rather than defer edge detection to the sample point - which would make
+// nmi_pending() lag the line by up to a cycle, and is not observable from the
+// PPU's side anyway - the edge is latched here and stays revocable until a
+// sample has actually seen it. The two are equivalent: an assertion survives
+// iff a sample falls inside it.
+void CPU::lower_NMI()
+{
+    if (!nmi_committed) {
+        nmi_requested = false;
+    }
+}
+
 void CPU::raise_IRQ() { irq_requested = true; }
+
+// Once per CPU cycle, after that cycle's bus access.
+//
+// Two distinct things happen here, and conflating them is what made the NMI
+// timing wrong:
+//
+//   1. The pending NMI edge, if any, becomes irrevocable. See lower_NMI.
+//
+//   2. The interrupt lines are POLLED, and the result is what the next
+//      instruction boundary acts on. The poll is skipped on an instruction's
+//      final cycle, so the latch that survives into the boundary is the one
+//      taken on the PENULTIMATE cycle. That is not an off-by-one to be tidied
+//      away: it is why an interrupt asserted during an instruction's last
+//      cycle is not taken until after the *following* instruction
+//      (04-nmi_control's "Immediate occurence should be after NEXT
+//      instruction"), and why CLI/SEI/PLP - which write I on their last cycle
+//      - are polled against I's *old* value.
+void CPU::sample_interrupts()
+{
+    if (nmi_requested) {
+        nmi_committed = true;
+    }
+
+    if (completed_instruction_this_cycle) {
+        return;
+    }
+
+    nmi_poll = nmi_requested;
+    irq_poll = irq_requested && !get_flag(FLAGS::I);
+}
 
 // True when the current instruction is one of the eight conditional branches
 // and its condition holds, i.e. the branch will be taken.
@@ -142,7 +194,19 @@ bool CPU::clock(bool trace)
 
     ++cycle;
 
-    if (!step()) {
+    const bool completed = step();
+    completed_instruction_this_cycle = completed;
+
+    // When a Bus is driving this CPU it samples the interrupt lines itself,
+    // one PPU dot after this access - see Bus::clock, which is where that dot
+    // of separation is justified. Standalone harnesses (nestest, the
+    // SingleStepTests runners, Klaus2m5) have no PPU and no dots, so the CPU
+    // samples at the end of its own cycle.
+    if (!external_interrupt_sampling) {
+        sample_interrupts();
+    }
+
+    if (!completed) {
         return false;
     }
 
@@ -167,14 +231,25 @@ bool CPU::step()
     if (cycle == 1) {
         // NMI outranks IRQ, and IRQ is masked by I. Both then run the same
         // seven-cycle sequence, differing only in which vector it ends at.
-        if (nmi_requested || (irq_requested && !get_flag(FLAGS::I))) {
-            servicing_nmi = nmi_requested;
+        //
+        // What is tested here is the POLL latched on the previous
+        // instruction's penultimate cycle (see sample_interrupts), not the
+        // live state of the lines. An NMI that arrived after that poll is
+        // still pending and will be taken one instruction later.
+        if (nmi_poll || irq_poll) {
+            servicing_nmi = nmi_poll;
 
             if (servicing_nmi) {
                 nmi_requested = false;
+                nmi_committed = false;
             } else {
                 irq_requested = false;
             }
+
+            // Consumed. A fresh poll on this sequence's own penultimate cycle
+            // decides whether another interrupt follows it.
+            nmi_poll = false;
+            irq_poll = false;
 
             current_instruction = servicing_nmi ? &InstructionSet::NMI : &InstructionSet::IRQ;
             schedule = Schedule::interrupt;
@@ -696,6 +771,10 @@ void CPU::reset()
     nmi_requested = false;
     irq_requested = false;
     servicing_nmi = false;
+    nmi_committed = false;
+    nmi_poll = false;
+    irq_poll = false;
+    completed_instruction_this_cycle = false;
 
     signal_update();
 }

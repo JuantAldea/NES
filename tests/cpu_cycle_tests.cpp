@@ -1155,11 +1155,30 @@ TEST(CpuAddressing, indexed_indirect_pointer_wraps_within_zero_page)
 // Layer 3: interrupt timing and power-on state.
 // ---------------------------------------------------------------------------
 
+// The CPU polls the interrupt lines on an instruction's PENULTIMATE cycle, and
+// acts on that poll at the following instruction boundary. An interrupt raised
+// with no instruction in flight is therefore not something hardware can be in:
+// there is no penultimate cycle for the poll to happen on, and nothing would
+// ever latch it. Both tests below consequently assert the line DURING a
+// preceding NOP - raised before its first clock() call, which for a two-cycle
+// instruction is its penultimate cycle - and then check the sequence that
+// follows. What they assert about the sequence itself is unchanged.
+//
+// The NOP at $1001 is load-bearing rather than padding. FlatMemory reads back
+// $00 where nothing was written, which is BRK: a 7-cycle sequence vectoring
+// through $FFFE/$FFFF. Without it, an IRQ that was silently never taken would
+// still produce "7 cycles, PC = $9000" and the test would pass on the wrong
+// instruction entirely. The pushed copy of P is checked for the same reason -
+// B is set by BRK and clear for a hardware interrupt, and it is the only thing
+// in the two sequences that differs.
+
 TEST(CpuInterrupts, nmi_takes_seven_cycles)
 {
     FlatMemory mem;
     CPU cpu = make_cpu(mem);
 
+    mem.memory[0x1000] = 0xEA;  // NOP, the instruction the NMI arrives during
+    mem.memory[0x1001] = 0xEA;  // NOP, so "no interrupt taken" is 2 cycles, not 7
     mem.memory[0xFFFA] = 0x00;
     mem.memory[0xFFFB] = 0x90;
 
@@ -1167,10 +1186,15 @@ TEST(CpuInterrupts, nmi_takes_seven_cycles)
     cpu.registers.SP = 0xFD;
     cpu.registers.P = 0x24;
     cpu.cycles_left = 0;
+
     cpu.raise_NMI();
+    ASSERT_EQ(run_one_instruction(cpu), 2u) << "the NOP the NMI arrived during still runs to completion";
+    ASSERT_EQ(cpu.registers.PC, 0x1001) << "an NMI must not displace the instruction it arrived during";
 
     EXPECT_EQ(run_one_instruction(cpu), 7u) << "the NMI sequence takes 7 cycles on hardware, not 8";
     EXPECT_EQ(cpu.registers.PC, 0x9000) << "NMI should vector through $FFFA/$FFFB";
+    EXPECT_EQ(mem.memory[0x01FB] & static_cast<uint8_t>(CPU::FLAGS::B), 0)
+        << "a hardware interrupt pushes P with B clear; a BRK would have set it";
 }
 
 TEST(CpuInterrupts, irq_takes_seven_cycles)
@@ -1178,6 +1202,8 @@ TEST(CpuInterrupts, irq_takes_seven_cycles)
     FlatMemory mem;
     CPU cpu = make_cpu(mem);
 
+    mem.memory[0x1000] = 0xEA;  // NOP, the instruction the IRQ arrives during
+    mem.memory[0x1001] = 0xEA;  // NOP, so "no interrupt taken" is 2 cycles, not 7
     mem.memory[0xFFFE] = 0x00;
     mem.memory[0xFFFF] = 0x90;
 
@@ -1186,10 +1212,15 @@ TEST(CpuInterrupts, irq_takes_seven_cycles)
     cpu.registers.P = 0x24;  // I clear, so the IRQ is taken
     cpu.set_flag(CPU::FLAGS::I, false);
     cpu.cycles_left = 0;
+
     cpu.raise_IRQ();
+    ASSERT_EQ(run_one_instruction(cpu), 2u) << "the NOP the IRQ arrived during still runs to completion";
+    ASSERT_EQ(cpu.registers.PC, 0x1001) << "an IRQ must not displace the instruction it arrived during";
 
     EXPECT_EQ(run_one_instruction(cpu), 7u) << "the IRQ sequence takes 7 cycles";
     EXPECT_EQ(cpu.registers.PC, 0x9000) << "IRQ should vector through $FFFE/$FFFF";
+    EXPECT_EQ(mem.memory[0x01FB] & static_cast<uint8_t>(CPU::FLAGS::B), 0)
+        << "a hardware interrupt pushes P with B clear; a BRK would have set it";
 }
 
 TEST(CpuReset, power_on_state_matches_hardware)
