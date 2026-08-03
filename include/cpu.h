@@ -59,6 +59,7 @@ public:
     void raise_NMI();
     void lower_NMI();
     void raise_IRQ();
+    void set_IRQ_line(const bool asserted);
 
     // Edge-commits and polls the interrupt lines. Runs once per CPU cycle,
     // after that cycle's bus access. A Bus drives this itself so it can place
@@ -177,6 +178,7 @@ protected:
     // A latched /NMI falling edge, waiting to be polled.
     bool nmi_requested = false;
     bool irq_requested = false;
+    bool irq_line = false;
 
     // Whether a sample has already seen nmi_requested, at which point the line
     // going back high can no longer take it away.
@@ -309,6 +311,9 @@ public:
     // taken. The PPU is expected to raise this only when PPUCTRL bit 7 asks
     // for it, and that gating is easy to break silently.
     bool nmi_pending() const { return nmi_requested; }
+
+    // Observability for tests: the level a device is driving on /IRQ.
+    bool irq_line_asserted() const { return irq_line; }
 
     friend class InstructionSet;
 };

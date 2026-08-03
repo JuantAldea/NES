@@ -43,6 +43,12 @@ void CPU::lower_NMI()
 
 void CPU::raise_IRQ() { irq_requested = true; }
 
+// A device asserting or releasing its /IRQ line. Level-sensitive: the CPU keeps
+// taking the interrupt while this is true and I is clear, so the device must
+// release it when the handler acknowledges (for the APU frame counter, that is
+// a read of $4015).
+void CPU::set_IRQ_line(const bool asserted) { irq_line = asserted; }
+
 // Once per CPU cycle, after that cycle's bus access.
 //
 // Two distinct things happen here, and conflating them is what made the NMI
@@ -87,7 +93,13 @@ void CPU::sample_interrupts()
     }
 
     nmi_poll = nmi_requested;
-    irq_poll = irq_requested && !get_flag(FLAGS::I);
+
+    // /IRQ is level-sensitive, unlike /NMI: there is no edge to latch. As long
+    // as a device holds the line low and I is clear, the interrupt is taken
+    // again after every handler. `irq_requested` is the older one-shot pulse,
+    // kept for harnesses that inject an interrupt directly; a device that owns
+    // a line uses set_IRQ_line and is responsible for releasing it.
+    irq_poll = (irq_requested || irq_line) && !get_flag(FLAGS::I);
 }
 
 // True when the current instruction is one of the eight conditional branches
@@ -787,6 +799,7 @@ void CPU::reset()
     // instruction after reset would be an NMI.
     nmi_requested = false;
     irq_requested = false;
+    irq_line = false;
     servicing_nmi = false;
     nmi_committed = false;
     nmi_poll = false;

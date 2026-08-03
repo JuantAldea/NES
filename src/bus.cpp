@@ -38,7 +38,9 @@ Bus::DecodedAddress Bus::decode(const uint16_t addr)
         return {&ram, static_cast<uint16_t>(addr % 0x0800)};
     } else if (addr < 0x4000) {
         return {&ppu, static_cast<uint16_t>(0x2000 + (addr % 8))};
-    } else if (addr <= 0x4013 || addr == 0x4015) {
+    } else if (addr <= 0x4013 || addr == 0x4015 || addr == 0x4017) {
+        // $4017 is the APU frame counter on write. It is also controller 2 on
+        // read, which is not implemented; the APU returns open bus for it.
         return {&apu, addr};
     } else if (addr == 0x4014) {
         return {&ppu, addr};
@@ -132,6 +134,13 @@ void Bus::clock()
         clock_CPU();
     } else if (cpu_tick) {
         ppu.perform_OAM_DMA_cycle();
+    }
+
+    // The frame counter divides the CPU clock and keeps running while DMA holds
+    // the bus - it is not gated on the CPU executing, any more than the /NMI
+    // edge detector is.
+    if (cpu_tick) {
+        apu.clock();
     }
 
     clock_PPU();
