@@ -50,3 +50,6 @@ tests/test_files/single_step_tests/
 
 # Blargg PPU test ROMs, fetched by tests/test_files/fetch_blargg_ppu.sh
 tests/test_files/blargg_ppu/
+
+# Blargg cpu_interrupts_v2 ROMs, fetched by tests/test_files/fetch_cpu_interrupts.sh
+tests/test_files/cpu_interrupts/
