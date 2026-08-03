@@ -121,11 +121,17 @@ void Bus::clock()
 
     const bool cpu_tick = total_cycles % 12 == 0;
 
-    // A CPU cycle is stolen outright while OAM DMA holds the bus.
-    const bool cpu_cycle = cpu_tick && !ppu.dma_in_progress();
+    // A CPU cycle is stolen outright while OAM DMA holds the bus. The DMA unit
+    // runs at the CPU's rate, not the PPU's - it is stealing the CPU's cycles,
+    // one transfer every other one. Driving it from PPU::clock instead made the
+    // whole transfer take ~171 CPU cycles rather than 513.
+    const bool dma_holds_the_bus = ppu.dma_in_progress();
+    const bool cpu_cycle = cpu_tick && !dma_holds_the_bus;
 
     if (cpu_cycle) {
         clock_CPU();
+    } else if (cpu_tick) {
+        ppu.perform_OAM_DMA_cycle();
     }
 
     clock_PPU();
@@ -137,9 +143,7 @@ void Bus::clock()
         // its execution unit - stealing bus cycles does not stop it latching an
         // edge. Only the poll (deciding to act on the latch) belongs to a cycle
         // the CPU actually runs. Without this, an /NMI pulse that both fell and
-        // rose inside a DMA would be lost entirely, and that window grows
-        // threefold once the DMA length is corrected: it currently runs ~171
-        // CPU cycles instead of 513.
+        // rose inside a DMA would be lost entirely.
         cpu.latch_nmi_edge();
     }
 }
@@ -151,11 +155,8 @@ void Bus::clock_PPU()
     }
 }
 
-void Bus::clock_CPU()
-{
-    if (total_cycles % 12 == 0) {
-        if (!ppu.dma_in_progress()) {
-            cpu.clock(false);
-        }
-    }
-}
+// Gating lives entirely in clock(). This used to re-test `% 12` and
+// dma_in_progress() itself, which meant the CPU tick and its interrupt sample
+// were guarded by two copies of the same condition - editing one would have
+// desynchronised them silently.
+void Bus::clock_CPU() { cpu.clock(false); }

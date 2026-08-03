@@ -37,10 +37,10 @@ void PPU::clock()
 {
     ++total_cycles;
 
-    if (dma_in_progress()) {
-        perform_OAM_DMA_cycle();
-        //TODO return?
-    }
+    // OAM DMA is NOT driven from here. It steals CPU cycles, so it advances at
+    // the CPU's rate; Bus::clock runs it. Ticking it once per dot made the
+    // transfer three times too short.
+
     //341 clocks/scanline
     // external PPU memory accessed every two clocks = 170 reads
     //+ 1 spare cycle
@@ -161,12 +161,16 @@ void PPU::process_visible_scanline()
     }
 }
 
+// 513 cycles, or 514 when the write to $4014 landed on an odd CPU cycle: the
+// transfer is 256 read/write pairs plus a halt cycle, and needs one more to
+// realign when it would otherwise start on the wrong phase.
+//
+// The parity is the CPU's, not the PPU's. Taking it from the dot counter made
+// it effectively arbitrary.
 void PPU::request_OAM_DMA()
 {
-    remaining_dma_cycles = 513 + (total_cycles + 1) % 2;
+    remaining_dma_cycles = 513 + (bus->cpu.total_cycles % 2);
     dma_current_memory_source_addr = registers.OAMDMA << 8;
-
-    // std::cout << "REQUESTING DMA from " << std::hex << dma_current_memory_source_addr << std::endl;
 }
 
 void PPU::perform_OAM_DMA_cycle()

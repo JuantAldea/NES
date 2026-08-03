@@ -112,4 +112,59 @@ GTEST_TEST(testDMA, dma_test)
     }
 }
 
+// OAM DMA steals CPU cycles, so it advances at the CPU's rate: 256 read/write
+// pairs plus a halt cycle is 513, and one more to realign when the write to
+// $4014 landed on an odd CPU cycle.
+//
+// This is worth pinning explicitly because the transfer used to be driven from
+// PPU::clock, once per dot, which made it take ~171 CPU cycles instead - and
+// nothing here noticed, because the surrounding assertions only check that the
+// CPU is frozen and that OAM ends up correct, both of which stayed true.
+GTEST_TEST(testDMA, dma_takes_513_or_514_cpu_cycles)
+{
+    // `odd_alignment` inserts a 3-cycle LDA $00 to flip the parity of the CPU
+    // cycle the $4014 write lands on. A NOP would not: at 2 cycles it preserves
+    // parity, which is easy to get wrong when writing this test.
+    for (const bool odd_alignment : {false, true}) {
+        Bus console;
+
+        uint8_t program[16];
+        memset(program, 0xEA, sizeof(program));
+        size_t i = 0;
+        if (odd_alignment) {
+            program[i++] = 0xA5;  // LDA $00  (3 cycles)
+            program[i++] = 0x00;
+        }
+        program[i++] = 0xA9;  // LDA #$02
+        program[i++] = 0x02;
+        program[i++] = 0x8D;  // STA $4014
+        program[i++] = 0x14;
+        program[i++] = 0x40;
+
+        console.write_ram(0x0400, sizeof(program), program);
+        console.cpu.registers.PC = 0x0400;
+        console.cpu.cycles_left = 0;
+
+        while (!console.ppu.dma_in_progress()) {
+            console.clock();
+        }
+
+        const uint64_t cpu_cycle_at_request = console.cpu.total_cycles;
+        const uint64_t bus_cycles_before = console.total_cycles;
+        ASSERT_EQ(cpu_cycle_at_request % 2, odd_alignment ? 1u : 0u) << "test setup did not achieve the parity it wanted";
+
+        while (console.ppu.dma_in_progress()) {
+            console.clock();
+        }
+
+        // The CPU is clocked once every 12 bus cycles, so the transfer's length
+        // in CPU cycles is the elapsed bus cycles over 12.
+        const uint64_t elapsed_cpu_cycles = (console.total_cycles - bus_cycles_before) / 12;
+        EXPECT_EQ(elapsed_cpu_cycles, odd_alignment ? 514u : 513u)
+            << "DMA starting on an " << (odd_alignment ? "odd" : "even") << " CPU cycle";
+
+        EXPECT_EQ(console.cpu.total_cycles, cpu_cycle_at_request) << "the CPU must be halted for the whole transfer";
+    }
+}
+
 };  // namespace tests
