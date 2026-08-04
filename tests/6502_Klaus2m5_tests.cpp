@@ -17,7 +17,15 @@ struct TEST_MEMORY {
     uint8_t read(const uint16_t addr) { return memory[addr]; };
 };
 
-uint16_t klaus2m5_test(Klaus2m5Suite suite)
+// Where the suite stopped, and how far it got before stopping. The cycle count
+// matters for the interrupt suite: its traps are shared by several cases, so an
+// address alone cannot say WHICH one fired.
+struct Klaus2m5Result {
+    uint16_t trap_pc = 0;
+    uint64_t cycles = 0;
+};
+
+Klaus2m5Result klaus2m5_test(Klaus2m5Suite suite)
 {
     TEST_MEMORY ram;
     auto read = std::bind(&TEST_MEMORY::read, &ram, std::placeholders::_1);
@@ -33,14 +41,14 @@ uint16_t klaus2m5_test(Klaus2m5Suite suite)
     // missing-file error.
     if (!file) {
         ADD_FAILURE() << "could not open test fixture: " << path;
-        return 0;
+        return {};
     }
 
     std::streamsize size = file.tellg();
     file.seekg(0, std::ios::beg);
     if (!file.read(reinterpret_cast<char*>(ram.memory.data()), size)) {
         ADD_FAILURE() << "short read on test fixture: " << path;
-        return 0;
+        return {};
     }
     cpu.reset();
     // These test images don't follow the $FFFC/$FFFD reset-vector convention;
@@ -55,8 +63,9 @@ uint16_t klaus2m5_test(Klaus2m5Suite suite)
     while (true) {
         if (cpu.clock(false)) {
             if (previous_pc == cpu.registers.PC) {
-                std::cout << "TRAP " << std::hex << previous_pc << std::endl;
-                return cpu.registers.PC;
+                std::cout << "TRAP " << std::hex << previous_pc << std::dec << " after " << cpu.total_cycles
+                          << " cycles" << std::endl;
+                return {cpu.registers.PC, cpu.total_cycles};
             }
             previous_pc = cpu.registers.PC;
         }
@@ -72,13 +81,13 @@ uint16_t klaus2m5_test(Klaus2m5Suite suite)
             }
         }
     }
-    return 0;
+    return {};
 }
 
 GTEST_TEST(testCPU, 6502_Klaus2m5_funtional_test)
 {
     Klaus2m5Suite suite{0x0000, 0x336d, "6502_functional_test.bin"};
-    EXPECT_EQ(suite.target_trap, klaus2m5_test(suite));
+    EXPECT_EQ(suite.target_trap, klaus2m5_test(suite).trap_pc);
 }
 
 // This suite stops at $075C rather than its success trap at $06F5, and that is
@@ -109,16 +118,37 @@ GTEST_TEST(testCPU, 6502_Klaus2m5_funtional_test)
 // flips this test to $06F5 and flips 2-nmi_and_brk to failing, with nothing else
 // in the 640-test suite moving. Verified by doing it.
 //
-// The trap address is still asserted, so this remains a real regression
-// detector: any change that moves execution somewhere OTHER than this one known
-// disagreement fails the test.
+// The CYCLE COUNT is asserted as well as the address, and that is the load
+// bearing half.
+//
+// An earlier version of this test asserted only $075C, with a comment claiming
+// "any change that moves execution somewhere OTHER than this one known
+// disagreement fails the test". That was false. $075C sits inside nmi_trap,
+// which is shared by all six NMIs the suite fires, so the address alone cannot
+// distinguish "ran every case and hit the documented caveat in the last one"
+// from "failed at the FIRST NMI and happened to land in the same handler".
+// A review demonstrated exactly that: a change making genuine NMIs push B set
+// trapped at $075C after 1 NMI and 1646 cycles instead of 6 NMIs and 2721, and
+// the address-only assertion passed regardless.
+//
+// 2721 is the measured cycle count of a correct run. It is not derived from
+// anything in src/, so it moves if and only if execution up to the trap
+// changes - which is the property the address was wrongly credited with.
 GTEST_TEST(testCPU, 6502_Klaus2m5_interrupt_test_stops_at_the_known_brk_nmi_conflict)
 {
     constexpr uint16_t known_brk_nmi_trap = 0x075c;
+    constexpr uint64_t cycles_of_a_correct_run = 2721;
+
     Klaus2m5Suite suite{0xbffc, known_brk_nmi_trap, "6502_interrupt_test.bin"};
-    EXPECT_EQ(suite.target_trap, klaus2m5_test(suite))
+    const Klaus2m5Result result = klaus2m5_test(suite);
+
+    EXPECT_EQ(suite.target_trap, result.trap_pc)
         << "Klaus's interrupt suite stopped somewhere other than the known BRK/NMI "
            "hijack disagreement at $075C. Everything up to that point must still pass.";
+
+    EXPECT_EQ(cycles_of_a_correct_run, result.cycles)
+        << "the suite reached $075C but took a different number of cycles to get there, "
+           "so it trapped on a different NMI than the documented BRK/NMI case";
 }
 
 }  // namespace tests

@@ -1386,6 +1386,63 @@ TEST(CpuInterrupts, an_nmi_hijacks_an_irq_sequence_without_setting_b)
     EXPECT_EQ(mem.memory[0x01FD], 0x10) << "pushed PCH should be $10";
 }
 
+// An NMI sequence cannot hijack itself.
+//
+// poll_interrupt_hijack returns early when servicing_nmi is already set. That
+// guard is what preserves a SECOND /NMI edge arriving inside an NMI sequence's
+// hijack window: the hijack only selects a vector, it does not consume an edge -
+// the latch was already cleared when the sequence began, so a new edge survives
+// and is taken after the handler's first instruction.
+//
+// Without the guard the second edge is silently swallowed, and a review found
+// that removing `servicing_nmi ||` left the entire 640-test suite passing.
+// Nothing anywhere pinned it, including all five cpu_interrupts_v2 ROMs.
+TEST(CpuInterrupts, an_nmi_sequence_does_not_consume_a_second_nmi_edge)
+{
+    FlatMemory mem;
+    CPU cpu = make_cpu(mem);
+
+    mem.memory[0x1000] = 0xEA;  // NOP the first NMI arrives during
+    mem.memory[0x1001] = 0xEA;
+    mem.memory[0x9000] = 0xEA;  // NMI handler
+    mem.memory[0x9001] = 0xEA;
+    mem.memory[0xFFFA] = 0x00;  // NMI -> $9000
+    mem.memory[0xFFFB] = 0x90;
+
+    cpu.registers.PC = 0x1000;
+    cpu.registers.SP = 0xFD;
+    cpu.registers.P = 0x24;
+    cpu.cycles_left = 0;
+
+    cpu.raise_NMI();
+    ASSERT_EQ(run_one_instruction(cpu), 2u);
+    ASSERT_EQ(cpu.registers.PC, 0x1001);
+
+    // Step the NMI sequence, raising a SECOND edge on cycle 3 - inside the
+    // window where a BRK or IRQ sequence would be hijacked.
+    for (int cycle = 1;; ++cycle) {
+        if (cycle == 3) {
+            cpu.raise_NMI();
+        }
+        if (cpu.clock(false)) {
+            break;
+        }
+        ASSERT_LT(cycle, 32) << "the NMI sequence did not complete";
+    }
+    ASSERT_EQ(cpu.registers.PC, 0x9000) << "the first NMI should have vectored to its handler";
+
+    // A sequence does not poll, so the second edge cannot be taken at this
+    // boundary - the handler's first instruction runs.
+    EXPECT_EQ(run_one_instruction(cpu), 2u) << "the handler's first instruction must run";
+    EXPECT_EQ(cpu.registers.PC, 0x9001);
+
+    // And only then is the retained edge serviced.
+    EXPECT_EQ(run_one_instruction(cpu), 7u)
+        << "the second /NMI edge was swallowed by the sequence it arrived in; a hijack "
+           "selects a vector, it does not consume an edge";
+    EXPECT_EQ(cpu.registers.PC, 0x9000) << "the retained edge should vector through $FFFA again";
+}
+
 // The corollary of polling on the penultimate cycle: an edge arriving on an
 // instruction's *final* cycle is not seen until the next instruction's poll, so
 // it is deferred by a whole instruction. This is what 04-nmi_control means by
@@ -1433,11 +1490,25 @@ TEST(CpuInterrupts, an_edge_on_the_final_cycle_is_deferred_one_instruction)
 //                                                             penultimate)
 //   taken, crossing  4 cycles   samples after cycles 1 and 3 (= penultimate)
 //
-// The three tests below are one per row, and the fourth is the control: a
-// non-branch instruction of the same length, which does poll on its penultimate
-// cycle. The distinction is what Blargg's 5-branch_delays_irq measures with its
+// The distinction is what Blargg's 5-branch_delays_irq measures with its
 // test_branch_taken / test_branch_taken_pagecross / test_branch_not_taken /
 // test_jmp sub-tests.
+//
+// Only TWO of the four tests below can actually detect a change to this rule,
+// and it is worth knowing which:
+//
+//   a_taken_branch_does_not_poll_on_its_second_cycle
+//       the load-bearing one - fails if the rule is deleted or moved
+//   a_page_crossing_taken_branch_polls_on_its_penultimate_cycle
+//       fails if the suppression is widened to cycle 3 as well
+//
+//   an_untaken_branch_polls_like_any_other_instruction
+//   a_three_cycle_non_branch_does_poll_on_its_second_cycle
+//       CONTROLS, not detectors. An untaken branch's cycle-2 sample is already
+//       suppressed by the completed_instruction_this_cycle guard, so no
+//       mutation of the branch rule can reach either of them. A review
+//       confirmed both survive every such mutation. They are here to show the
+//       rule does not over-apply, which is a different claim from pinning it.
 //
 // All four raise /IRQ between cycle 1 and cycle 2, i.e. after the only sample a
 // three-cycle taken branch takes.
