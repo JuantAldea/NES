@@ -53,3 +53,6 @@ tests/test_files/blargg_ppu/
 
 # Blargg cpu_interrupts_v2 ROMs, fetched by tests/test_files/fetch_cpu_interrupts.sh
 tests/test_files/cpu_interrupts/
+
+# PPU address-space test ROMs, fetched by tests/test_files/fetch_ppu_address_space.sh
+tests/test_files/ppu_address_space/
