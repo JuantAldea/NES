@@ -13,17 +13,20 @@
 //   5-branch_delays_irq  a taken branch polls earlier than the uniform
 //                        penultimate-cycle rule
 //
-// SOME OF THESE ARE EXPECTED TO FAIL. They were fetched deliberately as the
-// instrument for known-unfixed defects, before any attempt to fix them, so the
-// count that passes is a scalar rather than a guess:
-//   - IRQ is a one-shot latch with no lower_IRQ, asymmetric with the level
-//     model /NMI now has. Nothing drives an IRQ line here yet.
-//   - BRK/IRQ sequences are not hijacked by an NMI arriving before cycle 4.
-//   - A page-crossing taken branch polls on its own penultimate cycle where
-//     hardware polls on cycle 2.
+// All five pass. They were fetched as the instrument for three known-unfixed
+// defects, all of which have since been closed:
+//   - IRQ was a one-shot latch with no lower_IRQ; /IRQ is now a level driven by
+//     the APU frame counter.
+//   - BRK/IRQ sequences were not hijacked by an NMI arriving before cycle 4;
+//     see CPU::poll_interrupt_hijack.
+//   - A taken branch polled on its own penultimate cycle where hardware does
+//     not poll before a taken branch's third cycle; see CPU::sample_interrupts.
 //
 // Do NOT weaken these assertions. A ROM going from fail to pass is progress; a
 // ROM going the other way is a regression.
+//
+// Note that 2-nmi_and_brk and Klaus2m5's 6502_interrupt_test disagree, and
+// cannot both pass: see the comment on CPU::poll_interrupt_hijack.
 #include <string>
 
 #include "gtest/gtest.h"
@@ -37,10 +40,28 @@ namespace blargg
 namespace interrupts
 {
 
-// These ROMs settle much faster than the PPU ones, but the cap is generous for
-// the same reason: a genuinely stuck CPU should fail with a diagnosis rather
-// than hang the suite.
-constexpr uint64_t kMaxFrames = 300;
+// The cap exists so that a genuinely stuck CPU fails with a diagnosis rather
+// than hanging the suite. It is NOT a performance budget, and it must sit above
+// what the slowest ROM actually needs or it turns a pass into a false "timed
+// out ... still reporting status $80 (running)".
+//
+// Measured frame at which each ROM writes its final status, on hardware-rate
+// timing (29780 CPU cycles per frame):
+//
+//   1-cli_latency         17.1
+//   2-nmi_and_brk        103.1
+//   3-nmi_and_irq        126.2
+//   4-irq_and_dma         69.1
+//   5-branch_delays_irq  385.1
+//
+// 5-branch_delays_irq is the outlier by construction rather than because
+// anything here is slow: it runs four sub-tests of ten iterations each, and
+// every iteration spends one frame in `begin` plus eight more in the IRQ
+// handler's `ldx #7 / delay 29831` resync loop - 4 x 10 x ~9 = ~360 frames
+// before any emulator overhead. A real NES takes the same six and a half
+// seconds. The previous cap of 300 cut it off at roughly the start of the
+// fourth sub-test, which is why it read as a hang.
+constexpr uint64_t kMaxFrames = 600;
 
 std::string rom_path(const std::string& name)
 {

@@ -281,6 +281,12 @@ private:
     // Returns true when the access just made was the instruction's last.
     bool step();
 
+    // Re-reads /NMI part-way through an interrupt sequence, at the one point
+    // hardware still lets it change which vector the sequence ends at. Called
+    // from sample_interrupts on cycle 4 of Schedule::interrupt and
+    // Schedule::software_interrupt.
+    void poll_interrupt_hijack();
+
     // The index register the current addressing mode adds, or 0 for the modes
     // that do not index.
     uint8_t index_register() const;
@@ -304,6 +310,9 @@ private:
     uint8_t latched_value = 0;    // operand read by the schedule / result to write
     uint16_t indirect_pointer = 0;
     uint16_t branch_target = 0;
+
+    // Which vector the interrupt sequence currently running will fetch. NOT
+    // fixed when the sequence starts: see poll_interrupt_hijack.
     bool servicing_nmi = false;
 
 public:

@@ -1230,6 +1230,27 @@ TEST(CpuInterrupts, irq_takes_seven_cycles)
 //
 // Only the Blargg ROMs covered this, and only indirectly. Injecting the edge at
 // every cycle of the sequence is cheap and pins it directly.
+//
+// The sequence does look at /NMI exactly once, on cycle 4, and that is a
+// different question from "is there another interrupt to take after this one".
+// An NMI latched by then HIJACKS the sequence already in flight: the vector
+// fetched on cycles 6/7 becomes $FFFA/$FFFB. So which vector this BRK ends at
+// is not constant across the seven injection points, and the table below spells
+// out both halves:
+//
+//   inject on cycle 1-4   hijacked, vectors to $FFFA, edge consumed
+//   inject on cycle 5-7   too late, vectors to $FFFE, edge still pending
+//
+// The five-cycle-wide hijack window is Blargg's 2-nmi_and_brk result, whose ten
+// printed rows walk the NMI one clock at a time across the last cycle of the
+// instruction before the BRK and the BRK's own cycles 1-6, and show exactly
+// five of them taking the NMI vector. Cycles 1-4 here are the four of those
+// five that fall inside the sequence; the fifth is covered by
+// an_edge_on_the_final_cycle_is_deferred_one_instruction.
+//
+// Whichever vector is taken, the property this test exists for is unchanged and
+// is asserted in both halves: the handler's first instruction runs before any
+// further interrupt is serviced.
 TEST(CpuInterrupts, an_interrupt_sequence_does_not_poll)
 {
     for (int inject_at = 1; inject_at <= 7; ++inject_at) {
@@ -1237,8 +1258,10 @@ TEST(CpuInterrupts, an_interrupt_sequence_does_not_poll)
         CPU cpu = make_cpu(mem);
 
         mem.memory[0x1000] = 0x00;  // BRK
-        mem.memory[0x8000] = 0xEA;  // handler: NOP
+        mem.memory[0x8000] = 0xEA;  // BRK/IRQ handler: NOP, NOP
         mem.memory[0x8001] = 0xEA;
+        mem.memory[0x9000] = 0xEA;  // NMI handler: NOP, NOP
+        mem.memory[0x9001] = 0xEA;
         mem.memory[0xFFFA] = 0x00;  // NMI   -> $9000
         mem.memory[0xFFFB] = 0x90;
         mem.memory[0xFFFE] = 0x00;  // BRK   -> $8000
@@ -1250,22 +1273,117 @@ TEST(CpuInterrupts, an_interrupt_sequence_does_not_poll)
         cpu.cycles_left = 0;
 
         // Step the BRK, raising /NMI on the chosen cycle of its sequence.
+        size_t sequence_cycles = 0;
         for (int cycle = 1;; ++cycle) {
             if (cycle == inject_at) {
                 cpu.raise_NMI();
             }
+            ++sequence_cycles;
             if (cpu.clock(false)) {
                 break;
             }
             ASSERT_LT(cycle, 32) << "BRK did not complete";
         }
-        ASSERT_EQ(cpu.registers.PC, 0x8000) << "BRK should vector to its handler";
 
+        const bool hijacked = inject_at <= 4;
+
+        // Literal, not derived: a hijack redirects the vector fetch that the
+        // sequence was going to make anyway, so it cannot cost extra cycles.
+        EXPECT_EQ(sequence_cycles, 7u) << "BRK is seven cycles whether or not an NMI stole its vector"
+                                       << " (NMI raised on cycle " << inject_at << ")";
+
+        EXPECT_EQ(cpu.registers.PC, hijacked ? 0x9000 : 0x8000)
+            << "NMI raised on BRK cycle " << inject_at << " should"
+            << (hijacked ? " " : " not ") << "have redirected the vector fetch to $FFFA";
+
+        // What B records is which instruction STARTED the sequence, not where
+        // it ended up: a hijacked BRK still reaches the NMI handler with B set,
+        // which is exactly the $36 Blargg's 2-nmi_and_brk prints for its five
+        // hijacked rows. SP was $FD, so BRK pushed PCH at $01FD, PCL at $01FC
+        // and P at $01FB.
+        EXPECT_EQ(mem.memory[0x01FB] & static_cast<uint8_t>(CPU::FLAGS::B),
+                  static_cast<uint8_t>(CPU::FLAGS::B))
+            << "a hijacked BRK still pushes P with B set (NMI raised on cycle " << inject_at << ")";
+
+        // And the frame is still BRK's: the return address is the byte after
+        // BRK's padding byte, $1000 + 2 = $1002.
+        EXPECT_EQ(mem.memory[0x01FC], 0x02) << "pushed PCL should be $02 (NMI raised on cycle " << inject_at << ")";
+        EXPECT_EQ(mem.memory[0x01FD], 0x10) << "pushed PCH should be $10 (NMI raised on cycle " << inject_at << ")";
+
+        // The property under test, in both halves.
         EXPECT_EQ(run_one_instruction(cpu), 2u)
             << "NMI raised on BRK cycle " << inject_at
             << " was serviced before the handler ran an instruction; an interrupt sequence must not poll";
-        EXPECT_EQ(cpu.registers.PC, 0x8001) << "the handler's first instruction should have executed";
+        EXPECT_EQ(cpu.registers.PC, hijacked ? 0x9001 : 0x8001)
+            << "the handler's first instruction should have executed";
+
+        if (hijacked) {
+            // The hijack consumed the edge. The second NOP of the NMI handler
+            // runs; nothing takes a second NMI.
+            EXPECT_EQ(run_one_instruction(cpu), 2u)
+                << "the hijack consumed the /NMI edge, so no second NMI is due";
+            EXPECT_EQ(cpu.registers.PC, 0x9002) << "the NMI handler should still be running";
+        } else {
+            // Too late to hijack, so the edge is still pending and is taken at
+            // the first boundary the handler offers.
+            EXPECT_EQ(run_one_instruction(cpu), 7u)
+                << "an NMI too late to hijack is still pending and due after the handler's first instruction";
+            EXPECT_EQ(cpu.registers.PC, 0x9000) << "and it vectors through $FFFA/$FFFB";
+        }
     }
+}
+
+// The IRQ half of the same window. An IRQ sequence has no BRK opcode behind it,
+// so the copy of P it pushes has B CLEAR - and stays clear when an NMI steals
+// the vector, for the same reason a hijacked BRK's stays set. Blargg's
+// 3-nmi_and_irq prints $20 for its hijacked rows against the $36 of
+// 2-nmi_and_brk, and the two differ in nothing but that bit.
+TEST(CpuInterrupts, an_nmi_hijacks_an_irq_sequence_without_setting_b)
+{
+    FlatMemory mem;
+    CPU cpu = make_cpu(mem);
+
+    mem.memory[0x1000] = 0xEA;  // NOP: the instruction the IRQ arrives during
+    mem.memory[0x1001] = 0xEA;
+    mem.memory[0x9000] = 0xEA;  // NMI handler
+    mem.memory[0x9001] = 0xEA;
+    mem.memory[0xFFFA] = 0x00;  // NMI -> $9000
+    mem.memory[0xFFFB] = 0x90;
+    mem.memory[0xFFFE] = 0x00;  // IRQ -> $8000
+    mem.memory[0xFFFF] = 0x80;
+
+    cpu.registers.PC = 0x1000;
+    cpu.registers.SP = 0xFD;
+    cpu.registers.P = 0x24;
+    cpu.set_flag(CPU::FLAGS::I, false);  // so the IRQ is taken at all
+    cpu.cycles_left = 0;
+
+    cpu.raise_IRQ();
+    ASSERT_EQ(run_one_instruction(cpu), 2u) << "the NOP the IRQ arrived during still runs to completion";
+    ASSERT_EQ(cpu.registers.PC, 0x1001);
+
+    // Now step the IRQ sequence, raising /NMI on its cycle 3 - inside the
+    // window, and before the cycle-4 look at the line.
+    size_t cycles = 0;
+    for (int cycle = 1;; ++cycle) {
+        if (cycle == 3) {
+            cpu.raise_NMI();
+        }
+        ++cycles;
+        if (cpu.clock(false)) {
+            break;
+        }
+        ASSERT_LT(cycle, 32) << "the IRQ sequence did not complete";
+    }
+
+    EXPECT_EQ(cycles, 7u) << "the sequence is seven cycles whether or not the NMI stole its vector";
+    EXPECT_EQ(cpu.registers.PC, 0x9000) << "the NMI should have redirected the vector fetch to $FFFA/$FFFB";
+    EXPECT_EQ(mem.memory[0x01FB] & static_cast<uint8_t>(CPU::FLAGS::B), 0)
+        << "a hijacked IRQ pushes P with B clear; only a BRK sets it";
+    // The IRQ arrived during the NOP at $1000, so the sequence pushes $1001 -
+    // no padding byte, unlike BRK.
+    EXPECT_EQ(mem.memory[0x01FC], 0x01) << "pushed PCL should be $01";
+    EXPECT_EQ(mem.memory[0x01FD], 0x10) << "pushed PCH should be $10";
 }
 
 // The corollary of polling on the penultimate cycle: an edge arriving on an
@@ -1297,6 +1415,152 @@ TEST(CpuInterrupts, an_edge_on_the_final_cycle_is_deferred_one_instruction)
     EXPECT_EQ(cpu.registers.PC, 0x1002) << "the following instruction should have run first";
 
     EXPECT_EQ(run_one_instruction(cpu), 7u) << "and only then is the NMI serviced";
+    EXPECT_EQ(cpu.registers.PC, 0x9000);
+}
+
+// The one instruction that does not poll on its penultimate cycle.
+//
+// Hardware polls before a branch's operand fetch and then NOT before the third
+// cycle of a taken branch (NESdev, CPU interrupts: "Interrupts are always
+// polled before the second CPU cycle (the operand fetch), but not before the
+// third CPU cycle on a taken branch"). In this core's terms - where a sample
+// runs after each cycle's bus access, so "polled before cycle N" is the sample
+// at the end of cycle N-1 - that suppresses the end-of-cycle-2 sample and
+// nothing else:
+//
+//   not taken        2 cycles   samples after cycle 1        (= penultimate)
+//   taken            3 cycles   samples after cycle 1 only   (one EARLIER than
+//                                                             penultimate)
+//   taken, crossing  4 cycles   samples after cycles 1 and 3 (= penultimate)
+//
+// The three tests below are one per row, and the fourth is the control: a
+// non-branch instruction of the same length, which does poll on its penultimate
+// cycle. The distinction is what Blargg's 5-branch_delays_irq measures with its
+// test_branch_taken / test_branch_taken_pagecross / test_branch_not_taken /
+// test_jmp sub-tests.
+//
+// All four raise /IRQ between cycle 1 and cycle 2, i.e. after the only sample a
+// three-cycle taken branch takes.
+
+TEST(CpuInterrupts, a_taken_branch_does_not_poll_on_its_second_cycle)
+{
+    FlatMemory mem;
+    CPU cpu = make_cpu(mem);
+
+    // BCS +0 at $1000. Operand fetch leaves PC at $1002 and the offset is 0, so
+    // the target is $1002: same page, three cycles.
+    mem.memory[0x1000] = 0xB0;
+    mem.memory[0x1001] = 0x00;
+    mem.memory[0x1002] = 0xEA;  // NOP - must run BEFORE the IRQ
+    mem.memory[0x1003] = 0xEA;
+    mem.memory[0xFFFE] = 0x00;  // IRQ -> $9000
+    mem.memory[0xFFFF] = 0x90;
+
+    cpu.registers.PC = 0x1000;
+    cpu.registers.SP = 0xFD;
+    cpu.registers.P = 0x21;  // U set, I clear (IRQ enabled), C set (branch taken)
+    cpu.cycles_left = 0;
+
+    ASSERT_FALSE(cpu.clock(false)) << "cycle 1 of a branch is the opcode fetch";
+    cpu.raise_IRQ();  // arrives during cycle 2, after the branch's only sample
+    ASSERT_FALSE(cpu.clock(false)) << "cycle 2 is the operand fetch; a taken branch has more to do";
+    ASSERT_TRUE(cpu.clock(false)) << "a taken branch that stays on its page is three cycles";
+    ASSERT_EQ(cpu.registers.PC, 0x1002) << "BCS +0 should land at $1002";
+
+    EXPECT_EQ(run_one_instruction(cpu), 2u)
+        << "the IRQ was taken at the branch's boundary; a taken branch does not poll on cycle 2";
+    EXPECT_EQ(cpu.registers.PC, 0x1003) << "the instruction after the branch must run first";
+
+    EXPECT_EQ(run_one_instruction(cpu), 7u) << "and only then is the IRQ serviced";
+    EXPECT_EQ(cpu.registers.PC, 0x9000) << "IRQ vectors through $FFFE/$FFFF";
+}
+
+// The control: a three-cycle instruction that is not a branch polls on its
+// penultimate cycle as usual, so the same IRQ IS taken at its boundary.
+TEST(CpuInterrupts, a_three_cycle_non_branch_does_poll_on_its_second_cycle)
+{
+    FlatMemory mem;
+    CPU cpu = make_cpu(mem);
+
+    mem.memory[0x1000] = 0xA5;  // LDA $10 - zero page, three cycles
+    mem.memory[0x1001] = 0x10;
+    mem.memory[0x1002] = 0xEA;  // NOP - must NOT run before the IRQ
+    mem.memory[0xFFFE] = 0x00;
+    mem.memory[0xFFFF] = 0x90;
+
+    cpu.registers.PC = 0x1000;
+    cpu.registers.SP = 0xFD;
+    cpu.registers.P = 0x20;  // U set, I clear
+    cpu.cycles_left = 0;
+
+    ASSERT_FALSE(cpu.clock(false));
+    cpu.raise_IRQ();  // same injection point as the branch test above
+    ASSERT_FALSE(cpu.clock(false));
+    ASSERT_TRUE(cpu.clock(false)) << "LDA zero page is three cycles";
+    ASSERT_EQ(cpu.registers.PC, 0x1002);
+
+    EXPECT_EQ(run_one_instruction(cpu), 7u)
+        << "an ordinary instruction polls on its penultimate cycle, so the IRQ is due immediately";
+    EXPECT_EQ(cpu.registers.PC, 0x9000);
+}
+
+// A taken branch that crosses a page is four cycles and does poll on its
+// penultimate one (cycle 3), so the delay is NOT a property of taken branches
+// in general - only of the three-cycle form.
+TEST(CpuInterrupts, a_page_crossing_taken_branch_polls_on_its_penultimate_cycle)
+{
+    FlatMemory mem;
+    CPU cpu = make_cpu(mem);
+
+    // BCS at $1080 with offset $7F. The operand fetch leaves PC at $1082 and
+    // $1082 + $7F = $1101, which is on the next page: four cycles.
+    mem.memory[0x1080] = 0xB0;
+    mem.memory[0x1081] = 0x7F;
+    mem.memory[0x1101] = 0xEA;  // NOP - must NOT run before the IRQ
+    mem.memory[0xFFFE] = 0x00;
+    mem.memory[0xFFFF] = 0x90;
+
+    cpu.registers.PC = 0x1080;
+    cpu.registers.SP = 0xFD;
+    cpu.registers.P = 0x21;  // U set, I clear, C set
+    cpu.cycles_left = 0;
+
+    ASSERT_FALSE(cpu.clock(false));
+    cpu.raise_IRQ();  // again during cycle 2
+    ASSERT_FALSE(cpu.clock(false));
+    ASSERT_FALSE(cpu.clock(false)) << "a page-crossing taken branch has a fourth cycle";
+    ASSERT_TRUE(cpu.clock(false));
+    ASSERT_EQ(cpu.registers.PC, 0x1101) << "BCS $7F from $1082 should land at $1101";
+
+    EXPECT_EQ(run_one_instruction(cpu), 7u)
+        << "the cycle-3 sample sees the IRQ, so it is due at the branch's boundary";
+    EXPECT_EQ(cpu.registers.PC, 0x9000);
+}
+
+// A branch that is not taken is two cycles, and its cycle 1 sample IS its
+// penultimate one, so it behaves like every other instruction.
+TEST(CpuInterrupts, an_untaken_branch_polls_like_any_other_instruction)
+{
+    FlatMemory mem;
+    CPU cpu = make_cpu(mem);
+
+    mem.memory[0x1000] = 0xB0;  // BCS +0 with C clear: not taken, two cycles
+    mem.memory[0x1001] = 0x00;
+    mem.memory[0x1002] = 0xEA;  // NOP - must NOT run before the IRQ
+    mem.memory[0xFFFE] = 0x00;
+    mem.memory[0xFFFF] = 0x90;
+
+    cpu.registers.PC = 0x1000;
+    cpu.registers.SP = 0xFD;
+    cpu.registers.P = 0x20;  // U set, I clear, C CLEAR so BCS falls through
+    cpu.cycles_left = 0;
+
+    cpu.raise_IRQ();  // before cycle 1, so the cycle-1 (= penultimate) sample sees it
+    ASSERT_FALSE(cpu.clock(false));
+    ASSERT_TRUE(cpu.clock(false)) << "an untaken branch is two cycles";
+    ASSERT_EQ(cpu.registers.PC, 0x1002);
+
+    EXPECT_EQ(run_one_instruction(cpu), 7u) << "an untaken branch polls on its penultimate cycle like anything else";
     EXPECT_EQ(cpu.registers.PC, 0x9000);
 }
 

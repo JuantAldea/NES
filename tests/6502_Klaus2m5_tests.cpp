@@ -81,10 +81,44 @@ GTEST_TEST(testCPU, 6502_Klaus2m5_funtional_test)
     EXPECT_EQ(suite.target_trap, klaus2m5_test(suite));
 }
 
-GTEST_TEST(testCPU, 6502_Klaus2m5_interrupt_test)
+// This suite stops at $075C rather than its success trap at $06F5, and that is
+// CORRECT for a hardware-accurate NMOS 6502. It is the one place in this project
+// where an external oracle is knowingly not satisfied, so the reasoning is
+// recorded here in full rather than in a commit message.
+//
+// $075C is the `bne *` after `tsx / lda $102,x / and #$10` in Klaus's nmi_trap:
+// it fires when an interrupt pushed P with the B flag SET. The run reaches it in
+// the suite's final case, "test overlapping NMI, IRQ & BRK" ($06D7-$06F5), which
+// asserts both NMI and IRQ and then executes BRK. The NMI lands inside the BRK
+// sequence and hijacks it - the sequence vectors through $FFFA while still
+// pushing B set, because BRK is what started it.
+//
+// Klaus documents this himself, at that exact trap in 6502_interrupt_test.a65:
+//
+//     trap_ne     ;unexpected B-flag! - this may fail on a real 6502
+//                 ;due to a hardware bug on concurrent BRK & NMI
+//
+// and earlier, ";may fail due to a bug on a real NMOS 6502 - NMI could mask
+// BRK". Both "may"s are unconditional on real silicon. Blargg's 2-nmi_and_brk
+// requires the opposite - it prints $36 (B set) for five consecutive rows - and
+// the NESdev CPU-interrupts page and Visual6502 agree with Blargg. Upstream has
+// this open as Klaus2m5 issue #23.
+//
+// The two oracles are mutually exclusive, and exactly so: gating
+// CPU::poll_interrupt_hijack to `Schedule::interrupt` (i.e. never hijacking BRK)
+// flips this test to $06F5 and flips 2-nmi_and_brk to failing, with nothing else
+// in the 640-test suite moving. Verified by doing it.
+//
+// The trap address is still asserted, so this remains a real regression
+// detector: any change that moves execution somewhere OTHER than this one known
+// disagreement fails the test.
+GTEST_TEST(testCPU, 6502_Klaus2m5_interrupt_test_stops_at_the_known_brk_nmi_conflict)
 {
-    Klaus2m5Suite suite{0xbffc, 0x06f5, "6502_interrupt_test.bin"};
-    EXPECT_EQ(suite.target_trap, klaus2m5_test(suite));
+    constexpr uint16_t known_brk_nmi_trap = 0x075c;
+    Klaus2m5Suite suite{0xbffc, known_brk_nmi_trap, "6502_interrupt_test.bin"};
+    EXPECT_EQ(suite.target_trap, klaus2m5_test(suite))
+        << "Klaus's interrupt suite stopped somewhere other than the known BRK/NMI "
+           "hijack disagreement at $075C. Everything up to that point must still pass.";
 }
 
 }  // namespace tests

@@ -83,12 +83,47 @@ void CPU::sample_interrupts()
         return;
     }
 
-    // An interrupt sequence does not poll. This is what guarantees that at
-    // least one instruction of the handler executes before another interrupt
-    // is serviced - without it, a second edge arriving mid-sequence is taken
-    // at the sequence's own boundary and the handler never runs an
-    // instruction at all. BRK is an interrupt sequence for this purpose too.
+    // An interrupt sequence does not poll for a *new* interrupt. This is what
+    // guarantees that at least one instruction of the handler executes before
+    // another interrupt is serviced - without it, a second edge arriving
+    // mid-sequence is taken at the sequence's own boundary and the handler
+    // never runs an instruction at all. BRK is an interrupt sequence for this
+    // purpose too.
+    //
+    // It does still look at /NMI once, on cycle 4, to choose the vector it is
+    // about to fetch. That is a different question from "is there another
+    // interrupt to take after this one", and it is answered here rather than at
+    // the top of cycle 5 so that it uses the state of the line at the SAMPLE
+    // point - the PPU has two more dots to run between this and cycle 5's bus
+    // access, and an NMI raised on either of them is one cycle too late.
     if (schedule == Schedule::interrupt || schedule == Schedule::software_interrupt) {
+        if (cycle == 4) {
+            poll_interrupt_hijack();
+        }
+        return;
+    }
+
+    // The one instruction that does not poll on its penultimate cycle.
+    //
+    // Hardware polls before a branch's operand fetch and then, on a TAKEN
+    // branch, not again before the third cycle. What that leaves is:
+    //
+    //   not taken       2 cycles   polls after cycle 1        (= penultimate)
+    //   taken           3 cycles   polls after cycle 1        (one cycle EARLIER
+    //                                                          than penultimate)
+    //   taken, crossing 4 cycles   polls after cycles 1 and 3 (= penultimate)
+    //
+    // so only the 3-cycle form differs, and it differs by keeping the result of
+    // cycle 1's poll rather than taking a fresh one. An IRQ asserted during a
+    // taken non-page-crossing branch's second cycle therefore waits out the
+    // whole instruction AFTER the branch as well - which is what
+    // 5-branch_delays_irq measures, and it is a real quirk rather than an
+    // accounting convenience: no other instruction does this.
+    //
+    // Reaching here on cycle 2 of a branch already implies the branch was
+    // taken; a branch that is not taken finishes on cycle 2 and the
+    // completed_instruction_this_cycle check above has returned.
+    if (schedule == Schedule::branch && cycle == 2) {
         return;
     }
 
@@ -100,6 +135,81 @@ void CPU::sample_interrupts()
     // kept for harnesses that inject an interrupt directly; a device that owns
     // a line uses set_IRQ_line and is responsible for releasing it.
     irq_poll = (irq_requested || irq_line) && !get_flag(FLAGS::I);
+}
+
+// The vector an interrupt sequence ends at is not decided when the sequence
+// starts.
+//
+// Hardware runs the pushes first and only then puts the vector's high address
+// bits on the bus, so /NMI gets one more look in - between the push of PCL on
+// cycle 4 and the push of P on cycle 5. An NMI latched by that point STEALS the
+// sequence already in flight: a BRK or an IRQ fetches $FFFA/$FFFB instead of
+// $FFFE/$FFFF. It does not run to completion and then take a second sequence,
+// which would cost seven more cycles and leave a second frame on the stack.
+//
+// Only the vector changes. Everything the sequence had already committed to
+// stands: BRK has advanced PC past its padding byte and pushes P with B SET,
+// and it is that stack frame the NMI handler sees. 2-nmi_and_brk checks exactly
+// this - an NMI handler entered with B set on the stack, which no NMI of its
+// own could ever produce - and 3-nmi_and_irq the IRQ equivalent, entered with B
+// clear and the IRQ handler never run at all.
+//
+// The window the two ROMs pin is an NMI asserted anywhere from the last cycle
+// of the instruction before the sequence through the sequence's cycle 4 - five
+// cycle positions, and both ROMs count them out one row at a time. It is the
+// state of the line at the cycle-4 SAMPLE, which is why this runs from
+// sample_interrupts and not from step()'s cycle 5: between the two the PPU
+// still has two dots to draw, and an NMI raised on either of them belongs to
+// cycle 5, not cycle 4. Taking the decision at the top of cycle 5 instead
+// widened the window by one row, which is visible in 2-nmi_and_brk as a sixth
+// hijacked line where hardware prints five.
+//
+// An NMI sequence does not hijack itself. Without that guard a second edge
+// arriving during an NMI's own cycles 1-4 would be swallowed here instead of
+// being taken after the handler's first instruction.
+//
+// ---------------------------------------------------------------------------
+// KNOWN ORACLE CONFLICT: this costs Klaus2m5's 6502_interrupt_test, and that is
+// not a bug here.
+//
+// That suite's last case ("test overlapping NMI, IRQ & BRK", $06d7-$06f5 of the
+// image) asserts both NMI and IRQ into its feedback port on the final cycle of
+// a `sta I_port` and then executes BRK. The edge lands one cycle later than the
+// poll that decides the BRK's own boundary, so the BRK runs - and is then
+// hijacked from inside, which is precisely Blargg row 5 of the five.
+// Its NMI handler traps on B being set in the pushed status ($075c, `and #$10 /
+// bne *`), and traps again afterwards on the BRK never having been serviced
+// ($06f3, "lost an interrupt"). Klaus flags both in his own source:
+//
+//     trap_ne   ;unexpected B-flag! - this may fail on a real 6502
+//               ;due to a hardware bug on concurrent BRK & NMI
+//     ;may fail due to a bug on a real NMOS 6502 - NMI could mask BRK
+//
+// Both "may"s are unconditional on NMOS. Visual6502 sets B and takes $FFFA;
+// Blargg's 2-nmi_and_brk prints $36 / $00 - B set, IRQ handler never entered -
+// for five consecutive rows and nothing else matches; the NESdev CPU-interrupts
+// page says the same. Klaus2m5 issue #23 is the upstream report, still open.
+//
+// So Klaus's interrupt test encodes an idealised 6502 for this one case, and
+// the two oracles are mutually exclusive: deleting `|| schedule ==
+// Schedule::software_interrupt` from the caller flips 6502_interrupt_test to
+// its success trap at $06f5 and 2-nmi_and_brk to a failure, one for one. The
+// only other test that moves is CpuInterrupts.an_interrupt_sequence_does_not_
+// poll, which pins the same five-cycle window directly; the rest of the 640 -
+// nestest, all 512 SingleStepTests, the ten ppu_vbl_nmi ROMs, the other four
+// cpu_interrupts_v2 ROMs and Klaus's functional test - are indifferent.
+// Hardware wins; the Klaus case is left failing deliberately rather than traded
+// for a ROM.
+// ---------------------------------------------------------------------------
+void CPU::poll_interrupt_hijack()
+{
+    if (servicing_nmi || !nmi_requested) {
+        return;
+    }
+
+    servicing_nmi = true;
+    nmi_requested = false;
+    nmi_committed = false;
 }
 
 // True when the current instruction is one of the eight conditional branches
@@ -289,6 +399,10 @@ bool CPU::step()
         current_op_code = read(registers.PC++);
         current_instruction = &InstructionSet::Table[current_op_code];
         schedule = schedule_for(current_op_code);
+
+        // A BRK starts out heading for $FFFE, and can be redirected on its
+        // cycle 5 like any other interrupt sequence.
+        servicing_nmi = false;
         return false;
     }
 
@@ -663,19 +777,24 @@ bool CPU::step()
         // BRK reads and discards the byte after the opcode - which is why it is
         // a two-byte instruction despite having no operand - and pushes a
         // return address past it.
+        //
+        // The vector is not hard-wired to $FFFE: see poll_interrupt_hijack.
         case Schedule::software_interrupt:
             switch (cycle) {
                 case 2: read(registers.PC++); return false;
                 case 3: push_stack(high_byte(registers.PC)); return false;
                 case 4: push_stack(low_byte(registers.PC)); return false;
                 case 5:
-                    // B exists only in the copy of P that reaches the stack.
+                    // B exists only in the copy of P that reaches the stack,
+                    // and it is set here whether or not an NMI has just taken
+                    // the sequence over: what B records is which instruction
+                    // STARTED the sequence, not where it ends up.
                     push_stack(registers.P | static_cast<uint8_t>(FLAGS::B));
                     set_flag(FLAGS::I, true);
                     return false;
-                case 6: base_low = read(0xFFFE); return false;
+                case 6: base_low = read(servicing_nmi ? 0xFFFA : 0xFFFE); return false;
                 default:
-                    base_high = read(0xFFFF);
+                    base_high = read(servicing_nmi ? 0xFFFB : 0xFFFF);
                     fetched_operand = static_cast<uint16_t>(base_high << 8) | base_low;
                     run_operation();
                     return true;
