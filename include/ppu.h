@@ -16,6 +16,7 @@ OAMDMA 	    $4014   aaaa aaaa 	OAM DMA high address
 */
 
 #include <cstdint>
+#include <limits>
 
 //_RP2A03
 class PPU : public Device
@@ -95,6 +96,11 @@ public:
     // keep ageing.
     void drive_open_bus(const uint8_t value, const uint8_t mask = 0xFF);
     void decay_open_bus();
+    void refresh_open_bus_next_decay();
+
+    // Cycle at which the earliest-expiring set bit decays; UINT64_MAX when the
+    // latch is empty. Lets the per-tick check be a single comparison.
+    uint64_t open_bus_next_decay = UINT64_MAX;
 
     uint16_t remaining_dma_cycles = 0;
     uint16_t dma_current_memory_source_addr = 0;

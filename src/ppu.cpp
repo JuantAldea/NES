@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cstring>
 
 #include "../include/ppu.h"
@@ -48,11 +49,37 @@ void PPU::drive_open_bus(const uint8_t value, const uint8_t mask)
             open_bus_refreshed_at[bit] = total_cycles;
         }
     }
+
+    refresh_open_bus_next_decay();
+}
+
+// The soonest cycle at which any currently-set bit could expire.
+//
+// decay_open_bus runs on every one of the ~150 million PPU ticks a test ROM
+// takes, so it must not scan eight bits each time. Recomputing the earliest
+// deadline here - on the rare drive - lets the hot path be two comparisons.
+void PPU::refresh_open_bus_next_decay()
+{
+    uint64_t soonest = UINT64_MAX;
+
+    for (int bit = 0; bit < 8; ++bit) {
+        if (open_bus & (1u << bit)) {
+            soonest = std::min(soonest, open_bus_refreshed_at[bit] + open_bus_decay_cycles);
+        }
+    }
+
+    open_bus_next_decay = soonest;
 }
 
 // Clears any bit that has gone long enough without being driven.
 void PPU::decay_open_bus()
 {
+    // The overwhelmingly common case: nothing is due to expire yet. An all-zero
+    // latch has no deadline at all (UINT64_MAX), so it falls out here too.
+    if (total_cycles < open_bus_next_decay) {
+        return;
+    }
+
     for (int bit = 0; bit < 8; ++bit) {
         if ((open_bus & (1u << bit)) == 0) {
             continue;
@@ -61,6 +88,8 @@ void PPU::decay_open_bus()
             open_bus &= static_cast<uint8_t>(~(1u << bit));
         }
     }
+
+    refresh_open_bus_next_decay();
 }
 
 void PPU::clock()
