@@ -349,18 +349,5 @@ public:
         0xE4E594, 0xCFEF96, 0xBDF4AB, 0xB3F3CC, 0xB5EBF2, 0xB8B8B8, 0x000000, 0x000000,
     };
 
-    // --- sprite 0 hit -------------------------------------------------------
-    //
-    // ONLY the hit flag. There is no sprite rendering here: no secondary OAM,
-    // no eight-per-line limit, no overflow flag, no priority, and no sprite
-    // pixels in the framebuffer. Sprite 0's row for the current scanline is
-    // resolved once, on the idle dot, into a column mask.
-    void evaluate_sprite0_for_scanline();
-    bool sprite0_on_this_scanline = false;
-    uint8_t sprite0_left_x = 0;
-    // Bit 7 is the leftmost of the eight columns, matching the pattern byte's
-    // bit order, so horizontal flip is a bit reversal and nothing else.
-    uint8_t sprite0_opaque_columns = 0;
-
     void update_flags();
 };

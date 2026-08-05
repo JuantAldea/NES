@@ -226,12 +226,17 @@ void PPU::clock()
             // TODO is it idle as well?
             break;
         case pre_render_scanline:
-            // prefetch tile info for first two tiles
             if (cycle == 1) {
                clear_vblank();
                clear_sprite0_hit();
                clear_sprite_overflow();
             }
+            // The pre-render line runs the same fetch pipeline as a visible
+            // one - that is how the first two tiles of scanline 0 are already
+            // in the shift registers when it starts - but it outputs no
+            // pixels. It is also the only line that copies t's vertical half
+            // into v.
+            process_visible_scanline();
             break;
         default:
             std::cerr << "Scanline out of range: " << scanline << std::endl;
@@ -300,20 +305,183 @@ void PPU::advance_dot()
     ++frame;
 }
 
-void PPU::process_visible_scanline()
+// Every dot, the shift registers move one pixel left. The pattern registers are
+// 16 bits because the tile being fetched is two tiles ahead of the tile being
+// drawn: the high byte is the tile on screen now, the low byte the one being
+// assembled.
+//
+// The attribute registers are 8 bits' worth of the SAME two bits repeated,
+// because a tile's palette is per-tile but has to be selected by the same fine-X
+// tap as the pattern bits. They are held in uint16_t so that all four shift
+// identically.
+void PPU::shift_background_registers()
 {
-    // render background and sprite. Visible scanlines
-    if (cycle == 0) {
-        //idle
-        return;
+    bg_pattern_shift_low = static_cast<uint16_t>(bg_pattern_shift_low << 1);
+    bg_pattern_shift_high = static_cast<uint16_t>(bg_pattern_shift_high << 1);
+    bg_attribute_shift_low = static_cast<uint16_t>(bg_attribute_shift_low << 1);
+    bg_attribute_shift_high = static_cast<uint16_t>(bg_attribute_shift_high << 1);
+}
+
+// On the eight-dot boundary the four latched bytes drop into the low half of
+// the shift registers, behind the eight pixels still being drawn from the high
+// half.
+void PPU::reload_background_shifters()
+{
+    bg_pattern_shift_low = static_cast<uint16_t>((bg_pattern_shift_low & 0xFF00) | pattern_low_latch);
+    bg_pattern_shift_high = static_cast<uint16_t>((bg_pattern_shift_high & 0xFF00) | pattern_high_latch);
+
+    // Smear each attribute bit across the whole byte: every pixel of this tile
+    // gets the same palette, but has to read it out of a per-pixel register.
+    bg_attribute_shift_low =
+        static_cast<uint16_t>((bg_attribute_shift_low & 0xFF00) | ((attribute_latch & 0x01) ? 0x00FF : 0x0000));
+    bg_attribute_shift_high =
+        static_cast<uint16_t>((bg_attribute_shift_high & 0xFF00) | ((attribute_latch & 0x02) ? 0x00FF : 0x0000));
+}
+
+// One of the four two-dot memory accesses that make up a tile fetch. Which one
+// depends on the dot's position in the eight-dot pattern; the fetch is modelled
+// as happening on the second dot of each pair, which is when hardware latches
+// the byte.
+//
+//   dots 1-2  nametable byte     -> which tile
+//   dots 3-4  attribute byte     -> which palette
+//   dots 5-6  pattern table low  -> bit 0 of each pixel
+//   dots 7-8  pattern table high -> bit 1 of each pixel
+void PPU::fetch_background_byte()
+{
+    switch ((cycle - 1) % 8) {
+    case 0:
+        // The reload happens on the same dot as the next tile's first fetch,
+        // eight dots after the previous one - which is what keeps the pipeline
+        // exactly two tiles ahead.
+        reload_background_shifters();
+        nametable_latch = ppu_bus_read(tile_address());
+        break;
+    case 2: {
+        // One attribute byte covers a 32x32-pixel block: four tiles by four
+        // tiles, two bits per 16x16 quadrant, packed bottom-right, bottom-left,
+        // top-right, top-left from the high bits down.
+        //
+        // Which quadrant is bit 1 of each coarse counter - v bit 6 for coarse
+        // Y, v bit 1 for coarse X - so the shift is 4 for the bottom half and
+        // 2 for the right half.
+        uint8_t attribute = ppu_bus_read(attribute_address());
+        if (registers.PPUADDR & 0x0040) {
+            attribute = static_cast<uint8_t>(attribute >> 4);
+        }
+        if (registers.PPUADDR & 0x0002) {
+            attribute = static_cast<uint8_t>(attribute >> 2);
+        }
+        attribute_latch = attribute & 0x03;
+        break;
+    }
+    case 4:
+        pattern_low_latch = ppu_bus_read(background_pattern_address());
+        break;
+    case 6:
+        // The two bitplanes of a tile are eight bytes apart, not interleaved.
+        pattern_high_latch = ppu_bus_read(static_cast<uint16_t>(background_pattern_address() + 8));
+        break;
+    case 7:
+        // Dots 8, 16, ... 256, and 328 and 336 in the prefetch region.
+        increment_coarse_x();
+        break;
+    default:
+        // The first dot of each pair: hardware puts the address on the bus,
+        // and there is nothing to model.
+        break;
+    }
+}
+
+// Produces the pixel for dot `cycle` of a visible scanline and writes it into
+// the framebuffer.
+//
+// The framebuffer holds a 6-bit palette INDEX, not a colour: the greyscale mask
+// is applied here because it is part of the palette lookup, but colour emphasis
+// is not, because it is a property of the video signal rather than of the pixel.
+void PPU::render_pixel()
+{
+    const int x = cycle - 1;
+
+    uint8_t pixel = 0;
+    uint8_t palette = 0;
+
+    // The leftmost eight pixels can be blanked independently of the background
+    // as a whole (PPUMASK bit 1), which games use to hide the column of garbage
+    // a mid-frame scroll change leaves there.
+    const bool background_visible = show_background && (x >= 8 || show_bg_in_leftmost);
+
+    if (background_visible) {
+        // Fine X taps the shift registers up to seven pixels further along:
+        // this is the whole of sub-tile horizontal scrolling.
+        const uint16_t tap = static_cast<uint16_t>(0x8000 >> fine_x);
+        pixel = static_cast<uint8_t>(((bg_pattern_shift_low & tap) ? 0x01 : 0x00) |
+                                     ((bg_pattern_shift_high & tap) ? 0x02 : 0x00));
+        palette = static_cast<uint8_t>(((bg_attribute_shift_low & tap) ? 0x01 : 0x00) |
+                                       ((bg_attribute_shift_high & tap) ? 0x02 : 0x00));
     }
 
-    if (1 <= cycle && cycle <= 256) {
-        // - Output pixel based on VRAM
-        // - Prefetch next tiles
-        // - Sprite evaluation for next scanline
-    } else if (257 <= cycle && cycle <= 340) {
-        //prefetch tile data for next line’s first two tiles
+    // Colour 0 of every palette is not stored: it reads through to the backdrop
+    // at $3F00. A transparent pixel and a disabled background are therefore the
+    // same pixel.
+    const uint16_t palette_addr =
+        pixel == 0 ? 0x3F00 : static_cast<uint16_t>(0x3F00 + (palette << 2) + pixel);
+
+    // Greyscale (PPUMASK bit 0) forces the low four bits of the index, which
+    // collapses every hue onto the grey column of the NES palette.
+    const uint8_t colour = static_cast<uint8_t>(ppu_bus_read(palette_addr) & (greyscale ? 0x30 : 0x3F));
+    framebuffer[scanline * screen_width + x] = colour;
+}
+
+// The background pipeline, for the 240 visible scanlines and for the pre-render
+// line, which runs the same fetches but draws nothing.
+void PPU::process_visible_scanline()
+{
+    const bool pre_render = (scanline == pre_render_scanline);
+
+    if (rendering_enabled()) {
+        // Dots 1-256 fetch the tiles for THIS line (two tiles ahead of the
+        // pixel being drawn), and 321-336 the first two tiles of the NEXT one.
+        // Both regions shift; the gap between them, where hardware is fetching
+        // sprite patterns, does not.
+        //
+        // The regions start at 2 and 321 rather than 1 and 320 because the
+        // shift belongs to the END of a dot: the pixel drawn on dot 1 comes
+        // from what the previous line's prefetch left in the registers.
+        if ((cycle >= 2 && cycle <= 257) || (cycle >= 321 && cycle <= 337)) {
+            shift_background_registers();
+            fetch_background_byte();
+        }
+
+        if (cycle == 256) {
+            // The last coarse X increment of the line has already happened
+            // (dot 256 is a multiple of eight); this is the one that moves down
+            // a pixel row.
+            increment_y();
+        }
+
+        if (cycle == 257) {
+            // v's X half is restored from t, undoing the 32 coarse X
+            // increments the line just made.
+            copy_horizontal_from_t();
+        }
+
+        if (pre_render && cycle >= 280 && cycle <= 304) {
+            copy_vertical_from_t();
+        }
+
+        if (cycle == 338 || cycle == 340) {
+            // Two more nametable reads, whose values are discarded. They matter
+            // to MMC3's scanline counter, not to the picture.
+            nametable_latch = ppu_bus_read(tile_address());
+        }
+    }
+
+    // Dots 1-256 of a visible line each produce one pixel. This runs even with
+    // rendering disabled, because the PPU still drives the backdrop colour out
+    // of the palette then.
+    if (!pre_render && cycle >= 1 && cycle <= 256) {
+        render_pixel();
     }
 }
 
