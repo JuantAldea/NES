@@ -51,7 +51,7 @@ GTEST_TEST(testPPURegisters, ppuaddr_holds_the_full_14_bit_range)
         EXPECT_EQ(addr, console.ppu.registers.PPUADDR) << "address " << std::hex << addr;
 
         console.ppu.write(PPU::PPUDATA, 0xA5);
-        EXPECT_EQ(0xA5, console.ppu.VRAM[addr]) << "address " << std::hex << addr;
+        EXPECT_EQ(0xA5, console.ppu.ppu_bus_read(addr)) << "address " << std::hex << addr;
     }
 }
 
@@ -76,7 +76,7 @@ GTEST_TEST(testPPURegisters, ppuaddr_writes_stay_within_vram)
     write_addr(console.ppu, 0x3F, 0xFF);
     console.ppu.write(PPU::PPUDATA, 0x77);
 
-    EXPECT_EQ(0x77, console.ppu.VRAM[0x3FFF]);
+    EXPECT_EQ(0x77, console.ppu.ppu_bus_read(0x3FFF));
     EXPECT_EQ(0x0000, console.ppu.registers.PPUADDR);
 }
 
@@ -144,8 +144,8 @@ GTEST_TEST(testPPURegisters, ppuaddr_is_only_committed_by_the_second_write)
     EXPECT_EQ(0x2000, console.ppu.registers.PPUADDR);
 
     console.ppu.write(PPU::PPUDATA, 0xC3);
-    EXPECT_EQ(0xC3, console.ppu.VRAM[0x2000]);
-    EXPECT_EQ(0x00, console.ppu.VRAM[0x3F00]);
+    EXPECT_EQ(0xC3, console.ppu.ppu_bus_read(0x2000));
+    EXPECT_EQ(0x00, console.ppu.ppu_bus_read(0x3F00));
 
     console.ppu.write(PPU::PPUADDR, 0x00);
     EXPECT_EQ(0x3F00, console.ppu.registers.PPUADDR);
@@ -168,7 +168,7 @@ GTEST_TEST(testPPURegisters, ppustatus_read_preserves_the_addresses)
 
     // The retained address is still the one PPUDATA uses.
     console.ppu.write(PPU::PPUDATA, 0x5A);
-    EXPECT_EQ(0x5A, console.ppu.VRAM[0x2108]);
+    EXPECT_EQ(0x5A, console.ppu.ppu_bus_read(0x2108));
 }
 
 // --- VRAM address increment ---------------------------------------------
@@ -206,12 +206,12 @@ GTEST_TEST(testPPURegisters, ppudata_write_honours_the_vertical_step)
     console.ppu.write(PPU::PPUDATA, 0x03);
     EXPECT_EQ(0x2060, console.ppu.registers.PPUADDR);
 
-    EXPECT_EQ(0x01, console.ppu.VRAM[0x2000]);
-    EXPECT_EQ(0x02, console.ppu.VRAM[0x2020]);
-    EXPECT_EQ(0x03, console.ppu.VRAM[0x2040]);
+    EXPECT_EQ(0x01, console.ppu.ppu_bus_read(0x2000));
+    EXPECT_EQ(0x02, console.ppu.ppu_bus_read(0x2020));
+    EXPECT_EQ(0x03, console.ppu.ppu_bus_read(0x2040));
     // Nothing should have landed at the horizontal-step positions.
-    EXPECT_EQ(0x00, console.ppu.VRAM[0x2001]);
-    EXPECT_EQ(0x00, console.ppu.VRAM[0x2002]);
+    EXPECT_EQ(0x00, console.ppu.ppu_bus_read(0x2001));
+    EXPECT_EQ(0x00, console.ppu.ppu_bus_read(0x2002));
 }
 
 GTEST_TEST(testPPURegisters, ppudata_read_and_write_use_the_same_step)
@@ -227,9 +227,15 @@ GTEST_TEST(testPPURegisters, ppudata_read_and_write_use_the_same_step)
         console.ppu.write(PPU::PPUDATA, 0xEE);
         const uint16_t after_write = console.ppu.registers.PPUADDR;
 
+        // $2007 reads below $3F00 are delayed by one: the first read returns
+        // whatever the latch held and refills it, so the byte just written
+        // only comes back on the second read. This test is about the ADDRESS
+        // INCREMENT, so the priming read gets its own address setup and the
+        // increment is measured across the second one alone.
         write_addr(console.ppu, 0x20, 0x00);
-        // NB: the PPUDATA read buffer is not modelled yet, so a read returns
-        // VRAM directly instead of the previously buffered byte.
+        console.ppu.read(PPU::PPUDATA);  // priming read: fills the latch
+
+        write_addr(console.ppu, 0x20, 0x00);
         EXPECT_EQ(0xEE, console.ppu.read(PPU::PPUDATA)) << "ctrl " << std::hex << (unsigned)ctrl;
         const uint16_t after_read = console.ppu.registers.PPUADDR;
 
@@ -304,7 +310,7 @@ GTEST_TEST(testPPURegisters, lockout_does_not_cover_oam_or_ppudata)
     EXPECT_EQ(0x99, console.ppu.OAM_memory[0x10]);
 
     console.ppu.write(PPU::PPUDATA, 0x88);
-    EXPECT_EQ(0x88, console.ppu.VRAM[0x0000]);
+    EXPECT_EQ(0x88, console.ppu.ppu_bus_read(0x0000));
 }
 
 // --- open bus ------------------------------------------------------------
@@ -368,6 +374,13 @@ GTEST_TEST(testPPURegisters, reads_refresh_the_open_bus)
     console.ppu.write(PPU::PPUCTRL, 0x00);
     write_addr(console.ppu, 0x20, 0x00);
     console.ppu.write(PPU::PPUDATA, 0x6B);
+
+    // Two reads: $2007 below $3F00 is buffered, so the first returns the stale
+    // latch and refills it, and the byte written above only arrives on the
+    // second. What reaches the open bus is the value the read RETURNED, not the
+    // one it fetched.
+    write_addr(console.ppu, 0x20, 0x00);
+    console.ppu.read(PPU::PPUDATA);  // priming read
 
     write_addr(console.ppu, 0x20, 0x00);
     EXPECT_EQ(0x6B, console.ppu.read(PPU::PPUDATA));

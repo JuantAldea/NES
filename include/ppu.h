@@ -115,7 +115,47 @@ public:
     void clear_sprite_overflow() { registers.PPUSTATUS &= ~0x20; }
 
     uint8_t OAM_memory[256] = {0};
-    uint8_t VRAM[0x4000] = {0};
+
+    // The PPU's address space is not a flat array. It is three distinct
+    // memories behind one 14-bit bus:
+    //
+    //   $0000-$1FFF  pattern tables - on the CARTRIDGE. CHR-ROM if the iNES
+    //                header declares CHR banks, otherwise 8KB of CHR-RAM the
+    //                console supplies (which is why chr_ram lives here).
+    //   $2000-$2FFF  nametables - 2KB internal, arranged into four logical
+    //                1KB screens by the cartridge's mirroring wiring.
+    //   $3000-$3EFF  a mirror of $2000-$2EFF.
+    //   $3F00-$3F1F  palette RAM, mirrored every $20 up to $3FFF, and with
+    //                $3F10/$14/$18/$1C aliasing $3F00/$04/$08/$0C.
+    //
+    // Reads and writes go through ppu_bus_read/ppu_bus_write, which is the one
+    // place that decode lives.
+    static constexpr size_t nametable_size = 2 * 1024;
+    static constexpr size_t chr_ram_size = 8 * 1024;
+    static constexpr size_t palette_size = 32;
+
+    uint8_t nametable_ram[nametable_size] = {0};
+    uint8_t chr_ram[chr_ram_size] = {0};
+
+    // Power-on palette contents are not specified by the hardware, but a
+    // consistent starting point keeps reads deterministic before software
+    // writes one.
+    uint8_t palette_ram[palette_size] = {0};
+
+    uint8_t ppu_bus_read(const uint16_t addr);
+    void ppu_bus_write(const uint16_t addr, const uint8_t data);
+
+    // $2007 reads are delayed by one: the value returned is what the PREVIOUS
+    // read fetched, and the current fetch refills the latch. Palette reads are
+    // the exception - they come back immediately, while the latch is still
+    // refilled from the nametable underneath.
+    uint8_t vram_read_buffer = 0;
+
+private:
+    uint16_t nametable_offset(const uint16_t addr) const;
+    static uint16_t palette_offset(const uint16_t addr);
+
+public:
 
     uint8_t& get_register(const RegisterMMap reg);
 

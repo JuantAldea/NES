@@ -56,11 +56,17 @@ GTEST_TEST(testMemory, ppu_register_mirroring_reaches_2007_mirror_at_3fff)
     console.write(PPU::PPUADDR, 0x10);
     console.write(PPU::PPUDATA, 0x42);
 
-    // Rewind PPUADDR the same way and read back through the $3FFF mirror.
+    // Rewind PPUADDR and prime the read buffer: $2007 reads below $3F00 are
+    // delayed by one, so the first read returns the stale latch and refills it.
+    // Rewind again for the read that matters, which goes through the $3FFF
+    // mirror rather than $2007 directly - that mirror is what this test is
+    // about.
     console.write(PPU::PPUADDR, 0x00);
     console.write(PPU::PPUADDR, 0x10);
-    // A dummy PPUDATA read is required on real hardware (buffered read), but
-    // this PPU implementation returns VRAM contents directly, so read once.
+    console.read(0x3FFF);  // priming read, also through the mirror
+
+    console.write(PPU::PPUADDR, 0x00);
+    console.write(PPU::PPUADDR, 0x10);
     EXPECT_EQ(0x42, console.read(0x3FFF));
 }
 

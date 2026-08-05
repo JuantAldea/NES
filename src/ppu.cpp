@@ -161,6 +161,90 @@ void PPU::process_visible_scanline()
     }
 }
 
+// Which of the 2KB of internal nametable RAM a $2000-$2FFF address lands in.
+//
+// The console has room for two 1KB screens but the address space has four. The
+// cartridge decides how the four map onto the two by how it wires the PPU's
+// A10/A11 lines, and the iNES header records which way round:
+//
+//   horizontal   $2000 $2400 -> screen 0      vertical   $2000 $2800 -> screen 0
+//                $2800 $2C00 -> screen 1                 $2400 $2C00 -> screen 1
+//
+// Horizontal mirroring duplicates side by side, so a game scrolling VERTICALLY
+// gets two distinct screens - the naming refers to how the duplication runs,
+// not to the scrolling it suits.
+uint16_t PPU::nametable_offset(const uint16_t addr) const
+{
+    const uint16_t index = (addr - 0x2000) & 0x0FFF;
+    const uint16_t screen = index / 0x0400;
+    const uint16_t within = index & 0x03FF;
+
+    const bool horizontal = bus == nullptr ? true : bus->rom.horizontal_mirroring;
+    const uint16_t bank = horizontal ? (screen >> 1) : (screen & 1);
+
+    return static_cast<uint16_t>(bank * 0x0400 + within);
+}
+
+// Palette RAM is 32 bytes mirrored every $20 through to $3FFF. On top of that,
+// $3F10/$3F14/$3F18/$3F1C are not entries of their own: they are aliases of
+// $3F00/$3F04/$3F08/$3F0C. Those four are the backdrop colour and the unused
+// entry of each sprite palette, and hardware wires them to the same cells - so
+// a write to $3F10 is observable at $3F00.
+uint16_t PPU::palette_offset(const uint16_t addr)
+{
+    uint16_t index = addr & 0x001F;
+
+    if ((index & 0x13) == 0x10) {
+        index &= ~0x10;
+    }
+
+    return index;
+}
+
+uint8_t PPU::ppu_bus_read(const uint16_t addr)
+{
+    const uint16_t a = addr & vram_addr_mask;
+
+    if (a < 0x2000) {
+        // Pattern tables live on the cartridge: CHR-ROM if it brought any,
+        // otherwise the console's CHR-RAM.
+        if (bus != nullptr && !bus->rom.chr_rom.empty()) {
+            return bus->rom.chr_rom[a % bus->rom.chr_rom.size()];
+        }
+        return chr_ram[a];
+    }
+
+    if (a < 0x3F00) {
+        // $3000-$3EFF mirrors $2000-$2EFF, which the & 0x0FFF inside
+        // nametable_offset already folds away.
+        return nametable_ram[nametable_offset(a)];
+    }
+
+    return palette_ram[palette_offset(a)];
+}
+
+void PPU::ppu_bus_write(const uint16_t addr, const uint8_t data)
+{
+    const uint16_t a = addr & vram_addr_mask;
+
+    if (a < 0x2000) {
+        // CHR-ROM is not writable; CHR-RAM is. A cartridge with CHR-ROM
+        // silently discards the write, which is what the hardware does.
+        if (bus != nullptr && !bus->rom.chr_rom.empty()) {
+            return;
+        }
+        chr_ram[a] = data;
+        return;
+    }
+
+    if (a < 0x3F00) {
+        nametable_ram[nametable_offset(a)] = data;
+        return;
+    }
+
+    palette_ram[palette_offset(a)] = data;
+}
+
 // 513 cycles, or 514 when the write to $4014 landed on an odd CPU cycle: the
 // transfer is 256 read/write pairs plus a halt cycle, and needs one more to
 // realign when it would otherwise start on the wrong phase.
@@ -287,7 +371,7 @@ void PPU::write(const uint16_t addr, const uint8_t data)
         // std::cout << "WRITE TO PPUDATA " << std::hex << "(" << (unsigned)registers.PPUDATA << ") <= " << std::hex << (unsigned)data << " PTR " << registers.PPUADDR << std::endl;
         // Must use vram_step, not ++, so the write path agrees with the read
         // path below.
-        VRAM[registers.PPUADDR & vram_addr_mask] = data;
+        ppu_bus_write(registers.PPUADDR, data);
         registers.PPUADDR = (registers.PPUADDR + vram_step) & vram_addr_mask;
         break;
     case OAMDMA:
@@ -364,10 +448,29 @@ uint8_t PPU::read(const uint16_t addr)
         return open_bus;
 
     case PPUDATA: {
-        uint8_t data = VRAM[registers.PPUADDR & vram_addr_mask];
+        const uint16_t addr = registers.PPUADDR & vram_addr_mask;
+        const uint8_t fetched = ppu_bus_read(addr);
+
+        // Reads below $3F00 are buffered: what comes back is the value the
+        // PREVIOUS read fetched, and this read refills the latch. Software
+        // therefore has to read $2007 twice to get the first byte, which is a
+        // thing real games rely on rather than a quirk to smooth over.
+        //
+        // Palette reads are not buffered - they return immediately - but the
+        // latch is still refilled, from the NAMETABLE underneath the palette
+        // ($2F00-$2FFF mirrored), not from the palette itself.
+        uint8_t result;
+        if (addr < 0x3F00) {
+            result = vram_read_buffer;
+            vram_read_buffer = fetched;
+        } else {
+            result = fetched;
+            vram_read_buffer = nametable_ram[nametable_offset(addr)];
+        }
+
         registers.PPUADDR = (registers.PPUADDR + vram_step) & vram_addr_mask;
-        open_bus = data;
-        return data;
+        open_bus = result;
+        return result;
     }
     default:
         // Write-only register read as open bus.
