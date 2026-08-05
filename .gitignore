@@ -56,3 +56,6 @@ tests/test_files/cpu_interrupts/
 
 # PPU address-space test ROMs, fetched by tests/test_files/fetch_ppu_address_space.sh
 tests/test_files/ppu_address_space/
+
+# Blargg 2005 PPU test ROMs, fetched by tests/test_files/fetch_blargg_ppu_2005.sh
+tests/test_files/blargg_ppu_2005/
