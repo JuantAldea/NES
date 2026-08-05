@@ -144,9 +144,21 @@ ninja -C build check     # or: make -C build check
 
 `check` runs the suite across every core. The tests are independent - each one
 that writes a fixture writes a uniquely named one - and the suite is dominated
-by 512 per-opcode cases that parallelise perfectly. On 32 cores that is **129
-seconds down to 13**, at which point the total is just the length of the single
-slowest test, so more cores stop helping.
+by 512 per-opcode cases that parallelise perfectly.
+
+On 32 cores the full 669-test suite takes about **3 seconds**. Two things got
+it there, and the second mattered more than the first:
+
+* Parallelism took it from 129s to 16s. Past that point the total was simply
+  the length of the single slowest test, so more cores stopped helping.
+* The default build type is `Checked` (`-O3 -g`, asserts left on), which took
+  16s to 3s. The suite spends nearly all its time emulating - the test ROMs run
+  hundreds of millions of bus cycles each - so an unoptimised build costs about
+  5x. `-O3` measured ~10% faster than `-O2`; `-march=native` was slower than
+  plain `-O3` and not portable.
+
+`Debug`, `Release` and the other stock types are untouched and still available
+via `-DCMAKE_BUILD_TYPE=`.
 
 Plain `ctest` still works and is still serial:
 

@@ -6,14 +6,35 @@ include(FetchContent)
 
 enable_testing()
 
-# Without an explicit build type CMake passes no optimisation *and* no NDEBUG,
-# which happens to keep asserts live - but that is incidental. Pin it, because
-# at least one regression test asserts that a formerly-aborting code path no
-# longer aborts, and NDEBUG would make that test vacuously pass.
+# The default build type is "Checked": optimised, with debug info, and WITHOUT
+# NDEBUG so asserts stay live.
+#
+# Neither stock type is right here. Debug leaves the emulator unoptimised, and
+# the test suite spends most of its time emulating - the ROMs run hundreds of
+# millions of bus cycles each, so this is the difference between a 16 second
+# suite and a 3 second one. RelWithDebInfo and Release both define NDEBUG,
+# which would silently neuter any assert-based regression test.
+#
+# Measured, best of three full runs on 32 cores:
+#
+#   -O0 (stock Debug)   16.17s
+#   -O1                  4.00s
+#   -O2                  3.17s
+#   -O3                  2.85s   <-- chosen
+#   -O3 -march=native    2.91s   slower than plain -O3, and not portable
+#
+# Debug, Release and the rest are untouched and still selectable.
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
-    set(CMAKE_BUILD_TYPE Debug CACHE STRING "Build type" FORCE)
-    set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS Debug Release RelWithDebInfo MinSizeRel)
+    set(CMAKE_BUILD_TYPE Checked CACHE STRING "Build type" FORCE)
 endif()
+set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS Checked Debug Release RelWithDebInfo MinSizeRel)
+
+set(CMAKE_CXX_FLAGS_CHECKED "-O3 -g" CACHE STRING "C++ flags for the Checked build" FORCE)
+set(CMAKE_C_FLAGS_CHECKED "-O3 -g" CACHE STRING "C flags for the Checked build" FORCE)
+set(CMAKE_EXE_LINKER_FLAGS_CHECKED "" CACHE STRING "Linker flags for the Checked build" FORCE)
+set(CMAKE_SHARED_LINKER_FLAGS_CHECKED "" CACHE STRING "Shared linker flags for the Checked build" FORCE)
+mark_as_advanced(CMAKE_CXX_FLAGS_CHECKED CMAKE_C_FLAGS_CHECKED CMAKE_EXE_LINKER_FLAGS_CHECKED
+                 CMAKE_SHARED_LINKER_FLAGS_CHECKED)
 
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
