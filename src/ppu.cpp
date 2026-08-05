@@ -33,9 +33,41 @@
 
 // https://wiki.nesdev.com/w/index.php/PPU_sprite_evaluation
 
+// Drives some or all of the eight bits of the PPU's data bus latch.
+//
+// Only the masked bits take the new value and have their decay timers
+// refreshed; the rest keep ageing. Modelling this per bit rather than per byte
+// is what makes a PPUSTATUS read (which drives bits 5-7) leave bits 0-4 to
+// carry on decaying from whenever they were last driven.
+void PPU::drive_open_bus(const uint8_t value, const uint8_t mask)
+{
+    open_bus = static_cast<uint8_t>((open_bus & ~mask) | (value & mask));
+
+    for (int bit = 0; bit < 8; ++bit) {
+        if (mask & (1u << bit)) {
+            open_bus_refreshed_at[bit] = total_cycles;
+        }
+    }
+}
+
+// Clears any bit that has gone long enough without being driven.
+void PPU::decay_open_bus()
+{
+    for (int bit = 0; bit < 8; ++bit) {
+        if ((open_bus & (1u << bit)) == 0) {
+            continue;
+        }
+        if (total_cycles - open_bus_refreshed_at[bit] >= open_bus_decay_cycles) {
+            open_bus &= static_cast<uint8_t>(~(1u << bit));
+        }
+    }
+}
+
 void PPU::clock()
 {
     ++total_cycles;
+
+    decay_open_bus();
 
     // OAM DMA is NOT driven from here. It steals CPU cycles, so it advances at
     // the CPU's rate; Bus::clock runs it. Ticking it once per dot made the
@@ -298,7 +330,7 @@ void PPU::write(const uint16_t addr, const uint8_t data)
     // read-only: the write still reaches the bus, it just has no register to
     // land in). This latch is what PPUSTATUS's open-bus bits 0-4 read back
     // from below.
-    open_bus = data;
+    drive_open_bus(data);
 
     // PPUSTATUS ($2002) is read-only. Real hardware simply ignores writes to
     // it (the byte still lands on the bus latch above, but no register is
@@ -445,7 +477,7 @@ uint8_t PPU::read(const uint16_t addr)
         // the write toggle; hardware leaves the addresses themselves intact,
         // so PPUSCROLL/PPUADDR must not be zeroed here.
         high_byte_input = true;
-        open_bus = data;
+        drive_open_bus(data, 0xE0);
 
         // Clearing the flag releases /NMI. If the CPU has not sampled the
         // assertion yet, this is what suppresses the interrupt entirely
@@ -456,7 +488,7 @@ uint8_t PPU::read(const uint16_t addr)
     case OAMDATA:
         // Unlike $2007, a read of $2004 does NOT advance the address. Software
         // reading OAM back has to drive $2003 for each byte.
-        open_bus = OAM_memory[registers.OAMADDR];
+        drive_open_bus(OAM_memory[registers.OAMADDR]);
         return open_bus;
 
     case PPUDATA: {
@@ -493,7 +525,11 @@ uint8_t PPU::read(const uint16_t addr)
         }
 
         registers.PPUADDR = (registers.PPUADDR + vram_step) & vram_addr_mask;
-        open_bus = result;
+
+        // A palette read drives only bits 0-5; bits 6-7 were never driven, so
+        // they keep ageing from whenever they last were. A buffered read drives
+        // all eight.
+        drive_open_bus(result, addr < 0x3F00 ? 0xFF : 0x3F);
         return result;
     }
     default:

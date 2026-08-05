@@ -452,5 +452,96 @@ GTEST_TEST(testPPUMemory, oam_dma_also_drops_the_unimplemented_attribute_bits)
     }
 }
 
+// --- open bus ----------------------------------------------------------------
+
+// The PPU's data bus latch is stray capacitance, not a register: it bleeds away
+// about 600ms after anything last drove it. ppu_open_bus subtest 3 is "Decay
+// value should become zero by one second".
+void clock_ppu_for(PPU& ppu, uint64_t dots)
+{
+    for (uint64_t i = 0; i < dots; ++i) {
+        ppu.clock();
+    }
+}
+
+GTEST_TEST(testPPUMemory, the_open_bus_decays_to_zero)
+{
+    Bus console;
+    run_past_reset_lockout(console.ppu);
+
+    console.ppu.write(PPU::PPUMASK, 0xFF);
+    EXPECT_EQ(0xFF, console.ppu.read(PPU::PPUCTRL)) << "a write-only register reads back the latch";
+
+    // Well short of the decay window: still fully present.
+    clock_ppu_for(console.ppu, 1'000'000);
+    EXPECT_EQ(0xFF, console.ppu.read(PPU::PPUCTRL)) << "the latch must not decay within ~200ms";
+
+    // One second of dots is 5,369,318; the decay window is ~600ms, so by here
+    // every bit has gone.
+    clock_ppu_for(console.ppu, 5'369'318);
+    EXPECT_EQ(0x00, console.ppu.read(PPU::PPUCTRL)) << "the latch must be gone within one second";
+}
+
+// Each bit ages from when THAT bit was last driven. Most reads drive only some
+// of the eight - a PPUSTATUS read drives bits 5-7 - so a byte-wide timer would
+// be wrong in both directions: refreshing bits nothing touched, and expiring
+// bits that were just driven.
+GTEST_TEST(testPPUMemory, open_bus_bits_decay_independently)
+{
+    Bus console;
+    run_past_reset_lockout(console.ppu);
+
+    // Drive all eight bits high.
+    console.ppu.write(PPU::PPUMASK, 0xFF);
+
+    // Age them most of the way to expiry.
+    clock_ppu_for(console.ppu, 3'000'000);
+
+    // A PPUSTATUS read drives bits 5-7 - with the STATUS bits, not with
+    // whatever the latch held. Setting vblank first is what makes the refresh
+    // observable: without it the read drives those bits to zero, which looks
+    // exactly like decay and tests nothing.
+    console.ppu.set_vblank();
+    console.ppu.read(PPU::PPUSTATUS);
+
+    // Push past the point where the untouched bits expire, but not past where
+    // the refreshed ones would.
+    clock_ppu_for(console.ppu, 1'000'000);
+
+    const uint8_t latch = console.ppu.read(PPU::PPUCTRL);
+    EXPECT_EQ(0x00, latch & 0x1F) << "bits 0-4 were not driven by the PPUSTATUS read and must have decayed";
+    EXPECT_EQ(0x80, latch & 0x80) << "bit 7 WAS driven by it (vblank set) and must still be present";
+}
+
+// A palette read drives bits 0-5 and leaves 6-7 to carry on ageing. The
+// sibling test above checks the returned VALUE takes its top bits from the
+// latch; this one checks the latch afterwards, which is a separate claim - a
+// mutation making the read drive all eight bits passed both the unit tests and
+// ppu_open_bus until this existed.
+GTEST_TEST(testPPUMemory, a_palette_read_does_not_refresh_the_top_two_open_bus_bits)
+{
+    Bus console;
+    run_past_reset_lockout(console.ppu);
+
+    console.ppu.ppu_bus_write(0x3FC1, 0x3F);
+
+    // $3FC1 leaves $C1 on the bus (bits 6-7 high) and selects palette cell $01.
+    set_ppu_addr(console.ppu, 0x3FC1);
+
+    // Age everything most of the way to expiry.
+    clock_ppu_for(console.ppu, 3'000'000);
+
+    // The palette read refreshes bits 0-5 only.
+    console.ppu.read(PPU::PPUDATA);
+
+    // Past the point where the untouched bits expire, short of where the
+    // refreshed ones would.
+    clock_ppu_for(console.ppu, 1'000'000);
+
+    const uint8_t latch = console.ppu.read(PPU::PPUCTRL);
+    EXPECT_EQ(0x3F, latch & 0x3F) << "bits 0-5 were driven by the palette read and must still be present";
+    EXPECT_EQ(0x00, latch & 0xC0) << "bits 6-7 are not driven by a palette read and must have decayed";
+}
+
 }  // namespace ppu_memory
 }  // namespace tests

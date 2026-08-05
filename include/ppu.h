@@ -79,6 +79,23 @@ public:
     // deterministic instead of aborting or fabricating state.
     uint8_t open_bus = 0;
 
+    // The latch is not permanent: it is stray capacitance, and it bleeds away.
+    // Each bit decays to 0 independently, roughly 600ms after the last time
+    // ANYTHING drove that particular bit - which matters because most reads
+    // drive only some of the eight. A PPUSTATUS read drives bits 5-7, a palette
+    // read drives 0-5, and a read of a write-only register drives none at all.
+    //
+    // ppu_open_bus subtest 3 is "Decay value should become zero by one second".
+    static constexpr uint64_t open_bus_decay_cycles = 3'220'000;  // ~600ms of PPU dots
+
+    uint64_t open_bus_refreshed_at[8] = {0};
+
+    // Drives `value` onto the bits selected by `mask`, refreshing only those
+    // bits' decay timers. Bits outside the mask keep whatever they held, and
+    // keep ageing.
+    void drive_open_bus(const uint8_t value, const uint8_t mask = 0xFF);
+    void decay_open_bus();
+
     uint16_t remaining_dma_cycles = 0;
     uint16_t dma_current_memory_source_addr = 0;
 
