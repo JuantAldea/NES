@@ -60,13 +60,15 @@ public:
         uint8_t PPUSTATUS;
         uint8_t OAMADDR;
         uint8_t OAMDATA;
-        // Two-write registers. Both hold the value assembled from the write
-        // pair, so they need more than 8 bits: PPUADDR is a 14-bit VRAM
-        // address, PPUSCROLL packs X (first write) in the high byte and Y
-        // (second write) in the low byte. As uint8_t these could only reach
-        // the first 256 bytes of VRAM, leaving the nametables and palette
-        // unaddressable.
-        uint16_t PPUSCROLL;
+        // PPUADDR is the PPU's current VRAM address - loopy's `v`. It is 15
+        // bits, not 8: the low 12 double as the scroll position while
+        // rendering (coarse X, coarse Y, nametable select) and the top three
+        // are fine Y. See temp_addr (`t`) and fine_x (`x`) below.
+        //
+        // There is deliberately no PPUSCROLL member. $2005 is a WRITE PORT
+        // into t and x; hardware has no register that holds "the scroll" as
+        // an X/Y pair, and modelling one made $2005 and $2006 independent
+        // when in fact they share t and the write toggle.
         uint16_t PPUADDR;
         uint8_t PPUDATA;
         uint8_t OAMDMA;
@@ -227,11 +229,45 @@ public:
     bool increase_vertical = false;
     bool big_sprites = false;
     uint8_t vram_step = 1;
+    // Loopy's `w`, the shared write toggle for $2005 and $2006, with the
+    // opposite sense: w == !high_byte_input. true means "the next write is the
+    // first of the pair".
     bool high_byte_input = true;
-    // Staging register for the $2006 write pair. The first write only updates
-    // this; registers.PPUADDR is committed from it by the second write, so a
-    // PPUDATA access in between still uses the previous address.
+    bool write_toggle_w() const { return !high_byte_input; }
+
+    // Loopy's `t`: the address/scroll being assembled. BOTH $2005 and $2006
+    // write into it - that is why they share the toggle - and it is copied
+    // into v by the second $2006 write, at dot 257 (horizontally) and during
+    // pre-render dots 280-304 (vertically).
+    //
+    //   t and v layout:  yyy NN YYYYY XXXXX
+    //                    ||| || ||||| +++++-- coarse X scroll
+    //                    ||| || +++++-------- coarse Y scroll
+    //                    ||| ++-------------- nametable select
+    //                    +++----------------- fine Y scroll
     uint16_t temp_addr = 0;
+
+    // Loopy's `x`: the fine X scroll, three bits, written only by the first
+    // $2005 write. It never enters t or v - it selects which bit of the
+    // pattern shift registers is output.
+    uint8_t fine_x = 0;
+
+    // --- the v/t/x scroll operations, NESdev "PPU scrolling" ---------------
+    void increment_coarse_x();
+    void increment_y();
+    // What a $2007 access does to v afterwards. Normally +1 or +32, but during
+    // rendering it is a coarse-X increment and a Y increment instead.
+    void advance_vram_address();
+    void copy_horizontal_from_t();
+    void copy_vertical_from_t();
+
+    uint16_t tile_address() const { return static_cast<uint16_t>(0x2000 | (registers.PPUADDR & 0x0FFF)); }
+    uint16_t attribute_address() const
+    {
+        return static_cast<uint16_t>(0x23C0 | (registers.PPUADDR & 0x0C00) | ((registers.PPUADDR >> 4) & 0x38) |
+                                     ((registers.PPUADDR >> 2) & 0x07));
+    }
+    uint8_t fine_y() const { return static_cast<uint8_t>((registers.PPUADDR >> 12) & 0x07); }
 
     bool greyscale = false;
     bool show_bg_in_leftmost = false;
@@ -244,8 +280,87 @@ public:
 
     bool in_reset_write_lockout() const { return total_cycles < reset_lockout_cycles; }
 
-    uint8_t scroll_x() const { return registers.PPUSCROLL >> 8; }
-    uint8_t scroll_y() const { return registers.PPUSCROLL & 0xFF; }
+    // Derived, not stored. The scroll position is spread across t (coarse X in
+    // bits 0-4, coarse Y in bits 5-9, fine Y in bits 12-14) and x (fine X), so
+    // "the X scroll" is coarse X * 8 + fine X and "the Y scroll" is
+    // coarse Y * 8 + fine Y. These reassemble the byte that was written to
+    // $2005, which is all any caller ever wanted from the old PPUSCROLL.
+    uint8_t scroll_x() const { return static_cast<uint8_t>(((temp_addr & 0x001F) << 3) | fine_x); }
+    uint8_t scroll_y() const
+    {
+        return static_cast<uint8_t>(((temp_addr & 0x03E0) >> 2) | ((temp_addr >> 12) & 0x07));
+    }
+
+    // --- background rendering pipeline -------------------------------------
+    //
+    // The PPU fetches one tile every eight dots, in four two-dot accesses:
+    // nametable byte, attribute byte, pattern low, pattern high. Those land in
+    // the latches below, and are transferred into the shift registers on the
+    // eight-dot boundary - two tiles ahead of the pixel being drawn, which is
+    // why the shifters are 16 bits and why dots 321-336 prefetch the next
+    // line's first two tiles.
+    uint8_t nametable_latch = 0;
+    uint8_t attribute_latch = 0;
+    uint8_t pattern_low_latch = 0;
+    uint8_t pattern_high_latch = 0;
+
+    uint16_t bg_pattern_shift_low = 0;
+    uint16_t bg_pattern_shift_high = 0;
+    // The attribute bits are per-tile, but they have to be selectable per pixel
+    // by the same fine-X tap as the pattern bits, so each of the two bits is
+    // smeared across a whole byte as it is loaded.
+    uint16_t bg_attribute_shift_low = 0;
+    uint16_t bg_attribute_shift_high = 0;
+
+    void shift_background_registers();
+    void reload_background_shifters();
+    void fetch_background_byte();
+    uint16_t background_pattern_address() const
+    {
+        return static_cast<uint16_t>(bg_pattern_table_address + (nametable_latch << 4) + fine_y());
+    }
+    void render_pixel();
+
+    // The finished picture: one 6-bit palette index per pixel, already through
+    // the greyscale mask, ready to be looked up in nes_palette.
+    //
+    // KNOWN GAPS, deliberate:
+    //  - PPUMASK colour emphasis (bits 5-7) is not applied. The framebuffer is
+    //    a palette index, and emphasis is a property of the video signal; it
+    //    belongs to the display path, not here.
+    //  - The "forced backdrop" case - rendering disabled while v points into
+    //    $3F00-$3FFF, where hardware outputs the colour v addresses rather than
+    //    the backdrop - is not modelled. Nothing tests it and it needs the
+    //    palette read to be driven from v.
+    static constexpr int screen_width = 256;
+    static constexpr int screen_height = 240;
+    uint8_t framebuffer[screen_width * screen_height] = {0};
+
+    // The 2C02's 64 colours as 0xRRGGBB. Indexed by the palette entry the
+    // framebuffer holds; nothing in the PPU reads this, it is for the display.
+    static constexpr uint32_t nes_palette[64] = {
+        0x666666, 0x002A88, 0x1412A7, 0x3B00A4, 0x5C007E, 0x6E0040, 0x6C0600, 0x561D00,
+        0x333500, 0x0B4800, 0x005200, 0x004F08, 0x00404D, 0x000000, 0x000000, 0x000000,
+        0xADADAD, 0x155FD9, 0x4240FF, 0x7527FE, 0xA01ACC, 0xB71E7B, 0xB53120, 0x994E00,
+        0x6B6D00, 0x388700, 0x0C9300, 0x008F32, 0x007C8D, 0x000000, 0x000000, 0x000000,
+        0xFFFEFF, 0x64B0FF, 0x9290FF, 0xC676FF, 0xF36AFF, 0xFE6ECC, 0xFE8170, 0xEA9E22,
+        0xBCBE00, 0x88D800, 0x5CE430, 0x45E082, 0x48CDDE, 0x4F4F4F, 0x000000, 0x000000,
+        0xFFFEFF, 0xC0DFFF, 0xD3D2FF, 0xE8C8FF, 0xFBC2FF, 0xFEC4EA, 0xFECCC5, 0xF7D8A5,
+        0xE4E594, 0xCFEF96, 0xBDF4AB, 0xB3F3CC, 0xB5EBF2, 0xB8B8B8, 0x000000, 0x000000,
+    };
+
+    // --- sprite 0 hit -------------------------------------------------------
+    //
+    // ONLY the hit flag. There is no sprite rendering here: no secondary OAM,
+    // no eight-per-line limit, no overflow flag, no priority, and no sprite
+    // pixels in the framebuffer. Sprite 0's row for the current scanline is
+    // resolved once, on the idle dot, into a column mask.
+    void evaluate_sprite0_for_scanline();
+    bool sprite0_on_this_scanline = false;
+    uint8_t sprite0_left_x = 0;
+    // Bit 7 is the leftmost of the eight columns, matching the pattern byte's
+    // bit order, so horizontal flip is a bit reversal and nothing else.
+    uint8_t sprite0_opaque_columns = 0;
 
     void update_flags();
 };

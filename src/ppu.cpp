@@ -92,6 +92,101 @@ void PPU::decay_open_bus()
     refresh_open_bus_next_decay();
 }
 
+// --- the v/t/x scroll operations ----------------------------------------
+//
+// Transcribed from NESdev's "PPU scrolling". v is not a plain counter: coarse X
+// occupies its low five bits and coarse Y bits 5-9, so "move one tile right"
+// and "move one line down" are increments of subfields that carry into the
+// nametable select rather than into each other.
+
+// Dot 8, 16, ... 256, and again at 328 and 336.
+//
+// Coarse X counts 0-31 across a 32-tile nametable, so its carry is not a carry
+// into coarse Y - it flips the HORIZONTAL nametable bit, which is what makes a
+// scroll run off the right of one screen and onto the left of the next.
+void PPU::increment_coarse_x()
+{
+    if ((registers.PPUADDR & 0x001F) == 31) {
+        registers.PPUADDR = static_cast<uint16_t>(registers.PPUADDR & ~0x001F);
+        registers.PPUADDR = static_cast<uint16_t>(registers.PPUADDR ^ 0x0400);
+    } else {
+        registers.PPUADDR = static_cast<uint16_t>(registers.PPUADDR + 1);
+    }
+}
+
+// Dot 256.
+//
+// Fine Y counts the eight rows within a tile and carries into coarse Y. Coarse
+// Y is where the subtlety is: a nametable is 30 tiles tall but the field is
+// five bits, so it wraps at 30, not at 32. Wrapping at 29->0 flips the VERTICAL
+// nametable bit; the 31->0 case exists because software can write a coarse Y of
+// 30 or 31 through $2006, and that runs through the attribute table instead of
+// the tiles, wrapping WITHOUT switching nametable.
+void PPU::increment_y()
+{
+    if ((registers.PPUADDR & 0x7000) != 0x7000) {
+        registers.PPUADDR = static_cast<uint16_t>(registers.PPUADDR + 0x1000);
+        return;
+    }
+
+    registers.PPUADDR = static_cast<uint16_t>(registers.PPUADDR & ~0x7000);
+
+    int y = (registers.PPUADDR & 0x03E0) >> 5;
+    if (y == 29) {
+        y = 0;
+        registers.PPUADDR = static_cast<uint16_t>(registers.PPUADDR ^ 0x0800);
+    } else if (y == 31) {
+        y = 0;
+    } else {
+        y += 1;
+    }
+
+    registers.PPUADDR = static_cast<uint16_t>((registers.PPUADDR & ~0x03E0) | (y << 5));
+}
+
+// Dot 257: v: ....A.. ...BCDEF <- t: ....A.. ...BCDEF
+//
+// Coarse X and the horizontal nametable bit only. Everything the line just
+// drawn did to v's X half is undone, so the next line starts from the same
+// scroll position - which is what makes the scroll a per-frame value that a
+// mid-frame $2005 write can change (split scrolling).
+void PPU::copy_horizontal_from_t()
+{
+    constexpr uint16_t horizontal_bits = 0x041F;
+    registers.PPUADDR = static_cast<uint16_t>((registers.PPUADDR & ~horizontal_bits) | (temp_addr & horizontal_bits));
+}
+
+// Pre-render dots 280-304: v: GHIA.BC DEF..... <- t: GHIA.BC DEF.....
+//
+// Fine Y, coarse Y and the vertical nametable bit. Repeated over 25 dots on
+// hardware; doing it once would be equivalent here, but the range is what the
+// spec says and a mid-range $2005 write should not survive it.
+void PPU::copy_vertical_from_t()
+{
+    constexpr uint16_t vertical_bits = 0x7BE0;
+    registers.PPUADDR = static_cast<uint16_t>((registers.PPUADDR & ~vertical_bits) | (temp_addr & vertical_bits));
+}
+
+// A $2007 access while rendering is enabled and the PPU is on a visible or
+// pre-render scanline does NOT add the $2000 increment. v is the rendering
+// address, and the access is spliced into the fetch pipeline, so it performs
+// the two increments the pipeline would have: coarse X and Y.
+//
+// This is blargg's vram_access subtest 4, "$2007 should not increment when
+// rendering is on".
+void PPU::advance_vram_address()
+{
+    const bool on_a_rendering_scanline = scanline < post_render_scanline || scanline == pre_render_scanline;
+
+    if (rendering_enabled() && on_a_rendering_scanline) {
+        increment_coarse_x();
+        increment_y();
+        return;
+    }
+
+    registers.PPUADDR = (registers.PPUADDR + vram_step) & vram_addr_mask;
+}
+
 void PPU::clock()
 {
     ++total_cycles;
@@ -389,6 +484,13 @@ void PPU::write(const uint16_t addr, const uint8_t data)
         // interrupt; update_nmi_line, being edge-triggered, gets that for
         // free rather than needing a "was it already enabled" guard.
         registers.PPUCTRL = data;
+        // $2000 write: t: ...GH.. ........ <- d: ......GH
+        //
+        // The nametable select is not a register of its own either - bits 0-1
+        // of $2000 ARE bits 10-11 of t. base_nametable_addr, which update_flags
+        // derives below, is the same two bits in another form; t is the one
+        // rendering reads.
+        temp_addr = static_cast<uint16_t>((temp_addr & ~0x0C00) | ((data & 0x03) << 10));
         update_flags();
         break;
     case PPUMASK:
@@ -417,11 +519,21 @@ void PPU::write(const uint16_t addr, const uint8_t data)
         if (in_reset_write_lockout()) {
             break;
         }
-        // First write is the X scroll, second is the Y scroll.
+        // $2005 is a write port into t and x, not a register of its own.
+        //
+        //   first  (w=0):  t: ....... ...ABCDE <- d: ABCDE...
+        //                  x: FGH              <- d: .....FGH ; w: <- 1
+        //   second (w=1):  t: FGH..AB CDE..... <- d: ABCDEFGH ; w: <- 0
+        //
+        // The first write puts the X scroll's top five bits into coarse X and
+        // its low three into fine X; the second splits the Y scroll the same
+        // way between coarse Y (bits 5-9) and fine Y (bits 12-14).
         if (high_byte_input) {
-            registers.PPUSCROLL = (registers.PPUSCROLL & 0x00FF) | (data << 8);
+            temp_addr = static_cast<uint16_t>((temp_addr & ~0x001F) | (data >> 3));
+            fine_x = data & 0x07;
         } else {
-            registers.PPUSCROLL = (registers.PPUSCROLL & 0xFF00) | data;
+            temp_addr = static_cast<uint16_t>((temp_addr & ~0x73E0) | ((data & 0x07) << 12) |
+                                              ((data & 0xF8) << 2));
         }
         high_byte_input = !high_byte_input;
         break;
@@ -429,13 +541,19 @@ void PPU::write(const uint16_t addr, const uint8_t data)
         if (in_reset_write_lockout()) {
             break;
         }
-        // First write is the most significant byte. The address is 14 bits, so
-        // the top two bits of that byte are discarded. The pair is staged in
-        // temp_addr and only committed once the second write lands.
+        //   first  (w=0):  t: .CDEFGH ........ <- d: ..CDEFGH
+        //                  t: bit 14 cleared             ; w: <- 1
+        //   second (w=1):  t: ....... ABCDEFGH <- d: ABCDEFGH
+        //                  v: <- t                       ; w: <- 0
+        //
+        // Masking the incoming byte with $3F is what clears bit 14 and drops
+        // the two bits above the 14-bit address space in one go. The pair is
+        // staged in t and only committed to v by the second write, so a
+        // PPUDATA access in between still uses the previous address.
         if (high_byte_input) {
-            temp_addr = (temp_addr & 0x00FF) | ((data & 0x3F) << 8);
+            temp_addr = static_cast<uint16_t>((temp_addr & 0x00FF) | ((data & 0x3F) << 8));
         } else {
-            temp_addr = (temp_addr & 0xFF00) | data;
+            temp_addr = static_cast<uint16_t>((temp_addr & 0xFF00) | data);
             registers.PPUADDR = temp_addr;
         }
         high_byte_input = !high_byte_input;
@@ -445,7 +563,7 @@ void PPU::write(const uint16_t addr, const uint8_t data)
         // Must use vram_step, not ++, so the write path agrees with the read
         // path below.
         ppu_bus_write(registers.PPUADDR, data);
-        registers.PPUADDR = (registers.PPUADDR + vram_step) & vram_addr_mask;
+        advance_vram_address();
         break;
     case OAMDMA:
         registers.OAMDMA = data;
@@ -553,7 +671,7 @@ uint8_t PPU::read(const uint16_t addr)
             vram_read_buffer = ppu_bus_read(static_cast<uint16_t>(addr & 0x2FFF));
         }
 
-        registers.PPUADDR = (registers.PPUADDR + vram_step) & vram_addr_mask;
+        advance_vram_address();
 
         // A palette read drives only bits 0-5; bits 6-7 were never driven, so
         // they keep ageing from whenever they last were. A buffered read drives

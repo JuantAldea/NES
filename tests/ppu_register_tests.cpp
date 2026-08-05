@@ -116,7 +116,22 @@ GTEST_TEST(testPPURegisters, ppuscroll_keeps_both_writes)
 
     EXPECT_EQ(0x7D, console.ppu.scroll_x());
     EXPECT_EQ(0x5E, console.ppu.scroll_y());
-    EXPECT_EQ(0x7D5E, console.ppu.registers.PPUSCROLL);
+
+    // CHANGED: this used to assert registers.PPUSCROLL == 0x7D5E, a register
+    // hardware does not have. $2005 writes into t and x:
+    //
+    //   first  ($7D = 0111 1101):  t coarse X <- 0x7D >> 3 = $0F
+    //                              x          <- 0x7D & 7  = 5
+    //   second ($5E = 0101 1110):  t fine Y   <- 0x5E & 7  = 6  -> bits 12-14
+    //                              t coarse Y <- 0x5E >> 3 = $0B -> bits 5-9
+    //
+    //   t = (6 << 12) | (0x0B << 5) | 0x0F = $6000 | $0160 | $000F = $616F
+    EXPECT_EQ(0x616F, console.ppu.temp_addr);
+    EXPECT_EQ(0x05, console.ppu.fine_x);
+
+    // ...and v is untouched. $2005 stages the scroll; only $2006's second
+    // write, dot 257 and pre-render 280-304 move it into v.
+    EXPECT_EQ(0x0000, console.ppu.registers.PPUADDR);
 }
 
 GTEST_TEST(testPPURegisters, ppuscroll_and_ppuaddr_share_the_write_toggle)
@@ -186,9 +201,25 @@ GTEST_TEST(testPPURegisters, ppustatus_read_preserves_the_addresses)
 
     console.ppu.read(PPU::PPUSTATUS);
 
-    // Hardware clears only the write toggle; it leaves the addresses alone.
+    // Hardware clears only the write toggle; it leaves v and t alone.
     EXPECT_EQ(0x2108, console.ppu.registers.PPUADDR);
-    EXPECT_EQ(0x3344, console.ppu.registers.PPUSCROLL);
+
+    // CHANGED: this used to assert registers.PPUSCROLL == 0x3344. The scroll
+    // has no register of its own; the two $2005 writes went into t, on top of
+    // the $2108 the $2006 pair had just put there:
+    //
+    //   after $2006 $21,$08:       t = $2108
+    //   $2005 first  ($33):        t coarse X <- $33 >> 3 = 6, x <- 3
+    //                              t = ($2108 & ~$001F) | 6 = $2106
+    //   $2005 second ($44):        t fine Y <- $44 & 7 = 4, coarse Y <- 8
+    //                              t = ($2106 & ~$73E0) | (4 << 12) | (8 << 5)
+    //                                = $0006 | $4000 | $0100 = $4106
+    EXPECT_EQ(0x4106, console.ppu.temp_addr);
+    EXPECT_EQ(0x03, console.ppu.fine_x);
+
+    // Which still reads back as the bytes that were written.
+    EXPECT_EQ(0x33, console.ppu.scroll_x());
+    EXPECT_EQ(0x44, console.ppu.scroll_y());
 
     // The retained address is still the one PPUDATA uses.
     console.ppu.write(PPU::PPUDATA, 0x5A);
@@ -311,9 +342,12 @@ GTEST_TEST(testPPURegisters, lockout_covers_mask_scroll_and_addr)
     EXPECT_EQ(0x00, console.ppu.registers.PPUMASK);
     EXPECT_FALSE(console.ppu.show_background);
 
+    // CHANGED: this used to assert registers.PPUSCROLL == 0x0000. $2005 writes
+    // into t and x, so those are what must be untouched by a locked-out write.
     console.ppu.write(PPU::PPUSCROLL, 0xFF);
     console.ppu.write(PPU::PPUSCROLL, 0xFF);
-    EXPECT_EQ(0x0000, console.ppu.registers.PPUSCROLL);
+    EXPECT_EQ(0x0000, console.ppu.temp_addr);
+    EXPECT_EQ(0x00, console.ppu.fine_x);
 
     write_addr(console.ppu, 0x21, 0x08);
     EXPECT_EQ(0x0000, console.ppu.registers.PPUADDR);
