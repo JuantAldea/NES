@@ -46,19 +46,19 @@ tests/test_files/nestest.log
 .claude/worktrees/
 
 # SingleStepTests 65x02 vectors, fetched by tests/test_files/fetch_single_step_tests.sh
-tests/test_files/single_step_tests/
+tests/test_files/single_step_tests
 
 # Blargg PPU test ROMs, fetched by tests/test_files/fetch_blargg_ppu.sh
-tests/test_files/blargg_ppu/
+tests/test_files/blargg_ppu
 
 # Blargg cpu_interrupts_v2 ROMs, fetched by tests/test_files/fetch_cpu_interrupts.sh
-tests/test_files/cpu_interrupts/
+tests/test_files/cpu_interrupts
 
 # PPU address-space test ROMs, fetched by tests/test_files/fetch_ppu_address_space.sh
-tests/test_files/ppu_address_space/
+tests/test_files/ppu_address_space
 
 # Blargg 2005 PPU test ROMs, fetched by tests/test_files/fetch_blargg_ppu_2005.sh
-tests/test_files/blargg_ppu_2005/
+tests/test_files/blargg_ppu_2005
 
 # Blargg sprite 0 hit ROMs, fetched by tests/test_files/fetch_sprite_hit.sh
-tests/test_files/sprite_hit/
+tests/test_files/sprite_hit
