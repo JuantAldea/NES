@@ -59,7 +59,19 @@ public:
     void raise_NMI();
     void lower_NMI();
     void raise_IRQ();
-    void set_IRQ_line(const bool asserted);
+    // /IRQ is a wire-OR of several open-drain sources on hardware: the APU
+    // frame counter, the DMC, and mapper counters such as MMC3's. Each pulls
+    // the shared line low independently, and the CPU sees the OR of them.
+    //
+    // A single bool cannot represent that - one source acknowledging would
+    // release another's assertion - so each source owns a bit.
+    enum class IRQSource : uint8_t {
+        apu_frame_counter = 1 << 0,
+        apu_dmc = 1 << 1,
+        cartridge = 1 << 2,
+    };
+
+    void set_IRQ_line(const IRQSource source, const bool asserted);
 
     // Edge-commits and polls the interrupt lines. Runs once per CPU cycle,
     // after that cycle's bus access. A Bus drives this itself so it can place
@@ -70,6 +82,13 @@ public:
 
     // Set by Bus, which owns the sample point. Left false, the PPU-less
     // harnesses (nestest, SingleStepTests, Klaus2m5) stay self-contained.
+    // Set by whatever drives this CPU. A Bus samples the interrupt lines
+    // itself, one PPU dot after the cycle's bus access (see Bus::clock);
+    // standalone harnesses have no dots, so the CPU samples at the end of its
+    // own cycle instead. Defaulting to false means a driver that forgets to set
+    // it gets the standalone behaviour - one sample per cycle - rather than two,
+    // which would commit /NMI edges that should still be revocable and silently
+    // break NMI suppression.
     bool external_interrupt_sampling = false;
 
     void set_flag(const FLAGS flag, const bool value);
@@ -100,7 +119,6 @@ public:
     // Only meaningful for the instruction currently executing.
     bool page_crossed = false;
 
-    uint16_t previous_pc = 0;
     uint64_t total_cycles = 0;
 
     friend std::ostream& operator<<(std::ostream& os, const CPU& cpu);
@@ -178,7 +196,8 @@ protected:
     // A latched /NMI falling edge, waiting to be polled.
     bool nmi_requested = false;
     bool irq_requested = false;
-    bool irq_line = false;
+    // Bitmask of IRQSource; /IRQ is asserted while any bit is set.
+    uint8_t irq_sources = 0;
 
     // Whether a sample has already seen nmi_requested, at which point the line
     // going back high can no longer take it away.
@@ -322,7 +341,7 @@ public:
     bool nmi_pending() const { return nmi_requested; }
 
     // Observability for tests: the level a device is driving on /IRQ.
-    bool irq_line_asserted() const { return irq_line; }
+    bool irq_line_asserted() const { return irq_sources != 0; }
 
     friend class InstructionSet;
 };

@@ -29,13 +29,9 @@ void APU::set_frame_irq(const bool asserted)
     // $4015. Setting a flag without driving the line would produce an interrupt
     // that fires once and never again.
     //
-    // NOTE: this drives the CPU's /IRQ input directly, which is only correct
-    // while the APU frame counter is its ONLY source. /IRQ is a wire-OR of
-    // several open-drain sources on hardware (DMC, and mapper counters such as
-    // MMC3's). The second one to arrive will need the CPU to OR per-source
-    // bits, because otherwise one source acknowledging releases the other's
-    // assertion.
-    bus->cpu.set_IRQ_line(frame_irq_flag);
+    // The frame counter owns one bit of the CPU's /IRQ input; other sources
+    // (DMC, mapper counters) own their own, and the CPU sees the OR.
+    bus->cpu.set_IRQ_line(CPU::IRQSource::apu_frame_counter, frame_irq_flag);
 }
 
 // The envelope and linear counter clock. No channels exist yet.

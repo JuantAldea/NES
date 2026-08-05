@@ -330,6 +330,70 @@ GTEST_TEST(testAPU, the_frame_irq_is_a_level_not_a_pulse)
 //
 // Driven at the CPU directly rather than through a Bus, because that is the
 // unit under test and it makes the vector controllable without a cartridge.
+// /IRQ is a wire-OR of several open-drain sources. Each pulls the shared line
+// low independently, so one source releasing must NOT release another's
+// assertion - which is exactly what a single bool would have done, and what
+// this would have got wrong the moment a DMC or mapper IRQ was added.
+GTEST_TEST(testAPU, irq_sources_are_ored_not_overwritten)
+{
+    struct FlatMemory {
+        std::array<uint8_t, 64 * 1024> memory{};
+        uint8_t read(uint16_t a) const { return memory[a]; }
+        void write(uint16_t a, uint8_t d) { memory[a] = d; }
+    } mem;
+
+    CPU cpu([&mem](uint16_t a) { return mem.read(a); }, [&mem](uint16_t a, uint8_t d) { mem.write(a, d); });
+
+    EXPECT_FALSE(cpu.irq_line_asserted());
+
+    cpu.set_IRQ_line(CPU::IRQSource::apu_frame_counter, true);
+    cpu.set_IRQ_line(CPU::IRQSource::cartridge, true);
+    EXPECT_TRUE(cpu.irq_line_asserted());
+
+    // The frame counter acknowledges. The cartridge is still holding the line.
+    cpu.set_IRQ_line(CPU::IRQSource::apu_frame_counter, false);
+    EXPECT_TRUE(cpu.irq_line_asserted()) << "one source releasing must not release another's assertion";
+
+    // And only when the last source lets go does /IRQ go high.
+    cpu.set_IRQ_line(CPU::IRQSource::cartridge, false);
+    EXPECT_FALSE(cpu.irq_line_asserted());
+
+    // Asserting twice and releasing once must still release: a source owns a
+    // bit, not a count.
+    cpu.set_IRQ_line(CPU::IRQSource::apu_dmc, true);
+    cpu.set_IRQ_line(CPU::IRQSource::apu_dmc, true);
+    cpu.set_IRQ_line(CPU::IRQSource::apu_dmc, false);
+    EXPECT_FALSE(cpu.irq_line_asserted());
+}
+
+// RESET does not reach into a device and cancel its pending interrupt. /IRQ is
+// a wire held low by the APU or a mapper; the CPU resetting says nothing about
+// whether that device is still asserting.
+//
+// Clearing it on reset would drop a real pending interrupt while $4015 still
+// reported it, leaving flag and line out of step until the next sequence
+// re-drove it. Mutation testing found nothing pinned this.
+GTEST_TEST(testAPU, reset_does_not_release_a_device_held_irq_line)
+{
+    Bus console;
+    seed_spin_loop(console);
+    console.write(APU::FRAMECOUNTER, 0x00);
+    ASSERT_NE(cycles_until_frame_irq(console), 0u);
+
+    ASSERT_TRUE(console.apu.frame_irq_asserted());
+    ASSERT_TRUE(console.cpu.irq_line_asserted());
+
+    console.cpu.reset();
+
+    EXPECT_TRUE(console.apu.frame_irq_asserted()) << "the APU still has an unacknowledged frame interrupt";
+    EXPECT_TRUE(console.cpu.irq_line_asserted())
+        << "RESET cleared a line the APU is still holding; the flag and the line are now out of step";
+
+    // And acknowledging still works normally afterwards.
+    EXPECT_EQ(console.read(APU::APUSTATUS) & 0x40, 0x40);
+    EXPECT_FALSE(console.cpu.irq_line_asserted());
+}
+
 GTEST_TEST(testAPU, a_held_irq_line_is_taken_again_after_every_handler)
 {
     struct FlatMemory {
@@ -359,7 +423,7 @@ GTEST_TEST(testAPU, a_held_irq_line_is_taken_again_after_every_handler)
     cpu.cycles_left = 0;
 
     // A device holds /IRQ low and never releases it.
-    cpu.set_IRQ_line(true);
+    cpu.set_IRQ_line(CPU::IRQSource::cartridge, true);
 
     for (int i = 0; i < 4000; ++i) {
         cpu.clock(false);

@@ -47,7 +47,11 @@ void CPU::raise_IRQ() { irq_requested = true; }
 // taking the interrupt while this is true and I is clear, so the device must
 // release it when the handler acknowledges (for the APU frame counter, that is
 // a read of $4015).
-void CPU::set_IRQ_line(const bool asserted) { irq_line = asserted; }
+void CPU::set_IRQ_line(const IRQSource source, const bool asserted)
+{
+    const uint8_t bit = static_cast<uint8_t>(source);
+    irq_sources = asserted ? (irq_sources | bit) : static_cast<uint8_t>(irq_sources & ~bit);
+}
 
 // Once per CPU cycle, after that cycle's bus access.
 //
@@ -133,8 +137,9 @@ void CPU::sample_interrupts()
     // as a device holds the line low and I is clear, the interrupt is taken
     // again after every handler. `irq_requested` is the older one-shot pulse,
     // kept for harnesses that inject an interrupt directly; a device that owns
-    // a line uses set_IRQ_line and is responsible for releasing it.
-    irq_poll = (irq_requested || irq_line) && !get_flag(FLAGS::I);
+    // a line uses set_IRQ_line with its own IRQSource bit, and is responsible
+    // for releasing it.
+    irq_poll = (irq_requested || irq_sources != 0) && !get_flag(FLAGS::I);
 }
 
 // The vector an interrupt sequence ends at is not decided when the sequence
@@ -208,6 +213,14 @@ void CPU::poll_interrupt_hijack()
     }
 
     servicing_nmi = true;
+
+    // The sequence is now an NMI, so point current_instruction at NMI too.
+    // This is currently invisible - NMI(), IRQ() and BRK() are the identical
+    // one-liner `PC = fetched_operand` - but leaving it stale means the first
+    // person to give NMI() distinct behaviour gets a hijacked sequence running
+    // the wrong operation, with nothing to indicate why.
+    current_instruction = &InstructionSet::NMI;
+
     nmi_requested = false;
     nmi_committed = false;
 }
@@ -790,9 +803,16 @@ bool CPU::step()
                     // the sequence over: what B records is which instruction
                     // STARTED the sequence, not where it ends up.
                     push_stack(registers.P | static_cast<uint8_t>(FLAGS::B));
+                    return false;
+                case 6:
+                    // I is set here, with the vector fetch, not with the push on
+                    // cycle 5. The pushed copy therefore carries the OLD I, which
+                    // is what lets RTI restore it. Unobservable while sequences
+                    // return early from the poll, but it stops being so the
+                    // moment anything makes them poll.
+                    base_low = read(servicing_nmi ? 0xFFFA : 0xFFFE);
                     set_flag(FLAGS::I, true);
                     return false;
-                case 6: base_low = read(servicing_nmi ? 0xFFFA : 0xFFFE); return false;
                 default:
                     base_high = read(servicing_nmi ? 0xFFFB : 0xFFFF);
                     fetched_operand = static_cast<uint16_t>(base_high << 8) | base_low;
@@ -827,9 +847,12 @@ bool CPU::step()
                 case 4: push_stack(low_byte(registers.PC)); return false;
                 case 5:
                     push_stack(registers.P & ~static_cast<uint8_t>(FLAGS::B));
+                    return false;
+                case 6:
+                    // See the BRK sequence: I is set with the vector fetch.
+                    base_low = read(servicing_nmi ? 0xFFFA : 0xFFFE);
                     set_flag(FLAGS::I, true);
                     return false;
-                case 6: base_low = read(servicing_nmi ? 0xFFFA : 0xFFFE); return false;
                 default:
                     base_high = read(servicing_nmi ? 0xFFFB : 0xFFFF);
                     fetched_operand = static_cast<uint16_t>(base_high << 8) | base_low;
@@ -920,9 +943,9 @@ void CPU::reset()
     irq_requested = false;
     servicing_nmi = false;
 
-    // irq_line is deliberately NOT cleared. It is a wire held low by a device,
-    // not CPU state: RESET does not reach into the APU and cancel its pending
-    // frame interrupt. Clearing it here would drop a real pending interrupt
+    // irq_sources is deliberately NOT cleared. Those are wires held low by
+    // devices, not CPU state: RESET does not reach into the APU and cancel its
+    // pending frame interrupt. Clearing them would drop a real pending interrupt
     // while $4015 still reported it, leaving the two out of step until the
     // next sequence re-drove the line.
     nmi_committed = false;
@@ -1593,7 +1616,7 @@ std::ostream& operator<<(std::ostream& os, const CPU& cpu)
        << std::endl;
 
     os << "Instruction : " << InstructionSet::Table[cpu.read(cpu.registers.PC)].name
-       << " Cycles left: " << static_cast<unsigned>(cpu.cycles_left) << std::endl;
+       << " Mid-instruction: " << (cpu.cycles_left != 0 ? "yes" : "no") << std::endl;
 
     return os;
 }
