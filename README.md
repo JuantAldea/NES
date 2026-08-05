@@ -138,6 +138,8 @@ tests/test_files/fetch_nestest.sh             #  ~900 KB  nestest ROM + log
 tests/test_files/fetch_blargg_ppu.sh          #  ~400 KB  ppu_vbl_nmi ROMs
 tests/test_files/fetch_cpu_interrupts.sh      #  ~200 KB  cpu_interrupts_v2 ROMs
 tests/test_files/fetch_ppu_address_space.sh   #  ~100 KB  OAM and open-bus ROMs
+tests/test_files/fetch_blargg_ppu_2005.sh     #   ~64 KB  palette/VRAM/OAM ROMs
+tests/test_files/fetch_sprite_hit.sh          #  ~224 KB  sprite 0 hit ROMs
 tests/test_files/fetch_single_step_tests.sh   #   1.1 GB  SingleStepTests vectors
 ```
 
@@ -145,9 +147,22 @@ Each verifies a pinned SHA256 (the vectors are validated structurally instead,
 since upstream regenerates them wholesale) and skips anything already present,
 so re-running is cheap.
 
-Tests whose fixtures are missing report **SKIPPED**, never a false pass. A run
-with no fixtures fetched is green but verifies very little - check the skip
-count before believing it.
+**A green run does not mean the suite verified everything**, and the headline
+count actively hides this. The two per-opcode suites call `GTEST_SKIP` when the
+1.1 GB of vectors is absent, and a skipped test exits 0, so `ctest` counts it as
+a pass. With no vectors fetched the suite still reports "100% tests passed out
+of 685" while having executed 173 of them.
+
+The ROM suites behave the other way round: a missing ROM is a loud failure
+naming the fetch script to run, not a skip. So the failure modes are:
+
+| Fixture | Missing behaviour |
+|---|---|
+| SingleStepTests vectors | 512 tests skip, counted as passing |
+| Everything else | hard failure naming the fetch script |
+
+CI deliberately does not fetch the vectors and prints the executed count on
+every run for this reason.
 
 ### Running
 
@@ -159,7 +174,7 @@ ninja -C build check     # or: make -C build check
 that writes a fixture writes a uniquely named one - and the suite is dominated
 by 512 per-opcode cases that parallelise perfectly.
 
-On 32 cores the full 669-test suite takes about **3 seconds**. Two things got
+On 32 cores the full 685-test suite takes about **3 seconds**. Two things got
 it there, and the second mattered more than the first:
 
 * Parallelism took it from 129s to 16s. Past that point the total was simply
@@ -180,7 +195,7 @@ ctest --test-dir build --output-on-failure
 ctest --test-dir build -j8 --output-on-failure   # or pick your own level
 ```
 
-The 669 tests are dominated by the two per-opcode suites - 256 opcodes checked
+The 685 tests are dominated by the two per-opcode suites - 256 opcodes checked
 for their bus trace and 256 for their final state, 10,000 cases apiece.
 
 ## License

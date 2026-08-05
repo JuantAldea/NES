@@ -53,12 +53,24 @@ jobs:
       - name: Test
         run: ctest --test-dir build -j"$(nproc)" --output-on-failure
 
-      # A run whose fixtures failed to appear would be green while verifying
-      # very little, so the total is reported explicitly rather than left for
-      # someone to notice.
-      - name: Report test total
+      # "100% tests passed out of 685" is a MISLEADING headline here, and this
+      # step exists to say so on every run.
+      #
+      # GTEST_SKIP makes a test exit 0, so ctest counts a skipped test as a
+      # passing one. The 512 per-opcode SingleStepTests cases skip in CI
+      # because their 1.1 GB of vectors is not fetched - so the honest figure
+      # is the difference, not the total. What CI really covers is the ROM
+      # oracles: nestest's 8991 instructions, Klaus, the Blargg PPU and
+      # interrupt suites, and the sprite-hit reader.
+      - name: Report what was actually verified
         if: always()
-        run: ctest --test-dir build -N | tail -1
+        run: |
+          listing=$(ctest --test-dir build -N)
+          total=$(echo "$listing" | sed -n 's/^Total Tests: //p')
+          skipped=$(echo "$listing" | grep -cE 'SingleStepBusTrace|SingleStepVectors' || true)
+          echo "registered: $total"
+          echo "skipped:    $skipped  (SingleStepTests vectors not fetched in CI)"
+          echo "executed:   $((total - skipped))"
 
   qhex:
     name: Build the Qt debugger
