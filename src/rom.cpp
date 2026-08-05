@@ -20,6 +20,8 @@ bool ROM::load(const std::string& path)
     chr_rom.clear();
     mapper_id = 0;
     horizontal_mirroring = true;
+    chr_bank = 0;
+    chr_bank_count = 0;
 
     std::ifstream file(path, std::ios::binary | std::ios::ate);
     if (!file) {
@@ -56,8 +58,9 @@ bool ROM::load(const std::string& path)
     // from the high nibble of flags7.
     const uint8_t parsed_mapper_id = (flags7 & 0xF0) | (flags6 >> 4);
 
-    if (parsed_mapper_id != 0) {
-        std::cerr << "ROM: mapper " << static_cast<int>(parsed_mapper_id) << " is not supported (only NROM/mapper 0)\n";
+    if (parsed_mapper_id != 0 && parsed_mapper_id != 3) {
+        std::cerr << "ROM: mapper " << static_cast<int>(parsed_mapper_id)
+                  << " is not supported (only NROM/mapper 0 and CNROM/mapper 3)\n";
         return false;
     }
 
@@ -68,8 +71,19 @@ bool ROM::load(const std::string& path)
     // NROM carries at most one 8KB CHR bank. A header claiming more would load
     // happily with the excess permanently unreachable, which is the same
     // failure the PRG check below exists to prevent.
-    if (chr_rom_banks > 1) {
+    // NROM has a single fixed CHR bank; CNROM is the mapper that exists in
+    // order to have several. A CNROM image with one bank is legal and just
+    // never switches.
+    if (parsed_mapper_id == 0 && chr_rom_banks > 1) {
         std::cerr << "ROM: NROM supports at most 1 CHR-ROM bank, header advertises " << chr_rom_banks << "\n";
+        return false;
+    }
+
+    // The bank register is masked with the bank count, so a count that is not
+    // a power of two would make the masking ambiguous. Real CNROM boards carry
+    // 1, 2 or 4 banks (8KB, 16KB, 32KB of CHR).
+    if (parsed_mapper_id == 3 && (chr_rom_banks == 0 || chr_rom_banks > 4 || (chr_rom_banks & (chr_rom_banks - 1)) != 0)) {
+        std::cerr << "ROM: CNROM requires 1, 2 or 4 CHR-ROM banks, header advertises " << chr_rom_banks << "\n";
         return false;
     }
 
@@ -93,6 +107,10 @@ bool ROM::load(const std::string& path)
 
     mapper_id = parsed_mapper_id;
     horizontal_mirroring = !(flags6 & 0x01);
+    chr_bank_count = static_cast<uint8_t>(chr_rom_banks);
+    // Power-on bank is 0. The value is not specified by the hardware, but a
+    // CNROM game sets it before drawing anything.
+    chr_bank = 0;
 
     prg_rom.assign(data.begin() + offset, data.begin() + offset + prg_size);
     offset += prg_size;
@@ -105,7 +123,32 @@ bool ROM::load(const std::string& path)
 
 void ROM::write(const uint16_t addr, const uint8_t data)
 {
-    // NROM PRG-ROM is not writable.
+    // NROM PRG-ROM is not writable, and neither is CNROM's - but on CNROM the
+    // write is not discarded either: the cartridge latches the low bits as the
+    // CHR bank number. Any address in $8000-$FFFF selects, since the board
+    // decodes nothing finer than "the CPU wrote to cartridge space".
+    //
+    // Bus conflicts are NOT modelled. Real CNROM drives the ROM's own byte
+    // onto the bus at the same time, so hardware sees (data & prg_byte).
+    // Cartridges are written to avoid that - they store the bank number at the
+    // address they write to - so the AND is a no-op for correct software, and
+    // leaving it out cannot mask a bug in anything being tested here.
+    if (mapper_id == 3 && addr >= 0x8000 && chr_bank_count != 0) {
+        chr_bank = static_cast<uint8_t>(data & (chr_bank_count - 1));
+    }
+}
+
+uint8_t ROM::chr_read(const uint16_t addr) const
+{
+    if (chr_rom.empty()) {
+        return 0;
+    }
+
+    const size_t offset = static_cast<size_t>(chr_bank) * CHR_ROM_BANK_SIZE + (addr & 0x1FFF);
+    // Cannot go out of range given the load-time bank-count check, but a
+    // cartridge whose file was shorter than its header claimed would have been
+    // rejected there, so this is belt and braces rather than a live path.
+    return offset < chr_rom.size() ? chr_rom[offset] : 0;
 }
 
 uint8_t ROM::read(const uint16_t addr)

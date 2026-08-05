@@ -62,3 +62,6 @@ tests/test_files/blargg_ppu_2005
 
 # Blargg sprite 0 hit ROMs, fetched by tests/test_files/fetch_sprite_hit.sh
 tests/test_files/sprite_hit
+
+# ppu_read_buffer test ROM, fetched by tests/test_files/fetch_ppu_read_buffer.sh
+tests/test_files/ppu_read_buffer

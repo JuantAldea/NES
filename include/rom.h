@@ -5,7 +5,11 @@
 
 #include "device.h"
 
-// iNES (.nes) cartridge loader and NROM (mapper 0) memory behavior.
+// iNES (.nes) cartridge loader for NROM (mapper 0) and CNROM (mapper 3).
+//
+// CNROM is NROM plus a switchable CHR window: a write anywhere in
+// $8000-$FFFF latches which 8KB CHR-ROM bank the PPU sees. PRG behaves
+// exactly as NROM's does, so the two share everything but chr_read().
 //
 // iNES header layout (16 bytes):
 //   0-3  magic "NES\x1A"
@@ -31,8 +35,21 @@ public:
     void write(const uint16_t addr, const uint8_t data);
     uint8_t read(const uint16_t addr);
 
+    bool has_chr_rom() const { return !chr_rom.empty(); }
+
+    // Reads pattern-table space ($0000-$1FFF) through the currently selected
+    // CHR bank. The PPU must go through this rather than indexing chr_rom
+    // directly, or a CNROM cartridge would be stuck on bank 0 forever.
+    uint8_t chr_read(const uint16_t addr) const;
+
     uint8_t mapper_id = 0;
     bool horizontal_mirroring = true;
+
+    // Which 8KB CHR-ROM bank the PPU currently sees, and how many exist.
+    // NROM always has at most one, so both stay 0/1 and chr_read() reduces to
+    // a plain index.
+    uint8_t chr_bank = 0;
+    uint8_t chr_bank_count = 0;
 
     std::vector<uint8_t> prg_rom;
     std::vector<uint8_t> chr_rom;

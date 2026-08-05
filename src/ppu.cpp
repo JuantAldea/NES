@@ -269,10 +269,11 @@ uint8_t PPU::ppu_bus_read(const uint16_t addr)
     if (a < 0x2000) {
         // Pattern tables live on the cartridge: CHR-ROM if it brought any,
         // otherwise the console's CHR-RAM.
-        // NROM carries at most one 8KB CHR bank, so the address always lands
-        // inside it; ROM::load rejects anything larger.
-        if (!bus->rom.chr_rom.empty()) {
-            return bus->rom.chr_rom[a];
+        // Routed through chr_read rather than indexed directly: on CNROM the
+        // visible 8KB is whichever bank the cartridge last latched, so
+        // indexing chr_rom would pin it to bank 0 forever.
+        if (bus->rom.has_chr_rom()) {
+            return bus->rom.chr_read(a);
         }
         return chr_ram[a];
     }
@@ -292,8 +293,10 @@ void PPU::ppu_bus_write(const uint16_t addr, const uint8_t data)
 
     if (a < 0x2000) {
         // CHR-ROM is not writable; CHR-RAM is. A cartridge with CHR-ROM
-        // silently discards the write, which is what the hardware does.
-        if (!bus->rom.chr_rom.empty()) {
+        // silently discards the write, which is what the hardware does. That
+        // holds for CNROM too: the bank register is written through the CPU
+        // bus at $8000-$FFFF, never through this one.
+        if (bus->rom.has_chr_rom()) {
             return;
         }
         chr_ram[a] = data;
