@@ -3,37 +3,78 @@ name: CI
 on: [push, pull_request]
 
 jobs:
-  build:
+  test:
+    name: Build and test
     runs-on: ubuntu-latest
-    
-    steps:
-    - uses: actions/checkout@v2
-      with:
-        submodules: 'recursive'
-      
-    - name: Get latest CMake
-      uses: lukka/get-cmake@latest
-    
-    - name: Install ninja-build tool
-      uses: seanmiddleditch/gha-setup-ninja@v1
-    
-    - name: Install Qt
-      uses: jurplel/install-qt-action@v2.6.2
-    
-    - name: run-cmake
-      uses: lukka/run-cmake@v2.4
-      with:
-        cmakeListsOrSettingsJson: CMakeListsTxtAdvanced
-        cmakeListsTxtPath: '${{ github.workspace }}/CMakeLists.txt'
-        buildDirectory: '${{ runner.workspace }}/build'
-        cmakeAppendedArgs: '-GNinja '
 
-    - name: Build tests
-      working-directory: ${{ runner.workspace }}/build
-      run: ninja tests
-    
-    - name: Run tests
-      working-directory: ${{ runner.workspace }}/build
-      run: ninja test
-      
-    
+    steps:
+      - uses: actions/checkout@v4
+
+      # Qt is only needed by the qhex debugger, which the job below covers.
+      # Skipping it here keeps this job free of the heavyweight third-party Qt
+      # install action the previous version of this workflow depended on.
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ninja-build cmake g++
+
+      # The suite runs against external test ROMs and hardware-derived vectors
+      # which are NOT committed - they are unlicensed dumps. Without them the
+      # ROM suites fail outright, so fetching happens in its own step: a
+      # network problem then fails HERE, visibly, instead of surfacing as a
+      # dozen inexplicable emulation failures further down.
+      #
+      # fetch_single_step_tests.sh is deliberately absent. It is 1.1 GB of
+      # generated JSON, which is not reasonable to pull on every push. Those
+      # tests call GTEST_SKIP when the vectors are missing, so they report as
+      # skipped rather than passing silently - hence the skip count below.
+      - name: Fetch test fixtures
+        run: |
+          tests/test_files/fetch_nestest.sh
+          tests/test_files/fetch_blargg_ppu.sh
+          tests/test_files/fetch_cpu_interrupts.sh
+          tests/test_files/fetch_ppu_address_space.sh
+          tests/test_files/fetch_blargg_ppu_2005.sh
+          tests/test_files/fetch_sprite_hit.sh
+
+      # The default build type is Checked (-O3 -g, asserts live). The suite
+      # spends nearly all its time emulating, so an unoptimised build is about
+      # 5x slower; and Release/RelWithDebInfo would define NDEBUG and silently
+      # neuter every assert-based regression test.
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DNES_BUILD_QHEX=OFF
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Test
+        run: ctest --test-dir build -j"$(nproc)" --output-on-failure
+
+      # A run whose fixtures failed to appear would be green while verifying
+      # very little, so the total is reported explicitly rather than left for
+      # someone to notice.
+      - name: Report test total
+        if: always()
+        run: ctest --test-dir build -N | tail -1
+
+  qhex:
+    name: Build the Qt debugger
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Qt from apt rather than a third-party action: one less dependency to
+      # rot, and the debugger only needs Widgets/Core/Gui.
+      - name: Install build tools and Qt
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ninja-build cmake g++ qtbase5-dev
+
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DNES_BUILD_QHEX=ON
+
+      # Compile-checks qhex and its QHexView dependency. The tests are covered
+      # by the job above, so only the debugger target is built here.
+      - name: Build qhex
+        run: cmake --build build --target qhex
