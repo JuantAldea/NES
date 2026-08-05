@@ -1,18 +1,20 @@
 // PPU address-space test ROMs.
 //
-// The oracle for everything between the PPU's register interface and its
-// memory: pattern tables, nametable and palette mirroring, the $2007 read
-// buffer, OAM, and open bus. None of it is implemented yet - VRAM is a flat
-// 16KB array with no mirroring of any kind, and the cartridge's CHR is parsed
-// into ROM::chr_rom and read by nothing.
+// The headless part of the oracle for the PPU's memory interface: OAM and open
+// bus.
+//
+// The address space itself - pattern tables, nametable and palette mirroring,
+// the $2007 read buffer - IS implemented, and is covered by
+// tests/ppu_memory_tests.cpp rather than by a ROM, for the reason below.
 //
 //   oam_read       OAM through $2003/$2004, including its read quirks
 //   oam_stress     OAM under heavy access patterns
 //   ppu_open_bus   what the open bus returns for write-only registers and
 //                  unused bits, and how it decays
 //
-// ALL THREE ARE EXPECTED TO FAIL until the address space exists. The count that
-// passes is the scalar this work drives upward. Do NOT weaken these assertions.
+// oam_read passes. oam_stress and ppu_open_bus do not: they measure OAM under
+// stress and open-bus DECAY, neither of which is implemented. The count that
+// passes is the scalar. Do NOT weaken these assertions.
 //
 // These three are what can be checked HEADLESSLY. Blargg's 2005 PPU suite -
 // palette_ram, vram_access, sprite_ram, power_up_palette - covers exactly the
@@ -71,10 +73,10 @@ TEST_P(PpuAddressSpaceRoms, reports_pass)
         FAIL() << name << ": timed out after " << result.frames_run << " frames still reporting status $" << std::hex
                << static_cast<int>(result.last_status) << std::dec
                << " (running).\n"
-                  "  The ROM initialised and is waiting on the PPU. Expected while VRAM is\n"
-                  "  a flat array: with no nametable or palette mirroring and no CHR-RAM,\n"
-                  "  a ROM that writes through $2006/$2007 and reads back cannot make\n"
-                  "  progress.";
+                  "  The ROM initialised and is waiting on the PPU. The address space is\n"
+                  "  implemented (see tests/ppu_memory_tests.cpp), so suspect what is not:\n"
+                  "  OAM behaviour beyond a plain $2003/$2004 round trip, open-bus decay,\n"
+                  "  or rendering - none of which exist yet.";
     }
 
     if (result.needs_reset) {

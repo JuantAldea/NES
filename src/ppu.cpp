@@ -179,7 +179,7 @@ uint16_t PPU::nametable_offset(const uint16_t addr) const
     const uint16_t screen = index / 0x0400;
     const uint16_t within = index & 0x03FF;
 
-    const bool horizontal = bus == nullptr ? true : bus->rom.horizontal_mirroring;
+    const bool horizontal = bus->rom.horizontal_mirroring;
     const uint16_t bank = horizontal ? (screen >> 1) : (screen & 1);
 
     return static_cast<uint16_t>(bank * 0x0400 + within);
@@ -208,8 +208,10 @@ uint8_t PPU::ppu_bus_read(const uint16_t addr)
     if (a < 0x2000) {
         // Pattern tables live on the cartridge: CHR-ROM if it brought any,
         // otherwise the console's CHR-RAM.
-        if (bus != nullptr && !bus->rom.chr_rom.empty()) {
-            return bus->rom.chr_rom[a % bus->rom.chr_rom.size()];
+        // NROM carries at most one 8KB CHR bank, so the address always lands
+        // inside it; ROM::load rejects anything larger.
+        if (!bus->rom.chr_rom.empty()) {
+            return bus->rom.chr_rom[a];
         }
         return chr_ram[a];
     }
@@ -230,7 +232,7 @@ void PPU::ppu_bus_write(const uint16_t addr, const uint8_t data)
     if (a < 0x2000) {
         // CHR-ROM is not writable; CHR-RAM is. A cartridge with CHR-ROM
         // silently discards the write, which is what the hardware does.
-        if (bus != nullptr && !bus->rom.chr_rom.empty()) {
+        if (!bus->rom.chr_rom.empty()) {
             return;
         }
         chr_ram[a] = data;
@@ -242,7 +244,10 @@ void PPU::ppu_bus_write(const uint16_t addr, const uint8_t data)
         return;
     }
 
-    palette_ram[palette_offset(a)] = data;
+    // Palette RAM is six bits wide. Masking on write means the stored value is
+    // always a valid index into the 64-entry colour table, which matters most
+    // for the rendering that will read these directly.
+    palette_ram[palette_offset(a)] = data & 0x3F;
 }
 
 // 513 cycles, or 514 when the write to $4014 landed on an odd CPU cycle: the
@@ -464,8 +469,20 @@ uint8_t PPU::read(const uint16_t addr)
             result = vram_read_buffer;
             vram_read_buffer = fetched;
         } else {
-            result = fetched;
-            vram_read_buffer = nametable_ram[nametable_offset(addr)];
+            // Palette RAM drives only bits 0-5 of the bus. Bits 6-7 are left
+            // to whatever the open bus already held, so a palette read does not
+            // fully define the byte it returns.
+            //
+            // Greyscale (PPUMASK bit 0) also applies here, not just to
+            // rendering: it forces the low four bits, collapsing every colour
+            // onto the grey column of the palette.
+            const uint8_t value = fetched & (greyscale ? 0x30 : 0x3F);
+            result = static_cast<uint8_t>((open_bus & 0xC0) | value);
+
+            // The latch is still refilled, from the nametable UNDERNEATH the
+            // palette. Routed through ppu_bus_read so the decode stays in one
+            // place: $3F00-$3FFF folds onto $2F00-$2FFF.
+            vram_read_buffer = ppu_bus_read(static_cast<uint16_t>(addr & 0x2FFF));
         }
 
         registers.PPUADDR = (registers.PPUADDR + vram_step) & vram_addr_mask;

@@ -49,6 +49,24 @@ struct TinyRom {
     std::string path;
 };
 
+// $2006 writes are among those ignored during the post-reset lockout, so a test
+// that drives PPUADDR has to clock past it first. Skipping this leaves PPUADDR
+// at 0 and every read comes back from $0000 - which looks exactly like a broken
+// read buffer.
+void run_past_reset_lockout(PPU& ppu)
+{
+    while (ppu.in_reset_write_lockout()) {
+        ppu.clock();
+    }
+}
+
+void set_ppu_addr(PPU& ppu, uint16_t addr)
+{
+    ppu.read(PPU::PPUSTATUS);  // reset the address latch
+    ppu.write(PPU::PPUADDR, static_cast<uint8_t>(addr >> 8));
+    ppu.write(PPU::PPUADDR, static_cast<uint8_t>(addr & 0xFF));
+}
+
 // --- nametable mirroring -----------------------------------------------------
 //
 // Two 1KB screens of internal RAM behind four 1KB address windows. The
@@ -131,6 +149,49 @@ GTEST_TEST(testPPUMemory, the_3000_region_mirrors_the_nametables)
     EXPECT_EQ(0xA5, console.ppu.ppu_bus_read(0x2456));
 }
 
+// The nametable region ends at $3EFF and the palette begins at $3F00. A review
+// found that moving all three boundary comparisons to $3E00 left the whole
+// suite passing: nothing touched $3Exx at all.
+GTEST_TEST(testPPUMemory, the_nametable_region_extends_to_3eff)
+{
+    Bus console;
+
+    console.ppu.ppu_bus_write(0x2EFF, 0x6D);
+    EXPECT_EQ(0x6D, console.ppu.ppu_bus_read(0x3EFF)) << "$3EFF is still a nametable mirror, not palette";
+
+    // ...and $3F00 is a different cell entirely.
+    console.ppu.ppu_bus_write(0x3F00, 0x21);
+    EXPECT_EQ(0x6D, console.ppu.ppu_bus_read(0x3EFF)) << "writing the palette must not disturb $3EFF";
+    EXPECT_EQ(0x21, console.ppu.ppu_bus_read(0x3F00));
+}
+
+// The two nametable banks must be genuinely separate storage. A review found
+// that shrinking nametable_ram to 1KB left every test passing: bank 1 indexed
+// off the end into chr_ram, and the aliasing tests wrote and read through the
+// same out-of-bounds address so never noticed.
+GTEST_TEST(testPPUMemory, the_two_nametable_banks_do_not_overlap_or_run_off_the_end)
+{
+    Bus console;
+
+    // Fill both banks completely, through the base windows.
+    for (uint16_t i = 0; i < 0x0400; ++i) {
+        console.ppu.ppu_bus_write(static_cast<uint16_t>(0x2000 + i), 0xA1);
+        console.ppu.ppu_bus_write(static_cast<uint16_t>(0x2800 + i), 0xB2);
+    }
+
+    // Every byte of each bank kept its own value: they do not overlap.
+    for (uint16_t i = 0; i < 0x0400; ++i) {
+        ASSERT_EQ(0xA1, console.ppu.ppu_bus_read(static_cast<uint16_t>(0x2000 + i))) << "bank 0 offset " << i;
+        ASSERT_EQ(0xB2, console.ppu.ppu_bus_read(static_cast<uint16_t>(0x2800 + i))) << "bank 1 offset " << i;
+    }
+
+    // And nothing spilled into the pattern tables, which is where an
+    // undersized nametable array would have written.
+    for (uint16_t i = 0; i < 0x0400; ++i) {
+        ASSERT_EQ(0x00, console.ppu.chr_ram[i]) << "nametable write ran off the end into CHR-RAM at " << i;
+    }
+}
+
 // --- palette -----------------------------------------------------------------
 
 GTEST_TEST(testPPUMemory, palette_repeats_every_32_bytes_to_3fff)
@@ -183,6 +244,59 @@ GTEST_TEST(testPPUMemory, other_sprite_palette_entries_do_not_alias)
     }
 }
 
+// Palette RAM is six bits wide. Masking on write keeps every stored byte a
+// valid index into the 64-entry colour table, which is what the rendering work
+// will read these as.
+GTEST_TEST(testPPUMemory, palette_ram_is_six_bits_wide)
+{
+    Bus console;
+
+    console.ppu.ppu_bus_write(0x3F00, 0xFF);
+    EXPECT_EQ(0x3F, console.ppu.ppu_bus_read(0x3F00)) << "the top two bits are not stored";
+
+    console.ppu.ppu_bus_write(0x3F05, 0xC1);
+    EXPECT_EQ(0x01, console.ppu.ppu_bus_read(0x3F05));
+}
+
+// A $2007 palette read returns bits 0-5 from palette RAM; bits 6-7 come from
+// whatever the open bus already held, because palette RAM does not drive them.
+GTEST_TEST(testPPUMemory, palette_reads_take_their_top_two_bits_from_the_open_bus)
+{
+    Bus console;
+    run_past_reset_lockout(console.ppu);
+
+    console.ppu.ppu_bus_write(0x3F01, 0x15);
+
+    // The open bus at read time is whatever last crossed it, and setting the
+    // address is itself the last thing to do so - the low byte of the $2006
+    // pair. $3FC1 therefore leaves $C1 on the bus AND selects palette cell $01
+    // ($C1 & $1F), so bits 6-7 are set without needing a separate write that
+    // the address setup would only overwrite.
+    set_ppu_addr(console.ppu, 0x3FC1);
+
+    EXPECT_EQ(0xD5, console.ppu.read(PPU::PPUDATA))
+        << "expected $15 from palette RAM in bits 0-5 and $C0 from the open bus in bits 6-7";
+}
+
+// Greyscale (PPUMASK bit 0) applies to $2007 palette reads, not only to
+// rendering: it forces the low four bits, collapsing every colour onto the
+// grey column.
+GTEST_TEST(testPPUMemory, greyscale_masks_palette_reads)
+{
+    Bus console;
+    run_past_reset_lockout(console.ppu);
+
+    console.ppu.ppu_bus_write(0x3F01, 0x3F);
+
+    console.ppu.write(PPU::PPUMASK, 0x00);  // greyscale off
+    set_ppu_addr(console.ppu, 0x3F01);
+    EXPECT_EQ(0x3F, console.ppu.read(PPU::PPUDATA) & 0x3F) << "without greyscale the full colour comes back";
+
+    console.ppu.write(PPU::PPUMASK, 0x01);  // greyscale on
+    set_ppu_addr(console.ppu, 0x3F01);
+    EXPECT_EQ(0x30, console.ppu.read(PPU::PPUDATA) & 0x3F) << "greyscale clears the low four bits";
+}
+
 // --- pattern tables ----------------------------------------------------------
 
 GTEST_TEST(testPPUMemory, chr_rom_is_readable_and_not_writable)
@@ -226,24 +340,6 @@ GTEST_TEST(testPPUMemory, chr_ram_is_writable_when_the_cartridge_brings_no_chr_r
 }
 
 // --- the $2007 read buffer ---------------------------------------------------
-
-// $2006 writes are among those ignored during the post-reset lockout, so a test
-// that drives PPUADDR has to clock past it first. Skipping this leaves PPUADDR
-// at 0 and every read comes back from $0000 - which looks exactly like a broken
-// read buffer.
-void run_past_reset_lockout(PPU& ppu)
-{
-    while (ppu.in_reset_write_lockout()) {
-        ppu.clock();
-    }
-}
-
-void set_ppu_addr(PPU& ppu, uint16_t addr)
-{
-    ppu.read(PPU::PPUSTATUS);  // reset the address latch
-    ppu.write(PPU::PPUADDR, static_cast<uint8_t>(addr >> 8));
-    ppu.write(PPU::PPUADDR, static_cast<uint8_t>(addr & 0xFF));
-}
 
 GTEST_TEST(testPPUMemory, reads_below_3f00_are_delayed_by_one)
 {

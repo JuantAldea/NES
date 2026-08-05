@@ -65,6 +65,14 @@ bool ROM::load(const std::string& path)
     // two (filling it). Anything else is not NROM, however byte 4 reads: the
     // CPU can only address 32KB of cartridge space, so a larger image would
     // load with most of it permanently unreachable and no error.
+    // NROM carries at most one 8KB CHR bank. A header claiming more would load
+    // happily with the excess permanently unreachable, which is the same
+    // failure the PRG check below exists to prevent.
+    if (chr_rom_banks > 1) {
+        std::cerr << "ROM: NROM supports at most 1 CHR-ROM bank, header advertises " << chr_rom_banks << "\n";
+        return false;
+    }
+
     if (prg_rom_banks == 0 || prg_rom_banks > 2) {
         std::cerr << "ROM: NROM requires 1 or 2 PRG-ROM banks, header advertises " << prg_rom_banks << "\n";
         return false;

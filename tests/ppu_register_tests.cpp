@@ -44,15 +44,36 @@ GTEST_TEST(testPPURegisters, ppuaddr_holds_the_full_14_bit_range)
 
     // The nametables and the palette live well past the first 256 bytes of
     // VRAM, so an 8-bit address register cannot reach them.
-    const uint16_t addresses[] = {0x2000, 0x23FF, 0x2400, 0x2800, 0x2C00, 0x3F00, 0x3F1F, 0x3FFF};
+    // A DISTINCT value per address. Writing the same byte everywhere would let
+    // this pass even if the decode collapsed every address onto one cell.
+    struct Probe {
+        uint16_t addr;
+        uint8_t value;
+    };
+    const Probe probes[] = {{0x2000, 0x11}, {0x23FF, 0x12}, {0x2400, 0x13}, {0x2800, 0x14},
+                            {0x2C00, 0x15}, {0x3F00, 0x16}, {0x3F1F, 0x17}, {0x3FFF, 0x18}};
 
-    for (const uint16_t addr : addresses) {
-        write_addr(console.ppu, addr >> 8, addr & 0xFF);
-        EXPECT_EQ(addr, console.ppu.registers.PPUADDR) << "address " << std::hex << addr;
+    for (const Probe& probe : probes) {
+        write_addr(console.ppu, probe.addr >> 8, probe.addr & 0xFF);
+        EXPECT_EQ(probe.addr, console.ppu.registers.PPUADDR) << "address " << std::hex << probe.addr;
 
-        console.ppu.write(PPU::PPUDATA, 0xA5);
-        EXPECT_EQ(0xA5, console.ppu.ppu_bus_read(addr)) << "address " << std::hex << addr;
+        console.ppu.write(PPU::PPUDATA, probe.value);
+        EXPECT_EQ(probe.value, console.ppu.ppu_bus_read(probe.addr)) << "address " << std::hex << probe.addr;
     }
+
+    // ...and the writes did not all land in one cell, which is what a collapsed
+    // decode would produce.
+    //
+    // Mind the mirroring: with no cartridge loaded the default is horizontal,
+    // so $2400 aliases $2000 and $2C00 aliases $2800 - the later write of each
+    // pair overwrote the earlier one, and expecting otherwise here would be
+    // asserting against the very mirroring this decode implements.
+    EXPECT_EQ(0x13, console.ppu.ppu_bus_read(0x2000)) << "$2400's write should have landed here too";
+    EXPECT_EQ(0x15, console.ppu.ppu_bus_read(0x2800)) << "$2C00's write should have landed here too";
+    EXPECT_EQ(0x12, console.ppu.ppu_bus_read(0x23FF)) << "nothing else wrote here";
+
+    // The two screens are genuinely distinct storage.
+    EXPECT_NE(console.ppu.ppu_bus_read(0x2000), console.ppu.ppu_bus_read(0x2800));
 }
 
 GTEST_TEST(testPPURegisters, ppuaddr_first_write_drops_the_top_two_bits)
@@ -73,10 +94,13 @@ GTEST_TEST(testPPURegisters, ppuaddr_writes_stay_within_vram)
 
     // Incrementing off the end of the 14-bit space wraps rather than running
     // past the end of the VRAM array.
+    // $3FFF is palette space, and palette RAM is six bits wide, so the value
+    // is chosen to survive that truncation - this test is about the address
+    // register wrapping, not about palette width.
     write_addr(console.ppu, 0x3F, 0xFF);
-    console.ppu.write(PPU::PPUDATA, 0x77);
+    console.ppu.write(PPU::PPUDATA, 0x37);
 
-    EXPECT_EQ(0x77, console.ppu.ppu_bus_read(0x3FFF));
+    EXPECT_EQ(0x37, console.ppu.ppu_bus_read(0x3FFF));
     EXPECT_EQ(0x0000, console.ppu.registers.PPUADDR);
 }
 
