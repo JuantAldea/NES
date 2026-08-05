@@ -15,6 +15,9 @@ jobs:
       # install action the previous version of this workflow depended on.
       - name: Install build tools
         run: |
+          # Kept from the previous workflow: without this, every apt-get install
+          # on a GitHub runner spends a long time rebuilding the man-db index.
+          sudo rm -f /var/lib/man-db/auto-update
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends ninja-build cmake g++
 
@@ -68,6 +71,7 @@ jobs:
       # rot, and the debugger only needs Widgets/Core/Gui.
       - name: Install build tools and Qt
         run: |
+          sudo rm -f /var/lib/man-db/auto-update
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends ninja-build cmake g++ qtbase5-dev
 
