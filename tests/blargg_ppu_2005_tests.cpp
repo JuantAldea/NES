@@ -23,6 +23,7 @@
 #include "gtest/gtest.h"
 
 #include "../include/bus.h"
+#include "nametable_screen.h"
 
 namespace tests
 {
@@ -31,40 +32,22 @@ namespace blargg_2005
 
 // Enough for these ROMs, which settle within ~120 frames; measured below.
 constexpr uint64_t kMaxFrames = 400;
-constexpr uint64_t kBusCyclesPerFrame = 341ull * 262ull * 4ull;
 
 std::string rom_path(const std::string& name)
 {
     return std::string(NES_TEST_FILES_DIR) + "/blargg_ppu_2005/" + name + ".nes";
 }
 
-// Reads the first nametable row that has anything on it, as text.
+// These ROMs print ONLY their result code, with no heading, so the first row
+// with anything on it is the whole report. The sprite-hit ROMs of the following
+// year print a title first and need the whole screen read instead - which is
+// why the shared header supplies the reading but not this rule.
+using nametable_screen::first_non_blank_row;
+using nametable_screen::run_one_frame;
+
 std::string read_screen_line(Bus& console)
 {
-    for (uint16_t row = 0; row < 30; ++row) {
-        std::string line;
-        bool any = false;
-
-        for (uint16_t col = 0; col < 32; ++col) {
-            const uint8_t tile = console.ppu.ppu_bus_read(static_cast<uint16_t>(0x2000 + row * 32 + col));
-            line.push_back((tile >= 0x20 && tile < 0x7F) ? static_cast<char>(tile) : '.');
-
-            // A row counts as drawn only once it holds a PRINTABLE, non-space
-            // character. Treating "not a space" as content instead reports
-            // success on frame 0, because nametable RAM powers up as zeros and
-            // 0x00 is not 0x20.
-            if (tile > 0x20 && tile < 0x7F) {
-                any = true;
-            }
-        }
-
-        if (any) {
-            // Trim the trailing run of spaces.
-            const size_t end = line.find_last_not_of(' ');
-            return end == std::string::npos ? std::string() : line.substr(0, end + 1);
-        }
-    }
-    return {};
+    return first_non_blank_row(console);
 }
 
 // Runs until the ROM has drawn something, then returns it.
@@ -86,9 +69,7 @@ std::string run_and_read_result(const std::string& name)
     uint64_t stable_frames = 0;
 
     for (uint64_t frame = 0; frame < kMaxFrames; ++frame) {
-        for (uint64_t i = 0; i < kBusCyclesPerFrame; ++i) {
-            console.clock();
-        }
+        run_one_frame(console);
 
         const std::string line = read_screen_line(console);
         if (line.empty()) {
