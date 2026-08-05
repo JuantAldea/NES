@@ -349,5 +349,25 @@ public:
         0xE4E594, 0xCFEF96, 0xBDF4AB, 0xB3F3CC, 0xB5EBF2, 0xB8B8B8, 0x000000, 0x000000,
     };
 
+    // --- sprite 0 hit -------------------------------------------------------
+    //
+    // ONLY the hit flag. There is deliberately no sprite rendering here: no
+    // secondary OAM, no eight-per-line limit, no overflow flag, no priority,
+    // and no sprite pixels in the framebuffer. Sprite 0's OAM bytes are read
+    // straight out of OAM_memory[0..3].
+    //
+    // The flag is "set when any opaque pixel of sprite 0 overlaps any opaque
+    // pixel of background, regardless of sprite priority" (NESdev, PPUSTATUS
+    // bit 6), which needs nothing from sprite rendering except sprite 0's
+    // opacity - so that is all that is computed.
+    void evaluate_sprite0_for_scanline();
+    void check_sprite0_hit(const int x);
+
+    bool sprite0_on_this_scanline = false;
+    uint8_t sprite0_left_x = 0;
+    // The eight columns of sprite 0's row, bit 7 leftmost, matching a pattern
+    // byte's bit order - so horizontal flip is a bit reversal and nothing else.
+    uint8_t sprite0_opaque_columns = 0;
+
     void update_flags();
 };

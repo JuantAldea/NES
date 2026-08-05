@@ -431,6 +431,113 @@ void PPU::render_pixel()
     // collapses every hue onto the grey column of the NES palette.
     const uint8_t colour = static_cast<uint8_t>(ppu_bus_read(palette_addr) & (greyscale ? 0x30 : 0x3F));
     framebuffer[scanline * screen_width + x] = colour;
+
+    // Sprite 0 hit needs the background's OPACITY at this dot, and this is the
+    // only place it is known. `pixel` is already through the background's
+    // left-clip, so a hit under a hidden left column cannot get this far.
+    if (pixel != 0) {
+        check_sprite0_hit(x);
+    }
+}
+
+// Reverses the eight bits of a pattern byte, which is what horizontal flip does
+// to a sprite's row.
+static uint8_t reverse_bits(uint8_t byte)
+{
+    byte = static_cast<uint8_t>(((byte & 0xF0) >> 4) | ((byte & 0x0F) << 4));
+    byte = static_cast<uint8_t>(((byte & 0xCC) >> 2) | ((byte & 0x33) << 2));
+    byte = static_cast<uint8_t>(((byte & 0xAA) >> 1) | ((byte & 0x55) << 1));
+    return byte;
+}
+
+// Works out which of sprite 0's eight columns are opaque on the scanline about
+// to be drawn, and where they start.
+//
+// OAM byte 0 is the Y one LESS than the first line the sprite appears on -
+// sprites are delayed a scanline by the way hardware evaluates them - so a
+// sprite with Y = 0 first appears on scanline 1, and one with Y = 239 never
+// appears at all.
+void PPU::evaluate_sprite0_for_scanline()
+{
+    sprite0_on_this_scanline = false;
+
+    const int height = big_sprites ? 16 : 8;
+    const int row = scanline - (OAM_memory[0] + 1);
+    if (row < 0 || row >= height) {
+        return;
+    }
+
+    const uint8_t tile = OAM_memory[1];
+    const uint8_t attributes = OAM_memory[2];
+    const bool flip_horizontally = attributes & 0x40;
+    const bool flip_vertically = attributes & 0x80;
+
+    // Vertical flip mirrors within the WHOLE sprite, so for an 8x16 it swaps
+    // the two tiles as well as the rows inside them - which the arithmetic
+    // below gets for free by flipping the row index before splitting it.
+    const int pattern_row = flip_vertically ? (height - 1 - row) : row;
+
+    uint16_t address;
+    if (big_sprites) {
+        // An 8x16 sprite ignores PPUCTRL's sprite pattern table select: bit 0
+        // of the tile number chooses the table, and the rest is the index of
+        // the TOP tile, whose bottom half is the tile after it.
+        const uint16_t table = (tile & 0x01) ? 0x1000 : 0x0000;
+        const uint16_t top_tile = static_cast<uint16_t>(tile & 0xFE);
+        address = static_cast<uint16_t>(table + ((top_tile + (pattern_row >= 8 ? 1 : 0)) << 4) + (pattern_row & 0x07));
+    } else {
+        address = static_cast<uint16_t>(sprite_pattern_8x8_table_addr + (tile << 4) + pattern_row);
+    }
+
+    // A sprite pixel is opaque when its two bitplane bits are not both zero,
+    // which is the OR of the two bytes taken bit by bit. Nothing here needs the
+    // colour, only the opacity.
+    uint8_t opaque = static_cast<uint8_t>(ppu_bus_read(address) | ppu_bus_read(static_cast<uint16_t>(address + 8)));
+    if (flip_horizontally) {
+        opaque = reverse_bits(opaque);
+    }
+
+    sprite0_opaque_columns = opaque;
+    sprite0_left_x = OAM_memory[3];
+    sprite0_on_this_scanline = opaque != 0;
+}
+
+// Called with the screen X of a dot whose BACKGROUND pixel is opaque.
+//
+// NESdev, PPUSTATUS bit 6: "Sprite 0 hit cannot detect collision at X=255, nor
+// anywhere where either sprites or backgrounds are disabled via PPUMASK. This
+// includes X=0..7 when the leftmost 8 pixels are hidden." The background half
+// of that is already accounted for - render_pixel only calls this when the
+// background pixel survived its own left-clip - so what is left is the sprite
+// half and X=255.
+void PPU::check_sprite0_hit(const int x)
+{
+    if (!sprite0_on_this_scanline || !show_sprites) {
+        return;
+    }
+
+    // X=255 is excluded by the hardware itself: the pixel pipeline has nowhere
+    // to carry the comparison to.
+    if (x == 255) {
+        return;
+    }
+
+    if (x < 8 && !show_sprites_in_leftmost) {
+        return;
+    }
+
+    const int column = x - sprite0_left_x;
+    if (column < 0 || column >= 8) {
+        return;
+    }
+
+    if ((sprite0_opaque_columns >> (7 - column)) & 0x01) {
+        // "Immediately set when any opaque pixel of sprite 0 overlaps any
+        // opaque pixel of background, REGARDLESS OF SPRITE PRIORITY" - so the
+        // attribute's priority bit is not consulted, and neither is whatever
+        // else may be drawn over the top.
+        set_sprite0_hit();
+    }
 }
 
 // The background pipeline, for the 240 visible scanlines and for the pre-render
@@ -440,6 +547,15 @@ void PPU::process_visible_scanline()
     const bool pre_render = (scanline == pre_render_scanline);
 
     if (rendering_enabled()) {
+        // Dot 0 is idle for the pipeline, which makes it the place to resolve
+        // sprite 0's row for the line about to be drawn. Hardware evaluates
+        // sprites during the PREVIOUS line's dots 65-256; the difference only
+        // shows if sprite 0's four OAM bytes are rewritten between the two,
+        // and none of the sprite-hit ROMs do that.
+        if (cycle == 0 && !pre_render) {
+            evaluate_sprite0_for_scanline();
+        }
+
         // Dots 1-256 fetch the tiles for THIS line (two tiles ahead of the
         // pixel being drawn), and 321-336 the first two tiles of the NEXT one.
         // Both regions shift; the gap between them, where hardware is fetching

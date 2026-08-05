@@ -8,14 +8,16 @@
 // dot-exact timing of the flag. They test more of the background than of
 // sprites.
 //
-// STATUS: rendering is not implemented yet, so the ROMs cannot pass. What is
-// asserted here today is that their verdict is READABLE - that the instrument
-// works before anything is built against it. The "must report PASSED"
-// assertion arrives with the sprite-0 hit implementation.
-//
-// Measured with rendering entirely absent, which is why the codes below are
-// known rather than assumed: 01-04 report #2, 06-10 report #3, 05 reports #4.
-// The one exception is recorded in the vacuous-pass test at the bottom.
+// All eleven report PASSED, and every one of them is load-bearing: with the
+// background pipeline and the hit flag in place there is no longer any ROM here
+// whose pass comes for free. 11.edge_timing used to be exactly that - all three
+// of its checks are negative ("hit time shouldn't be based on pixels under left
+// clip / at X=255 / off right edge") and a hit that never happens is never too
+// early, so it passed while the PPU could not draw a pixel. It was pinned as a
+// trap until it could be shown to FAIL, which it now can: deleting the X=255
+// exclusion from PPU::check_sprite0_hit makes it report FAILED #3 (and
+// 06.right_edge FAILED #2). Its pass counts for something now, and the
+// vacuous-pass test that guarded it has been removed.
 #include <cstdint>
 #include <string>
 
@@ -32,11 +34,23 @@ namespace sprite_hit
 using nametable_screen::read_text;
 using nametable_screen::run_one_frame;
 
-// Generous. With rendering absent every ROM settles by frame 62; once sprite 0
-// hit works the later subtests actually run, so the real budget is larger and
-// unknown until then. This cap is a timeout, not a measurement - the loop below
-// stops as soon as a verdict appears, so a correct ROM never pays for it.
-constexpr uint64_t kMaxFrames = 2000;
+// MEASURED, with the pipeline and sprite-0 hit in place, as the frame each ROM
+// first prints its verdict on:
+//
+//   01.basics 33   02.alignment 30   03.corners 19   04.flip 19
+//   05.left_clip 28   06.right_edge 21   07.screen_bottom 24
+//   08.double_height 19   09.timing_basics 67   10.timing_order 63
+//   11.edge_timing 62
+//
+// The worst case is 09.timing_basics at 67, so the cap is 2 x 67 = 134: enough
+// headroom for a ROM that legitimately takes longer after a change, and low
+// enough that a genuine hang is reported in well under a second per ROM rather
+// than being waited out. The loop stops as soon as a verdict appears, so a
+// passing ROM never pays for the headroom.
+//
+// It was 2000 before, a number chosen when the ROMs could not pass and their
+// real budget was unknown.
+constexpr uint64_t kMaxFrames = 134;
 
 std::string rom_path(const std::string& name)
 {
@@ -110,11 +124,11 @@ class SpriteHitRoms : public ::testing::TestWithParam<std::string>
 {
 };
 
-// Guards the INSTRUMENT, not the emulator. Until rendering exists every ROM
-// fails, and that is expected; what must hold is that the failure is legible.
-// If this test starts reporting an empty screen, the reader has broken and
-// every rendering verdict built on it is worthless.
-TEST_P(SpriteHitRoms, reports_a_readable_verdict)
+// The blank-screen check is kept ahead of the verdict check because the two
+// failures mean completely different things: a blank screen is the CPU or the
+// cartridge mapping, not the PPU, and reporting it as "no PASSED found" would
+// send the reader to the wrong place.
+TEST_P(SpriteHitRoms, reports_passed)
 {
     const std::string name = GetParam();
     const std::string screen = run_to_verdict(name);
@@ -125,8 +139,8 @@ TEST_P(SpriteHitRoms, reports_a_readable_verdict)
            "screen means it never got that far - suspect the CPU or the cartridge "
            "mapping rather than the PPU.";
 
-    EXPECT_TRUE(has_verdict(screen))
-        << name << " drew a screen but no PASSED/FAILED verdict:\n"
+    EXPECT_NE(std::string::npos, screen.find("PASSED"))
+        << name << " did not report PASSED within " << kMaxFrames << " frames:\n"
         << visible(screen);
 }
 
@@ -145,27 +159,6 @@ INSTANTIATE_TEST_SUITE_P(SpriteHit, SpriteHitRoms,
                              }
                              return name;
                          });
-
-// 11.edge_timing reports PASSED with the PPU unable to draw a single pixel.
-// All three of its checks are negative - "hit time shouldn't be based on pixels
-// under left clip / at X=255 / off right edge" - and a hit that never happens is
-// never too early.
-//
-// This is pinned because it is a trap: once the pipeline is written it would be
-// tempting to read "11/11 PASSED" as eleven ROMs' worth of evidence, when one of
-// them has been passing since before there was anything to test. When sprite 0
-// hit works, this ROM must be shown capable of FAILING under mutation before its
-// pass counts for anything.
-GTEST_TEST(spriteHitOracle, edge_timing_passes_vacuously_while_rendering_is_absent)
-{
-    const std::string screen = run_to_verdict("11.edge_timing");
-
-    EXPECT_NE(std::string::npos, screen.find("PASSED"))
-        << "11.edge_timing no longer passes vacuously. If sprite 0 hit is now implemented "
-           "this test has served its purpose and should be replaced by the real assertion; "
-           "if it is not, something else has changed and the oracle needs re-checking.\n"
-        << visible(screen);
-}
 
 }  // namespace sprite_hit
 }  // namespace tests
