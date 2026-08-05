@@ -39,12 +39,19 @@ namespace blargg
 namespace ppu_address_space
 {
 
-// These are short tests; none of them measures anything frame-relative the way
-// 5-branch_delays_irq does. The cap is a hang detector, and is deliberately far
-// above what any of them needs - a cap set close to the requirement turns a
-// passing ROM into a reported hang, which has now happened twice on this
-// codebase (60 frames for ppu_vbl_nmi, 300 for cpu_interrupts_v2).
-constexpr uint64_t kMaxFrames = 400;
+// The cap is a hang detector, nothing else. Measured frame at which each ROM
+// writes its final status:
+//
+//   oam_read         2
+//   ppu_open_bus    22
+//   oam_stress    1703   <- writes and reads all 256 OAM bytes many times over
+//
+// I have now set this cap too low three times on this codebase - 60 frames for
+// ppu_vbl_nmi, 300 for cpu_interrupts_v2, and 400 here - and each time a
+// PASSING ROM was reported as a hang, which reads as a broken emulator. So:
+// measure the slowest ROM, then leave real headroom. A wrong number here does
+// not merely lose coverage, it actively misdirects.
+constexpr uint64_t kMaxFrames = 2500;
 
 std::string rom_path(const std::string& name)
 {

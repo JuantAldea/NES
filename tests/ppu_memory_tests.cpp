@@ -381,5 +381,76 @@ GTEST_TEST(testPPUMemory, palette_reads_are_immediate_and_refill_the_latch_from_
         << "a palette read refills the latch from the nametable beneath it";
 }
 
+// --- OAM ---------------------------------------------------------------------
+
+// Byte 2 of each sprite holds its attributes, and bits 2-4 of that byte have no
+// storage in the PPU. They are dropped on WRITE rather than masked on read, so
+// sprite rendering cannot see them either - "unimplemented" rather than
+// "hidden".
+//
+// This is what blargg's oam_stress measures: before the fix its failure map
+// marked every index where n % 4 == 2 and nothing else.
+GTEST_TEST(testPPUMemory, sprite_attribute_bits_2_to_4_do_not_exist)
+{
+    Bus console;
+
+    // Fill all 256 OAM bytes with $FF through $2004, which auto-increments.
+    console.ppu.write(PPU::OAMADDR, 0x00);
+    for (int i = 0; i < 256; ++i) {
+        console.ppu.write(PPU::OAMDATA, 0xFF);
+    }
+
+    for (int i = 0; i < 256; ++i) {
+        const uint8_t expected = (i % 4 == 2) ? 0xE3 : 0xFF;
+        ASSERT_EQ(expected, console.ppu.OAM_memory[i])
+            << "OAM byte " << i << (i % 4 == 2 ? " is an attribute byte: bits 2-4 must read back clear" : "");
+    }
+}
+
+// $2004 auto-increments on write but NOT on read - unlike $2007, which
+// increments on both.
+GTEST_TEST(testPPUMemory, oamdata_increments_on_write_but_not_on_read)
+{
+    Bus console;
+
+    console.ppu.write(PPU::OAMADDR, 0x10);
+    console.ppu.write(PPU::OAMDATA, 0x41);
+    EXPECT_EQ(0x11, console.ppu.registers.OAMADDR) << "a write advances the address";
+
+    console.ppu.write(PPU::OAMDATA, 0x42);
+    EXPECT_EQ(0x12, console.ppu.registers.OAMADDR);
+
+    // Rewind and read: the address must stay put.
+    console.ppu.write(PPU::OAMADDR, 0x10);
+    EXPECT_EQ(0x41, console.ppu.read(PPU::OAMDATA));
+    EXPECT_EQ(0x10, console.ppu.registers.OAMADDR) << "a read must NOT advance the address";
+    EXPECT_EQ(0x41, console.ppu.read(PPU::OAMDATA)) << "so reading twice returns the same byte";
+}
+
+// OAM DMA writes through $2004, so it is subject to the same attribute-bit
+// truncation - a DMA is not a back door into the bits that do not exist.
+GTEST_TEST(testPPUMemory, oam_dma_also_drops_the_unimplemented_attribute_bits)
+{
+    Bus console;
+
+    uint8_t page[256];
+    for (int i = 0; i < 256; ++i) {
+        page[i] = 0xFF;
+    }
+    console.write_ram(0x0200, sizeof(page), page);
+
+    console.write(PPU::OAMADDR, 0x00);
+    console.write(PPU::OAMDMA, 0x02);  // DMA from $0200
+
+    while (console.ppu.dma_in_progress()) {
+        console.clock();
+    }
+
+    for (int i = 0; i < 256; ++i) {
+        const uint8_t expected = (i % 4 == 2) ? 0xE3 : 0xFF;
+        ASSERT_EQ(expected, console.ppu.OAM_memory[i]) << "OAM byte " << i << " after DMA";
+    }
+}
+
 }  // namespace ppu_memory
 }  // namespace tests

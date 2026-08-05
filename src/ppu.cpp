@@ -341,9 +341,16 @@ void PPU::write(const uint16_t addr, const uint8_t data)
         registers.OAMADDR = data;
         break;
     case OAMDATA:
-        // std::cout << "WRITE TO OAMDATA " << std::hex << "(" << (unsigned)registers.OAMADDR << ") <= " << std::hex << (unsigned)data << " PTR " << (unsigned)registers.OAMADDR << std::endl;
-        OAM_memory[registers.OAMADDR++] = data;
-
+        // Byte 2 of each sprite is its attributes, and bits 2-4 of that byte
+        // have no storage in the PPU at all - they are not merely masked on
+        // read. Dropping them here rather than on the read path means sprite
+        // rendering cannot see them either, which is what "do not exist"
+        // means.
+        //
+        // This is what blargg's oam_stress measures: its failure map marks
+        // every index where n % 4 == 2 and nothing else.
+        OAM_memory[registers.OAMADDR] = (registers.OAMADDR % 4 == 2) ? (data & 0xE3) : data;
+        ++registers.OAMADDR;
         break;
     case PPUSCROLL:
         if (in_reset_write_lockout()) {
@@ -447,8 +454,8 @@ uint8_t PPU::read(const uint16_t addr)
         return data;
     };
     case OAMDATA:
-        //reads during vertical or forced blanking return the value from OAM at that address but do not increment. ?¿?¿?¿?
-        //return OAM_memory[registers.OAMADDR--];
+        // Unlike $2007, a read of $2004 does NOT advance the address. Software
+        // reading OAM back has to drive $2003 for each byte.
         open_bus = OAM_memory[registers.OAMADDR];
         return open_bus;
 

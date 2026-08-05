@@ -97,9 +97,18 @@ bool dma_test(uint8_t target_oam_addr)
     EXPECT_EQ(0, console.cpu.cycles_left);
 
     // test contents
+    //
+    // Byte 2 of each sprite is its attributes, and bits 2-4 of that byte have
+    // no storage in the PPU. DMA writes through $2004 like anything else, so it
+    // is subject to the same truncation - a transfer is not a back door into
+    // bits that do not exist. Which OAM index is an attribute byte depends on
+    // where the transfer started, hence the (i + target_oam_addr).
     for (uint16_t i = 0; i < 256; i++) {
         EXPECT_EQ(i, bytes[i]);
-        EXPECT_EQ(bytes[i], console.ppu.OAM_memory[(i + target_oam_addr) % 256]);
+
+        const uint16_t oam_index = (i + target_oam_addr) % 256;
+        const uint8_t expected = (oam_index % 4 == 2) ? (bytes[i] & 0xE3) : bytes[i];
+        EXPECT_EQ(expected, console.ppu.OAM_memory[oam_index]);
     }
 
     return true;
