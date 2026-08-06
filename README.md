@@ -6,22 +6,25 @@ for inspecting a running machine.
 
 ## Current status
 
-The CPU and the PPU's frame timing are done and verified against hardware
-behaviour. **Rendering is not** - the emulator runs a ROM correctly and can
-tell you exactly what it did, but does not yet draw anything.
+The CPU and the PPU are done far enough to draw a background. The emulator
+renders into a framebuffer of palette indices and sets the sprite 0 hit flag,
+but **nothing displays it yet** and there is no sprite rendering - so it can
+tell you exactly what a ROM did, and now also what it drew, without showing
+it to you.
 
 | Area | State |
 |---|---|
 | 6502 CPU | Cycle-accurate, all 256 opcodes, verified per-cycle |
 | PPU frame timing | Dot-accurate: vblank, NMI, suppression, odd-frame skip |
 | PPU address space | Pattern tables, nametable and palette mirroring, `$2007` buffer, OAM, open-bus decay |
-| Cartridge | iNES, NROM (mapper 0), CHR-ROM and CHR-RAM |
+| PPU background | Loopy `v`/`t`/`x`/`w`, dot-exact tile pipeline, framebuffer of palette indices |
+| Sprites | Sprite 0 hit only. No priority, no 8-per-line, no overflow, no sprite pixels |
+| Cartridge | iNES, NROM (mapper 0) and CNROM (mapper 3), CHR-ROM and CHR-RAM |
 | APU | Frame counter and `/IRQ`. No audio. |
-| PPU rendering | Not implemented |
+| Display | Nothing renders the framebuffer |
 | Controllers | Not implemented |
 
-Next: the background rendering pipeline - the loopy `v`/`t`/`x`/`w` scroll
-registers, the tile fetch pipeline, and a framebuffer.
+Next: a display for the framebuffer, and the rest of sprite rendering.
 
 ## Features
 
@@ -57,11 +60,26 @@ registers, the tile fetch pipeline, and a framebuffer.
         with the `$3F10/$14/$18/$1C` aliases, the `$2007` read buffer, and an
         open bus whose bits decay independently. Passes `oam_read`,
         `oam_stress` and `ppu_open_bus`.
-    *   **Rendering is not implemented.** No background, no sprites, no
-        framebuffer.
+    *   The background renders: the loopy `v`/`t`/`x`/`w` scroll registers, the
+        8-cycle nametable/attribute/pattern fetch, shift registers with fine-X
+        selection, and a 256x240 framebuffer of 6-bit palette indices. The dot
+        each increment and `t`->`v` copy happens on is pinned by tests, not
+        just the bits they move.
+    *   Sprite 0 hit is implemented and **only** sprite 0 hit - evaluated in
+        its real window, starting from `OAMADDR`, with `OAMADDR` held at 0
+        across the sprite-fetch dots as hardware does. Passes all eleven of
+        blargg's `sprite_hit` ROMs, which measure the BACKGROUND pipeline as
+        much as the sprite: pixel-exact alignment, the left-8 clip, and
+        dot-exact flag timing.
+    *   Passes blargg's `ppu_read_buffer` pack apart from one case: OAM DMA
+        sourced from the PPU register file (`$4014 <- #$20`).
+    *   **No sprite rendering, no display.** No priority, no 8-per-line
+        evaluation, no overflow flag, no colour emphasis, and nothing draws the
+        framebuffer to a screen.
 *   **Cartridge:**
-    *   iNES parsing with NROM (mapper 0), 16KB and 32KB images, trainer
-        support, and `$6000-$7FFF` PRG-RAM.
+    *   iNES parsing with NROM (mapper 0) and CNROM (mapper 3), 16KB and 32KB
+        images, trainer support, and `$6000-$7FFF` PRG-RAM. CNROM's switchable
+        CHR window is what makes `ppu_read_buffer` reachable.
 *   **Bus:**
     *   A single address decode shared by reads and writes, so the two cannot
         disagree. Controller 1 at `$4016` is open bus for now.
@@ -140,6 +158,7 @@ tests/test_files/fetch_cpu_interrupts.sh      #  ~200 KB  cpu_interrupts_v2 ROMs
 tests/test_files/fetch_ppu_address_space.sh   #  ~100 KB  OAM and open-bus ROMs
 tests/test_files/fetch_blargg_ppu_2005.sh     #   ~64 KB  palette/VRAM/OAM ROMs
 tests/test_files/fetch_sprite_hit.sh          #  ~224 KB  sprite 0 hit ROMs
+tests/test_files/fetch_ppu_read_buffer.sh     #   ~40 KB  $2007 read buffer pack
 tests/test_files/fetch_single_step_tests.sh   #   1.1 GB  SingleStepTests vectors
 ```
 
@@ -151,7 +170,7 @@ so re-running is cheap.
 count actively hides this. The two per-opcode suites call `GTEST_SKIP` when the
 1.1 GB of vectors is absent, and a skipped test exits 0, so `ctest` counts it as
 a pass. With no vectors fetched the suite still reports "100% tests passed out
-of 685" while having executed 173 of them.
+of 749" while having executed 237 of them.
 
 The ROM suites behave the other way round: a missing ROM is a loud failure
 naming the fetch script to run, not a skip. So the failure modes are:
@@ -174,7 +193,7 @@ ninja -C build check     # or: make -C build check
 that writes a fixture writes a uniquely named one - and the suite is dominated
 by 512 per-opcode cases that parallelise perfectly.
 
-On 32 cores the full 685-test suite takes about **3 seconds**. Two things got
+On 32 cores the full 749-test suite takes about **3 seconds**. Two things got
 it there, and the second mattered more than the first:
 
 * Parallelism took it from 129s to 16s. Past that point the total was simply
@@ -195,7 +214,7 @@ ctest --test-dir build --output-on-failure
 ctest --test-dir build -j8 --output-on-failure   # or pick your own level
 ```
 
-The 685 tests are dominated by the two per-opcode suites - 256 opcodes checked
+The 749 tests are dominated by the two per-opcode suites - 256 opcodes checked
 for their bus trace and 256 for their final state, 10,000 cases apiece.
 
 ## License

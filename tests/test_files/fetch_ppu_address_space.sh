@@ -7,9 +7,15 @@
 # $6000 protocol and display their results on screen: their images contain no
 # $DE $B0 $61 signature and no "Passed"/"Failed" strings, so a $6000 harness
 # reads them as "timed out without initialising" no matter how correct the
-# emulator is. They become usable once there is a framebuffer to inspect.
-# ppu_read_buffer is also excluded: it is mapper 3 (CNROM), which is not
-# supported, and it does not use the protocol either.
+# emulator is. They are now read off the nametable instead - see
+# fetch_blargg_ppu_2005.sh.
+#
+# ppu_read_buffer used to be excluded here for two reasons, one of which was
+# simply wrong. It IS mapper 3 (CNROM) - correct, and that is why it sat
+# unused - but "it does not use the protocol either" was not: it reports
+# through $6000 with the standard signature, which a probe confirmed as soon
+# as CNROM made it loadable. It has its own script now,
+# fetch_ppu_read_buffer.sh.
 #
 # All three below are mapper 0.
 #
