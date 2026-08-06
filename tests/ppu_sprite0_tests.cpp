@@ -424,5 +424,58 @@ GTEST_TEST(testSprite0Hit, oam_y_is_one_less_than_the_first_scanline)
     EXPECT_FALSE(ppu.sprite0_on_this_scanline);
 }
 
+
+// --- OAMADDR decides which sprite is "sprite 0" ---------------------------
+//
+// Sprite evaluation begins at OAMADDR, and the sprite that can raise the hit
+// flag is the first one evaluated - so it is the sprite at OAMADDR, not OAM[0].
+// This is why software is told to write 0 to $2003 before starting an OAM DMA.
+//
+// Every blargg sprite_hit ROM leaves OAMADDR at 0, so none of them can catch
+// this; it needs a hand-written case.
+
+GTEST_TEST(testSprite0Hit, a_non_zero_oamaddr_moves_which_sprite_can_hit)
+{
+    Bus console;
+    PPU& ppu = console.ppu;
+
+    // OAM[0] is parked far off-screen so it can never hit, and the sprite that
+    // SHOULD hit is put in the record at OAM[4..7].
+    set_up_an_overlapping_frame(ppu, 64, 64);
+    place_sprite0(ppu, 0xFF, 1, 0x00, 0xFF);  // OAM[0]: off-screen, cannot hit
+    ppu.OAM_memory[4] = 64;                   // OAM[4]: overlapping the background
+    ppu.OAM_memory[5] = 1;                    // solid tile
+    ppu.OAM_memory[6] = 0x00;
+    ppu.OAM_memory[7] = 64;
+
+    // With OAMADDR at 0, evaluation starts at the off-screen record: no hit.
+    ppu.write(PPU::OAMADDR, 0x00);
+    EXPECT_FALSE(hit_during_one_frame(ppu)) << "with OAMADDR at 0 the first record is OAM[0], which is off-screen";
+
+    // Point OAMADDR at the second record and the same frame now hits.
+    ppu.write(PPU::OAMADDR, 0x04);
+    EXPECT_TRUE(hit_during_one_frame(ppu))
+        << "evaluation starts at OAMADDR, so the sprite at OAM[4..7] is the one that can hit";
+}
+
+GTEST_TEST(testSprite0Hit, oamaddr_is_aligned_down_to_a_sprite_record)
+{
+    Bus console;
+    PPU& ppu = console.ppu;
+
+    set_up_an_overlapping_frame(ppu, 64, 64);
+    place_sprite0(ppu, 0xFF, 1, 0x00, 0xFF);  // OAM[0]: cannot hit
+    ppu.OAM_memory[4] = 64;
+    ppu.OAM_memory[5] = 1;
+    ppu.OAM_memory[6] = 0x00;
+    ppu.OAM_memory[7] = 64;
+
+    // $06 sits inside the second record; OAM is read as four-byte records, so
+    // it starts at $04 rather than reading three bytes of one sprite and one of
+    // the next.
+    ppu.write(PPU::OAMADDR, 0x06);
+    EXPECT_TRUE(hit_during_one_frame(ppu)) << "OAMADDR is aligned down to the record containing it";
+}
+
 }  // namespace sprite0
 }  // namespace tests

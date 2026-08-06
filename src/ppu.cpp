@@ -461,14 +461,29 @@ void PPU::evaluate_sprite0_for_scanline()
 {
     sprite0_on_this_scanline = false;
 
+    // "Sprite 0" is not OAM[0]. Hardware sprite evaluation begins at whatever
+    // OAMADDR holds when it starts, and the sprite that can raise the hit flag
+    // is the FIRST one evaluated - so it is the sprite at OAMADDR, and a
+    // non-zero OAMADDR shifts which sprite that is. Games are expected to set
+    // OAMADDR to 0 before an OAM DMA precisely because of this.
+    //
+    // Aligned down to a four-byte boundary: OAM is read as sprite records, so
+    // an OAMADDR pointing mid-record starts the record there. This models the
+    // common case rather than the misaligned one.
+    //
+    // NOT modelled: hardware also forces OAMADDR to 0 across dots 257-320 of
+    // every rendering scanline, which is what makes it 0 by default. Without
+    // that, the base here is simply whatever the CPU last wrote.
+    const uint8_t base = static_cast<uint8_t>(registers.OAMADDR & 0xFC);
+
     const int height = big_sprites ? 16 : 8;
-    const int row = scanline - (OAM_memory[0] + 1);
+    const int row = scanline - (OAM_memory[base] + 1);
     if (row < 0 || row >= height) {
         return;
     }
 
-    const uint8_t tile = OAM_memory[1];
-    const uint8_t attributes = OAM_memory[2];
+    const uint8_t tile = OAM_memory[base + 1];
+    const uint8_t attributes = OAM_memory[base + 2];
     const bool flip_horizontally = attributes & 0x40;
     const bool flip_vertically = attributes & 0x80;
 
@@ -498,7 +513,7 @@ void PPU::evaluate_sprite0_for_scanline()
     }
 
     sprite0_opaque_columns = opaque;
-    sprite0_left_x = OAM_memory[3];
+    sprite0_left_x = OAM_memory[base + 3];
     sprite0_on_this_scanline = opaque != 0;
 }
 
