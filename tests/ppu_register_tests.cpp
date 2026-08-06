@@ -540,6 +540,71 @@ bool clock_until_dot(PPU& ppu, int target_scanline, int target_cycle)
     }
     return false;
 }
+
+// --- Bus::run_frame -------------------------------------------------------
+
+// A frame is not a fixed number of master cycles, which is the whole reason
+// run_frame exists. 341 dots x 262 scanlines x 4 master cycles per dot is
+// 357,848 - exact for an even frame, and one dot (four master cycles) too many
+// for an odd one with rendering enabled, because the pre-render line drops its
+// last dot.
+//
+// Everything that needed a frame used to clock that constant. It was harmless
+// while nothing rendered and the skip never armed.
+GTEST_TEST(testBusRunFrame, a_frame_is_not_a_fixed_number_of_cycles_once_rendering_is_on)
+{
+    constexpr uint64_t nominal = 341ull * 262ull * 4ull;
+
+    Bus console;
+    run_past_reset_lockout(console.ppu);
+    console.ppu.write(PPU::PPUMASK, 0x08);  // background on: arms the odd-frame skip
+
+    // Land on a frame boundary so the first measurement covers a whole frame.
+    console.run_frame();
+
+    const uint64_t before_even = console.total_cycles;
+    console.run_frame();
+    const uint64_t even_frame = console.total_cycles - before_even;
+
+    const uint64_t before_odd = console.total_cycles;
+    console.run_frame();
+    const uint64_t odd_frame = console.total_cycles - before_odd;
+
+    // One of the two is short by exactly one dot. Which parity is which depends
+    // on where the frame counter started, so the assertion is on the pair.
+    EXPECT_NE(even_frame, odd_frame) << "with rendering enabled, alternate frames differ by the skipped dot";
+    EXPECT_EQ(nominal, std::max(even_frame, odd_frame));
+    EXPECT_EQ(nominal - 4, std::min(even_frame, odd_frame)) << "the short frame is four master cycles - one dot - shorter";
+}
+
+GTEST_TEST(testBusRunFrame, with_rendering_off_every_frame_is_the_nominal_length)
+{
+    constexpr uint64_t nominal = 341ull * 262ull * 4ull;
+
+    Bus console;
+    run_past_reset_lockout(console.ppu);
+    console.ppu.write(PPU::PPUMASK, 0x00);  // rendering off: the skip never arms
+
+    console.run_frame();
+    for (int i = 0; i < 3; ++i) {
+        const uint64_t before = console.total_cycles;
+        console.run_frame();
+        EXPECT_EQ(nominal, console.total_cycles - before) << "frame " << i;
+    }
+}
+
+GTEST_TEST(testBusRunFrame, advances_the_frame_counter_by_exactly_one)
+{
+    Bus console;
+    run_past_reset_lockout(console.ppu);
+
+    const uint64_t before = console.ppu.frame;
+    console.run_frame();
+    EXPECT_EQ(before + 1, console.ppu.frame);
+    EXPECT_EQ(0, console.ppu.cycle) << "a completed frame leaves the PPU on dot 0";
+    EXPECT_EQ(0, console.ppu.scanline);
+}
+
 }  // namespace
 
 GTEST_TEST(testPPUFrame, dot_counter_advances_and_wraps)

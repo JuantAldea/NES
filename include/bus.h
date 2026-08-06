@@ -29,6 +29,19 @@ public:
     void clock_CPU();
     void clock_PPU();
 
+    // Runs until the PPU finishes the frame it is in the middle of.
+    //
+    // This is not the same as clocking a fixed number of times, which is what
+    // everything that needed a frame used to do. An NTSC frame is 341x262
+    // dots and the master clock runs four times per dot, so 341*262*4 looks
+    // exact - but odd frames with rendering enabled skip their last dot, so
+    // that count is one dot too many every other frame. It was harmless while
+    // nothing rendered and the skip never armed; it is not now.
+    //
+    // Watching the PPU's own frame counter is right by construction and cannot
+    // drift, whatever the PPU decides a frame is.
+    void run_frame();
+
     CPU cpu;
     APU apu;
     PPU ppu;

@@ -189,3 +189,13 @@ void Bus::clock_PPU()
 // were guarded by two copies of the same condition - editing one would have
 // desynchronised them silently.
 void Bus::clock_CPU() { cpu.clock(false); }
+
+void Bus::run_frame()
+{
+    // Cannot spin: PPU::advance_dot runs on every tick whatever is enabled, so
+    // the frame counter always reaches the next value.
+    const uint64_t started_on = ppu.frame;
+    do {
+        clock();
+    } while (ppu.frame == started_on);
+}

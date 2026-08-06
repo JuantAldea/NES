@@ -28,10 +28,6 @@ namespace tests
 namespace nametable_screen
 {
 
-// One frame is 341 dots x 262 scanlines, and Bus::clock ticks the PPU every
-// fourth bus cycle.
-constexpr uint64_t kBusCyclesPerFrame = 341ull * 262ull * 4ull;
-
 constexpr uint16_t kNametableBase = 0x2000;
 constexpr uint16_t kRows = 30;
 constexpr uint16_t kColumns = 32;
@@ -98,9 +94,11 @@ inline std::string first_non_blank_row(Bus& console)
 
 inline void run_one_frame(Bus& console)
 {
-    for (uint64_t i = 0; i < kBusCyclesPerFrame; ++i) {
-        console.clock();
-    }
+    // Bus::run_frame watches the PPU's own frame counter. Clocking a fixed
+    // 341*262*4 instead - which this used to do - overshoots by a dot on every
+    // odd frame once rendering is enabled, because the pre-render line drops
+    // its last dot.
+    console.run_frame();
 }
 
 }  // namespace nametable_screen

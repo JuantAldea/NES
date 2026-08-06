@@ -55,8 +55,8 @@ constexpr uint8_t kSignature[3] = {0xDE, 0xB0, 0x61};
 constexpr uint8_t kStatusRunning = 0x80;
 constexpr uint8_t kStatusNeedsReset = 0x81;
 
-// One frame is 341 dots x 262 scanlines; Bus::clock ticks the PPU every 4th
-// bus cycle, so a frame is 341 * 262 * 4 bus cycles.
+// Frames are stepped with Bus::run_frame rather than counted in cycles; see
+// the comment on its declaration for why a frame is not a fixed length.
 //
 // The cap must be generous. These ROMs spend many frames measuring before they
 // report: 01-vbl_basics does not answer until frame 142 and 02-vbl_set_time not
@@ -64,7 +64,6 @@ constexpr uint8_t kStatusNeedsReset = 0x81;
 // as a dead PPU when in fact one of them passes -- the harness was
 // under-reporting real progress. The cap exists only so a genuinely stuck PPU
 // fails with a diagnosis instead of hanging the suite.
-constexpr uint64_t kBusCyclesPerFrame = 341ull * 262ull * 4ull;
 constexpr uint64_t kMaxFrames = 400;
 
 struct BlarggResult {
@@ -123,15 +122,12 @@ BlarggResult run_rom(const std::string& name)
 
     console.cpu.reset();
 
-    const uint64_t max_cycles = kBusCyclesPerFrame * kMaxFrames;
-    for (uint64_t cycle = 0; cycle < max_cycles; ++cycle) {
-        console.clock();
-
-        // Only sample occasionally: reading four PRG-RAM bytes on every one of
-        // ~21M bus cycles dominates the runtime otherwise.
-        if ((cycle & 0xFFFF) != 0) {
-            continue;
-        }
+    // Stepped a frame at a time. The old loop multiplied out a fixed
+    // 341*262*4 per frame, which overshoots by a dot on every odd frame once
+    // rendering is enabled - and these ROMs enable it. Sampling once per frame
+    // is also cheaper than the every-65536-cycles compromise it replaces.
+    for (uint64_t frame = 0; frame < kMaxFrames; ++frame) {
+        console.run_frame();
 
         if (!signature_present(console)) {
             continue;
@@ -144,7 +140,7 @@ BlarggResult run_rom(const std::string& name)
             continue;
         }
 
-        result.frames_run = cycle / kBusCyclesPerFrame;
+        result.frames_run = frame + 1;
         result.status = status;
         result.message = read_message(console);
 

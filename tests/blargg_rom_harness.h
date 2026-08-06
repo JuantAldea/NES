@@ -32,7 +32,6 @@ constexpr uint8_t kStatusNeedsReset = 0x81;
 
 // One frame is 341 dots x 262 scanlines and Bus::clock ticks the PPU every 4th
 // bus cycle.
-constexpr uint64_t kBusCyclesPerFrame = 341ull * 262ull * 4ull;
 
 struct RomResult {
     bool completed = false;    // signature appeared and status left the running state
@@ -86,15 +85,13 @@ inline RomResult run_rom(const std::string& path, uint64_t max_frames)
 
     console.cpu.reset();
 
-    const uint64_t max_cycles = kBusCyclesPerFrame * max_frames;
-    for (uint64_t cycle = 0; cycle < max_cycles; ++cycle) {
-        console.clock();
-
-        // Sampling on every one of tens of millions of bus cycles would
-        // dominate the runtime.
-        if ((cycle & 0xFFFF) != 0) {
-            continue;
-        }
+    // Stepped a frame at a time rather than by a cycle budget. The old loop
+    // multiplied out a fixed 341*262*4 per frame, which is one dot too many on
+    // every odd frame once rendering is enabled, so "max_frames" drifted longer
+    // the further a ROM ran. Sampling once per frame is also cheaper than the
+    // every-65536-cycles compromise it replaces.
+    for (uint64_t frame = 0; frame < max_frames; ++frame) {
+        console.run_frame();
 
         if (!signature_present(console)) {
             continue;
@@ -107,7 +104,7 @@ inline RomResult run_rom(const std::string& path, uint64_t max_frames)
             continue;
         }
 
-        result.frames_run = cycle / kBusCyclesPerFrame;
+        result.frames_run = frame + 1;
         result.status = status;
         result.message = read_message(console);
         result.needs_reset = (status == kStatusNeedsReset);
