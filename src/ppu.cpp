@@ -819,12 +819,27 @@ void PPU::write(const uint16_t addr, const uint8_t data)
 {
     // std::cout << "PPU WRITE " << std::hex << addr << " " << (unsigned)data << std::endl;
 
-    // Every write drives the PPU's internal data bus latch, regardless of
-    // which register it targets (including PPUSTATUS itself, which is
-    // read-only: the write still reaches the bus, it just has no register to
-    // land in). This latch is what PPUSTATUS's open-bus bits 0-4 read back
-    // from below.
-    drive_open_bus(data);
+    // Every write to the PPU's own register file drives its internal data bus
+    // latch, regardless of which register it targets - including PPUSTATUS,
+    // which is read-only: the write still reaches the bus, it just has no
+    // register to land in. This latch is what PPUSTATUS's open-bus bits 0-4
+    // read back from below.
+    //
+    // $4014 is the exception, and it is not a special case so much as a
+    // reminder that it was never a PPU register at all. OAMDMA lives in the
+    // 2A03 next to the APU and controller ports; it is routed here only
+    // because this class owns the transfer. A write to it never appears on the
+    // PPU's data bus, so it must not disturb the latch.
+    //
+    // Getting this wrong is invisible almost everywhere, because $4014 is
+    // written and then the DMA immediately overwrites the latch anyway. It
+    // shows up when the DMA's SOURCE is the PPU register file: blargg's
+    // ppu_read_buffer parks a known byte in the latch, starts a DMA from
+    // $2000-$20FF, and expects the reads of the write-only registers to hand
+    // that byte back. We handed back $20 - the page number written to $4014.
+    if (addr != OAMDMA) {
+        drive_open_bus(data);
+    }
 
     // PPUSTATUS ($2002) is read-only. Real hardware simply ignores writes to
     // it (the byte still lands on the bus latch above, but no register is

@@ -71,8 +71,10 @@ Next: a display for the framebuffer, and the rest of sprite rendering.
         blargg's `sprite_hit` ROMs, which measure the BACKGROUND pipeline as
         much as the sprite: pixel-exact alignment, the left-8 clip, and
         dot-exact flag timing.
-    *   Passes blargg's `ppu_read_buffer` pack apart from one case: OAM DMA
-        sourced from the PPU register file (`$4014 <- #$20`).
+    *   Passes blargg's `ppu_read_buffer` in full - the broadest single check
+        here, covering CIRAM through `$2007` with both increment modes, PPU I/O
+        mirroring, CHR-ROM reads, CNROM banking, sprite 0 hit, and OAM loaded
+        from RAM, from ROM and from the PPU register file.
     *   **No sprite rendering, no display.** No priority, no 8-per-line
         evaluation, no overflow flag, no colour emphasis, and nothing draws the
         framebuffer to a screen.
