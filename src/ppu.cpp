@@ -184,7 +184,11 @@ void PPU::advance_vram_address()
         return;
     }
 
-    registers.PPUADDR = (registers.PPUADDR + vram_step) & vram_addr_mask;
+    // Masked to 15 bits, not the bus's 14. v carries fine Y in bits 12-14, so
+    // folding it to the bus width here would clear the top fine-Y bit on every
+    // $2007 access made while rendering is off - silently dragging a fine Y of
+    // 4-7 down to 0-3 for the rest of the frame.
+    registers.PPUADDR = (registers.PPUADDR + vram_step) & vram_register_mask;
 }
 
 void PPU::clock()

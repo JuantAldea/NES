@@ -188,7 +188,15 @@ public:
     // quantities, not bit patterns: 0x32 would be 50.
     enum VRAMStep : uint8_t { Horizontal = 1, Vertical = 32 };
 
+    // The PPU's address BUS is 14 bits: this is what an access is folded into,
+    // and it is what makes $3000-$3EFF mirror the nametables.
     static constexpr uint16_t vram_addr_mask = 0x3FFF;
+
+    // The v REGISTER is 15 bits, because bits 12-14 hold fine Y. The two are
+    // easy to conflate - v is "the VRAM address" - but masking v with the bus
+    // width would clear the top bit of fine Y, so the $2007 increment has to
+    // wrap modulo $8000 rather than $4000.
+    static constexpr uint16_t vram_register_mask = 0x7FFF;
 
     // Writes to PPUCTRL, PPUMASK, PPUSCROLL and PPUADDR are ignored for about
     // 29658 CPU cycles after power/reset. total_cycles counts PPU cycles, and

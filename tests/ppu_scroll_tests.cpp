@@ -483,6 +483,41 @@ GTEST_TEST(testPPUScroll, ppudata_access_outside_rendering_uses_the_plain_step)
     EXPECT_EQ(0x0084, ppu.registers.PPUADDR);
 }
 
+// v is fifteen bits wide, not fourteen. The PPU's address BUS is fourteen -
+// which is why $3000-$3EFF mirrors the nametables - but v itself carries fine
+// Y in bits 12-14, and the $2007 increment wraps modulo $8000.
+//
+// Masking with the bus width instead looks harmless, because the extra bit is
+// never driven onto the bus. It is not: it clears the top bit of fine Y. The
+// middle case below is the one that bites in practice - the pre-render line
+// copies a fine Y of 4-7 out of t, and a single $2007 access with rendering
+// off would drag it into 0-3 for the rest of the frame.
+GTEST_TEST(testPPUScroll, ppudata_increment_wraps_at_15_bits_not_at_the_bus_width)
+{
+    Bus console;
+    PPU& ppu = ready(console);
+
+    ppu.write(PPU::PPUMASK, 0x00);  // rendering off: the plain-step path
+    ppu.scanline = 100;
+
+    // $3FFF + 1. A fourteen-bit wrap gives $0000; the register is wider than
+    // that, so the carry out of bit 13 lands in bit 14 and fine Y becomes 4.
+    ppu.registers.PPUADDR = 0x3FFF;
+    ppu.write(PPU::PPUDATA, 0x00);
+    EXPECT_EQ(0x4000, ppu.registers.PPUADDR) << "the carry out of bit 13 belongs in bit 14, not discarded";
+
+    // A mid-range address with fine Y = 5 must keep it. Masking to fourteen
+    // bits would return $1001 here and silently lose the 4.
+    ppu.registers.PPUADDR = 0x5000;
+    ppu.write(PPU::PPUDATA, 0x00);
+    EXPECT_EQ(0x5001, ppu.registers.PPUADDR) << "fine Y bit 2 must survive a $2007 access";
+
+    // And it does wrap at $8000: $7FFF + 1 == $0000.
+    ppu.registers.PPUADDR = 0x7FFF;
+    ppu.write(PPU::PPUDATA, 0x00);
+    EXPECT_EQ(0x0000, ppu.registers.PPUADDR);
+}
+
 GTEST_TEST(testPPUScroll, ppudata_read_during_rendering_increments_the_scroll_too)
 {
     Bus console;

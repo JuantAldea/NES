@@ -92,16 +92,28 @@ GTEST_TEST(testPPURegisters, ppuaddr_writes_stay_within_vram)
     Bus console;
     run_past_reset_lockout(console.ppu);
 
-    // Incrementing off the end of the 14-bit space wraps rather than running
-    // past the end of the VRAM array.
+    // An access at the very top of the address space must land in VRAM rather
+    // than running past the end of the array.
     // $3FFF is palette space, and palette RAM is six bits wide, so the value
-    // is chosen to survive that truncation - this test is about the address
-    // register wrapping, not about palette width.
+    // is chosen to survive that truncation - this test is about addressing,
+    // not about palette width.
     write_addr(console.ppu, 0x3F, 0xFF);
     console.ppu.write(PPU::PPUDATA, 0x37);
 
     EXPECT_EQ(0x37, console.ppu.ppu_bus_read(0x3FFF));
-    EXPECT_EQ(0x0000, console.ppu.registers.PPUADDR);
+
+    // CHANGED: this used to expect v == $0000, on the reasoning that the
+    // address "wraps rather than running past the end of the VRAM array". The
+    // safety being described is real, but it comes from somewhere else:
+    // ppu_bus_read/write fold every access with vram_addr_mask, so VRAM cannot
+    // be over-indexed whatever v holds - which is why the assertion above
+    // still passes unchanged.
+    //
+    // v itself is FIFTEEN bits, because bits 12-14 are fine Y (NESdev, "PPU
+    // scrolling"). $3FFF + 1 is $4000, and discarding that carry would clear
+    // the top bit of fine Y. The old expectation conflated the register with
+    // the 14-bit bus.
+    EXPECT_EQ(0x4000, console.ppu.registers.PPUADDR);
 }
 
 // --- $2005 two-write sequence -------------------------------------------
