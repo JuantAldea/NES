@@ -15,6 +15,11 @@
 #include <string>
 
 #include "../include/bus.h"
+#include "../include/frame_dump.h"
+#include <cctype>
+#include <filesystem>
+#include <vector>
+
 #include "gtest/gtest.h"
 
 namespace tests
@@ -184,10 +189,58 @@ uint8_t reference_pixel(PPU& ppu, const Config& config, int x, int y)
     return static_cast<uint8_t>(colour & (config.greyscale ? 0x30 : 0x3F));
 }
 
+// A filename-safe label for the running test, so that tests dumping frames in
+// parallel cannot overwrite each other's evidence.
+std::string test_label()
+{
+    const ::testing::TestInfo* info = ::testing::UnitTest::GetInstance()->current_test_info();
+    std::string label = info != nullptr ? std::string(info->name()) : std::string("unknown");
+    for (char& c : label) {
+        if (!std::isalnum(static_cast<unsigned char>(c))) {
+            c = '_';
+        }
+    }
+    return label;
+}
+
+// Writes what the pipeline drew and what the reference expected, side by side
+// on disk, so a failure can be LOOKED AT.
+//
+// Nothing displays the framebuffer yet, so without this a render bug is only
+// ever a coordinate and two hex bytes. "First mismatch at (17, 43)" does not
+// distinguish a one-pixel fine-X error from a completely scrambled screen, and
+// those need entirely different investigations.
+void dump_frames_for_inspection(PPU& ppu, const Config& config, const std::string& label)
+{
+    std::vector<uint8_t> expected(static_cast<size_t>(kWidth) * kHeight);
+    for (int y = 0; y < kHeight; ++y) {
+        for (int x = 0; x < kWidth; ++x) {
+            expected[static_cast<size_t>(y) * kWidth + x] = reference_pixel(ppu, config, x, y);
+        }
+    }
+
+    const std::filesystem::path dir = std::filesystem::temp_directory_path();
+    const std::string actual_path = (dir / ("nes_render_" + label + "_actual.ppm")).string();
+    const std::string expected_path = (dir / ("nes_render_" + label + "_expected.ppm")).string();
+
+    const bool wrote_actual =
+        nes::write_ppm(actual_path, ppu.framebuffer, kWidth, kHeight, PPU::nes_palette, 64);
+    const bool wrote_expected =
+        nes::write_ppm(expected_path, expected.data(), kWidth, kHeight, PPU::nes_palette, 64);
+
+    if (wrote_actual && wrote_expected) {
+        ADD_FAILURE() << "wrote the two frames for inspection:\n"
+                      << "  actual:   " << actual_path << "\n"
+                      << "  expected: " << expected_path;
+    } else {
+        ADD_FAILURE() << "could not write the frame dumps to " << dir.string();
+    }
+}
+
 // Compares the whole frame, reporting the first disagreement only - a broken
 // pipeline disagrees about tens of thousands of pixels and printing them all
 // buries the one that matters.
-void expect_frame_matches_reference(PPU& ppu, const Config& config)
+void expect_frame_matches_reference(PPU& ppu, const Config& config, const std::string& label)
 {
     int mismatches = 0;
     for (int y = 0; y < kHeight; ++y) {
@@ -205,6 +258,11 @@ void expect_frame_matches_reference(PPU& ppu, const Config& config)
             }
         }
     }
+
+    if (mismatches != 0) {
+        dump_frames_for_inspection(ppu, config, label);
+    }
+
     EXPECT_EQ(0, mismatches) << mismatches << " of " << (kWidth * kHeight) << " pixels disagree";
 }
 
@@ -219,7 +277,7 @@ GTEST_TEST(testPPURender, background_matches_the_reference_renderer_unscrolled)
     // failure here is about the fetch pattern rather than about scrolling.
     const Config config{0x10, 0, 0};
     render_frame(console.ppu, config);
-    expect_frame_matches_reference(console.ppu, config);
+    expect_frame_matches_reference(console.ppu, config, test_label());
 }
 
 GTEST_TEST(testPPURender, background_matches_the_reference_renderer_when_scrolled)
@@ -234,7 +292,7 @@ GTEST_TEST(testPPURender, background_matches_the_reference_renderer_when_scrolle
     // exercised too.
     const Config config{0x10, 93, 154};
     render_frame(console.ppu, config);
-    expect_frame_matches_reference(console.ppu, config);
+    expect_frame_matches_reference(console.ppu, config, test_label());
 }
 
 GTEST_TEST(testPPURender, background_matches_the_reference_renderer_from_the_far_nametable)
@@ -244,7 +302,7 @@ GTEST_TEST(testPPURender, background_matches_the_reference_renderer_from_the_far
     // that the frame wraps back through all four.
     const Config config{0x13, 200, 200};
     render_frame(console.ppu, config);
-    expect_frame_matches_reference(console.ppu, config);
+    expect_frame_matches_reference(console.ppu, config, test_label());
 }
 
 GTEST_TEST(testPPURender, every_fine_x_matches_the_reference_renderer)
@@ -257,7 +315,7 @@ GTEST_TEST(testPPURender, every_fine_x_matches_the_reference_renderer)
         const Config config{0x10, static_cast<uint8_t>(0x40 + fine), 0};
         render_frame(console.ppu, config);
         ASSERT_EQ(fine, console.ppu.fine_x) << "setup: scroll byte should give fine X " << fine;
-        expect_frame_matches_reference(console.ppu, config);
+        expect_frame_matches_reference(console.ppu, config, test_label());
     }
 }
 
@@ -267,7 +325,7 @@ GTEST_TEST(testPPURender, leftmost_eight_pixels_can_be_blanked)
     Config config{0x10, 93, 154};
     config.show_left_eight = false;
     render_frame(console.ppu, config);
-    expect_frame_matches_reference(console.ppu, config);
+    expect_frame_matches_reference(console.ppu, config, test_label());
 
     // ...and it really is a blanking, not a coincidence: the backdrop is in
     // those columns and the reference says so for a different reason.
@@ -301,7 +359,7 @@ GTEST_TEST(testPPURender, greyscale_collapses_the_index_onto_the_grey_column)
     Config config{0x10, 93, 154};
     config.greyscale = true;
     render_frame(console.ppu, config);
-    expect_frame_matches_reference(console.ppu, config);
+    expect_frame_matches_reference(console.ppu, config, test_label());
 
     // Greyscale forces the low four bits of the palette INDEX, so every pixel
     // has to be one of $00, $10, $20, $30.
