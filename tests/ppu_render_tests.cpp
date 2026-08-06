@@ -424,5 +424,82 @@ GTEST_TEST(testPPURender, the_palette_table_has_64_entries_of_24_bit_colour)
     EXPECT_EQ(0xFFFEFFu, PPU::nes_palette[0x20]);
 }
 
+
+// --- the dot-1 nametable fetch -------------------------------------------
+//
+// The background fetch region runs from dot 2, so fetch_background_byte() is
+// never entered with (cycle-1)%8 == 0 at dot 1: the nametable byte for the tile
+// covering pixels 16-23 is never read on this line. What makes the picture come
+// out right anyway is an accident - the dot-338/340 reads on the PREVIOUS line
+// leave tile_address() in nametable_latch, and v does not move between the
+// dot-336 coarse-X increment and this line's dot-8 one, so the stale latch
+// happens to hold the right byte.
+//
+// It stops being right the moment v moves inside that window, because the
+// attribute and pattern fetches at dots 3, 5 and 7 read v LIVE while the tile
+// index does not. A mid-line $2006 write is exactly what raster-split code
+// does.
+//
+// Set up two screens of solid, distinguishable tiles and switch nametable at
+// dot 0 of scanline 100. The first two tiles of the line were prefetched during
+// line 99 and must still be the OLD screen; from pixel 16 the new screen must
+// show, because that tile's nametable byte is read at dot 1 - after the switch.
+GTEST_TEST(testPPURender, a_nametable_switch_at_dot_0_takes_effect_at_pixel_16)
+{
+    Bus console;
+    PPU& ppu = console.ppu;
+    run_past_reset_lockout(ppu);
+
+    // Tile 1: low bitplane only  -> every pixel is colour index 1.
+    // Tile 2: high bitplane only -> every pixel is colour index 2.
+    for (uint16_t row = 0; row < 8; ++row) {
+        ppu.ppu_bus_write(static_cast<uint16_t>(0x0010 + row), 0xFF);  // tile 1, low
+        ppu.ppu_bus_write(static_cast<uint16_t>(0x0018 + row), 0x00);  // tile 1, high
+        ppu.ppu_bus_write(static_cast<uint16_t>(0x0020 + row), 0x00);  // tile 2, low
+        ppu.ppu_bus_write(static_cast<uint16_t>(0x0028 + row), 0xFF);  // tile 2, high
+    }
+
+    // Screen A ($2000) is all tile 1; screen B ($2800) is all tile 2. Attribute
+    // tables stay zero, so both use palette 0.
+    for (uint16_t i = 0; i < 0x03C0; ++i) {
+        ppu.ppu_bus_write(static_cast<uint16_t>(0x2000 + i), 0x01);
+        ppu.ppu_bus_write(static_cast<uint16_t>(0x2800 + i), 0x02);
+    }
+
+    ppu.ppu_bus_write(0x3F01, 0x11);
+    ppu.ppu_bus_write(0x3F02, 0x22);
+
+    ppu.write(PPU::PPUCTRL, 0x00);  // nametable $2000, bg patterns at $0000
+    ppu.write(PPU::PPUMASK, 0x0A);  // background on, including the left eight
+    ppu.write(PPU::PPUSCROLL, 0x00);
+    ppu.write(PPU::PPUSCROLL, 0x00);
+
+    run_frames(ppu, 2);
+
+    // Park on dot 0 of scanline 100 and switch v to the other nametable.
+    while (!(ppu.scanline == 100 && ppu.cycle == 0)) {
+        ppu.clock();
+    }
+    ppu.registers.PPUADDR = static_cast<uint16_t>(ppu.registers.PPUADDR | 0x0800);
+
+    while (ppu.scanline == 100) {
+        ppu.clock();
+    }
+
+    const uint8_t* line = &ppu.framebuffer[100 * PPU::screen_width];
+
+    // Pixels 0-15: the two tiles fetched during line 99's dots 321-336, before
+    // the switch. Still screen A.
+    EXPECT_EQ(0x11, line[0]) << "pixels 0-7 were prefetched on the previous line";
+    EXPECT_EQ(0x11, line[8]) << "pixels 8-15 were prefetched on the previous line";
+
+    // Pixel 16 onwards: fetched by THIS line, starting with the nametable read
+    // at dot 1, which happens after the switch.
+    EXPECT_EQ(0x22, line[16]) << "the tile covering pixels 16-23 has its nametable byte read at "
+                                 "dot 1 of this line, so the switch must already be visible here";
+    EXPECT_EQ(0x22, line[24]);
+    EXPECT_EQ(0x22, line[248]);
+}
+
 }  // namespace render
 }  // namespace tests

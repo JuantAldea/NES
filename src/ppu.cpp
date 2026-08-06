@@ -355,10 +355,6 @@ void PPU::fetch_background_byte()
 {
     switch ((cycle - 1) % 8) {
     case 0:
-        // The reload happens on the same dot as the next tile's first fetch,
-        // eight dots after the previous one - which is what keeps the pipeline
-        // exactly two tiles ahead.
-        reload_background_shifters();
         nametable_latch = ppu_bus_read(tile_address());
         break;
     case 2: {
@@ -565,11 +561,33 @@ void PPU::process_visible_scanline()
         // Both regions shift; the gap between them, where hardware is fetching
         // sprite patterns, does not.
         //
-        // The regions start at 2 and 321 rather than 1 and 320 because the
-        // shift belongs to the END of a dot: the pixel drawn on dot 1 comes
+        // Shifting, reloading and fetching are on three different dot ranges,
+        // and collapsing them into one was a real bug: with the fetch region
+        // starting at dot 2, case 0 of fetch_background_byte never ran at dot
+        // 1, so the nametable byte for the tile covering pixels 16-23 was
+        // never read on this line. The picture still came out right, because
+        // the dot-338/340 reads on the previous line leave the right value in
+        // nametable_latch and v does not move in between - but the attribute
+        // and pattern fetches at dots 3, 5 and 7 read v LIVE, so a $2006 write
+        // in that window desynchronised the tile index from its own pattern
+        // row and the switch showed up eight pixels late.
+
+        // The shift belongs to the END of a dot: the pixel drawn on dot 1 comes
         // from what the previous line's prefetch left in the registers.
-        if ((cycle >= 2 && cycle <= 257) || (cycle >= 321 && cycle <= 337)) {
+        if ((cycle >= 2 && cycle <= 257) || (cycle >= 322 && cycle <= 337)) {
             shift_background_registers();
+        }
+
+        // The reload lands on the dot after each eight-dot group completes -
+        // 9, 17, ... 257, then 329 and 337 - which is what keeps the pipeline
+        // exactly two tiles ahead of the pixel being drawn.
+        if (((cycle >= 9 && cycle <= 257) || cycle == 329 || cycle == 337) && ((cycle - 1) % 8) == 0) {
+            reload_background_shifters();
+        }
+
+        // Dots 1-256 fetch the tiles for THIS line, 321-336 the first two of
+        // the NEXT one.
+        if ((cycle >= 1 && cycle <= 256) || (cycle >= 321 && cycle <= 336)) {
             fetch_background_byte();
         }
 
