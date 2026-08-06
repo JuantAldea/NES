@@ -107,6 +107,13 @@ public:
     uint16_t remaining_dma_cycles = 0;
     uint16_t dma_current_memory_source_addr = 0;
 
+    // The byte read on a DMA read cycle, held until the write cycle that
+    // follows it. DMA alternates read and write cycles and the two are a whole
+    // CPU cycle apart, which only matters when the source is something that
+    // changes in between - i.e. the PPU register file, which advances three
+    // dots per CPU cycle.
+    uint8_t dma_latch = 0;
+
     void request_OAM_DMA();
     void perform_OAM_DMA_cycle();
     bool dma_in_progress() { return remaining_dma_cycles != 0; }

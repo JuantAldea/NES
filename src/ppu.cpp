@@ -798,15 +798,21 @@ void PPU::perform_OAM_DMA_cycle()
         return;
     }
 
+    // DMA alternates read and write cycles, and the read really does happen on
+    // the read cycle - a whole CPU cycle before the write that consumes it.
+    //
+    // Doing both on the write cycle is invisible for the usual sources: RAM
+    // and ROM hold still between the two. It is not invisible when the source
+    // page is the PPU register file ($2000-$20FF), because the PPU advances
+    // three dots per CPU cycle, so every $2002 sampled that way came back
+    // three dots late - which is precisely what blargg's ppu_read_buffer
+    // test 67 measures, sampling the sprite 0 hit flag through a DMA.
     if (remaining_dma_cycles % 2) {
-        //alternate read/write cycle;
-        // std::cout << "READ " << std::dec << remaining_dma_cycles << std::endl;
+        dma_latch = bus->read(dma_current_memory_source_addr++);
         return;
     }
 
-    // std::cout << "WRITE " << std::dec << remaining_dma_cycles << " (" << std::hex << dma_current_memory_source_addr << ")" << std::endl;
-
-    bus->write(PPU::OAMDATA, bus->read(dma_current_memory_source_addr++));
+    bus->write(PPU::OAMDATA, dma_latch);
 }
 
 void PPU::write(const uint16_t addr, const uint8_t data)
