@@ -8,7 +8,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # SDL is only needed by the frontend, which the job below covers, and
       # nothing under tests/ links it. Leaving it out here keeps the job that
@@ -78,7 +78,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # libsdl2-dev is the only system package the frontend needs; Dear ImGui
       # is fetched from source by CMake and compiled into the build, so there
