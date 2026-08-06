@@ -532,5 +532,139 @@ GTEST_TEST(testPPUScroll, ppudata_read_during_rendering_increments_the_scroll_to
     EXPECT_EQ(0x1084, ppu.registers.PPUADDR);
 }
 
+
+// --- WHEN the copies and the Y increment happen, not just what they do ------
+//
+// The tests above pin the bit masks: which bits of t reach v. They say nothing
+// about the dot, and nothing else did either - moving copy_horizontal_from_t
+// from dot 257 to 320, widening the vertical copy from 280-304 to 258-320, or
+// moving increment_y from 256 to 255 all left the whole suite green.
+//
+// Nothing between dot 257 and 321 reads v in this implementation, so the whole
+// of hblank is observationally identical from the framebuffer's point of view.
+// The only way to tell the dots apart is to watch v itself, on the dot.
+//
+// This matters for split scrolling, where software writes $2005/$2006 during
+// hblank and the exact dot decides whether the write survives into the line.
+
+// Parks on a dot and then EXECUTES it.
+//
+// PPU::clock() does the current dot's work and then advances the counter, so
+// after this call ppu.cycle is already the following dot while the work of
+// `cycle` has just been done. Getting that backwards makes every assertion here
+// off by one - which it was, on the first attempt.
+void step_dot(PPU& ppu, int scanline, int cycle)
+{
+    // Bounded so a wrong constant fails rather than hangs.
+    for (int i = 0; i <= PPU::dots_per_scanline * PPU::scanlines_per_frame; ++i) {
+        if (ppu.scanline == scanline && ppu.cycle == cycle) {
+            ppu.clock();
+            return;
+        }
+        ppu.clock();
+    }
+    FAIL() << "never reached dot (" << scanline << ", " << cycle << ")";
+}
+
+// A PPU past the lockout with background rendering on, since the copies and the
+// increments only run while rendering is enabled.
+PPU& rendering(Bus& console)
+{
+    run_past_reset_lockout(console.ppu);
+    console.ppu.write(PPU::PPUMASK, 0x08);
+    return console.ppu;
+}
+
+constexpr uint16_t kHorizontalBits = 0x041F;
+constexpr uint16_t kVerticalBits = 0x7BE0;
+
+GTEST_TEST(testPPUScroll, the_horizontal_copy_happens_on_dot_257_exactly)
+{
+    Bus console;
+    PPU& ppu = rendering(console);
+
+    // Park just before 257 and give t a horizontal half that the line's own 32
+    // coarse-X increments cannot have left in v, so this cannot pass by luck.
+    step_dot(ppu, 50, 255);
+    ppu.temp_addr = static_cast<uint16_t>((ppu.temp_addr & ~kHorizontalBits) | 0x0409);
+
+    ASSERT_NE(static_cast<uint16_t>(ppu.registers.PPUADDR & kHorizontalBits),
+              static_cast<uint16_t>(ppu.temp_addr & kHorizontalBits))
+        << "setup failed to make v and t differ, so the checks below would prove nothing";
+
+    // Dot 256 increments Y; it must NOT copy the horizontal half. A copy a dot
+    // early would let a $2005 write during 256 survive when hardware drops it.
+    step_dot(ppu, 50, 256);
+    EXPECT_NE(static_cast<uint16_t>(ppu.temp_addr & kHorizontalBits),
+              static_cast<uint16_t>(ppu.registers.PPUADDR & kHorizontalBits))
+        << "the horizontal copy must not have happened yet at dot 256";
+
+    step_dot(ppu, 50, 257);
+    EXPECT_EQ(static_cast<uint16_t>(ppu.temp_addr & kHorizontalBits),
+              static_cast<uint16_t>(ppu.registers.PPUADDR & kHorizontalBits))
+        << "coarse X and the horizontal nametable bit come from t on dot 257";
+}
+
+GTEST_TEST(testPPUScroll, the_y_increment_happens_on_dot_256_exactly)
+{
+    Bus console;
+    PPU& ppu = rendering(console);
+
+    step_dot(ppu, 50, 254);
+    const uint16_t before = ppu.registers.PPUADDR;
+
+    // Dot 255 does nothing to fine Y.
+    step_dot(ppu, 50, 255);
+    EXPECT_EQ(before, ppu.registers.PPUADDR) << "fine Y must not advance before dot 256";
+
+    // Dot 256 does. Only the fine-Y field is compared, because 256 is also a
+    // multiple of eight and so carries the line's last coarse-X increment on
+    // the same dot - the register as a whole moves by more than $1000.
+    // Scanline 50 is not on a tile boundary, so fine Y is a plain +1 with no
+    // carry into coarse Y.
+    step_dot(ppu, 50, 256);
+    EXPECT_EQ(static_cast<uint16_t>((before & 0x7000) + 0x1000),
+              static_cast<uint16_t>(ppu.registers.PPUADDR & 0x7000))
+        << "dot 256 is where fine Y advances";
+}
+
+GTEST_TEST(testPPUScroll, the_vertical_copy_runs_from_dot_280_of_the_pre_render_line)
+{
+    Bus console;
+    PPU& ppu = rendering(console);
+
+    step_dot(ppu, PPU::pre_render_scanline, 278);
+    ppu.temp_addr = static_cast<uint16_t>((ppu.temp_addr & ~kVerticalBits) | 0x2940);
+
+    ASSERT_NE(static_cast<uint16_t>(ppu.registers.PPUADDR & kVerticalBits),
+              static_cast<uint16_t>(ppu.temp_addr & kVerticalBits))
+        << "setup failed to make v and t differ";
+
+    step_dot(ppu, PPU::pre_render_scanline, 279);
+    EXPECT_NE(static_cast<uint16_t>(ppu.temp_addr & kVerticalBits),
+              static_cast<uint16_t>(ppu.registers.PPUADDR & kVerticalBits))
+        << "the window opens at 280, not before";
+
+    step_dot(ppu, PPU::pre_render_scanline, 280);
+    EXPECT_EQ(static_cast<uint16_t>(ppu.temp_addr & kVerticalBits),
+              static_cast<uint16_t>(ppu.registers.PPUADDR & kVerticalBits))
+        << "fine Y, coarse Y and the vertical nametable bit come from t across dots 280-304";
+}
+
+GTEST_TEST(testPPUScroll, the_vertical_copy_does_not_run_on_a_visible_line)
+{
+    Bus console;
+    PPU& ppu = rendering(console);
+
+    step_dot(ppu, 50, 279);
+    ppu.temp_addr = static_cast<uint16_t>((ppu.temp_addr & ~kVerticalBits) | 0x2940);
+
+    step_dot(ppu, 50, 280);
+    EXPECT_NE(static_cast<uint16_t>(ppu.temp_addr & kVerticalBits),
+              static_cast<uint16_t>(ppu.registers.PPUADDR & kVerticalBits))
+        << "the vertical copy belongs to the pre-render line only; running it on visible lines "
+           "would reset the scroll every scanline and make vertical scrolling impossible";
+}
+
 }  // namespace scroll
 }  // namespace tests
