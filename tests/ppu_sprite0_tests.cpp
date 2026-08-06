@@ -393,20 +393,16 @@ GTEST_TEST(testSprite0Hit, oam_y_is_one_less_than_the_first_scanline)
     place_sprite0(ppu, 64, 1, 0x00, 0);
     ppu.write(PPU::PPUCTRL, 0x00);
 
-    ppu.scanline = 64;
-    ppu.evaluate_sprite0_for_scanline();
+    ppu.evaluate_sprite0_for_scanline(64);
     EXPECT_FALSE(ppu.sprite0_on_this_scanline) << "scanline 64 is the Y byte itself";
 
-    ppu.scanline = 65;
-    ppu.evaluate_sprite0_for_scanline();
+    ppu.evaluate_sprite0_for_scanline(65);
     EXPECT_TRUE(ppu.sprite0_on_this_scanline) << "the sprite starts on the line after";
 
-    ppu.scanline = 72;
-    ppu.evaluate_sprite0_for_scanline();
+    ppu.evaluate_sprite0_for_scanline(72);
     EXPECT_TRUE(ppu.sprite0_on_this_scanline) << "eight lines, 65-72";
 
-    ppu.scanline = 73;
-    ppu.evaluate_sprite0_for_scanline();
+    ppu.evaluate_sprite0_for_scanline(73);
     EXPECT_FALSE(ppu.sprite0_on_this_scanline) << "and no more";
 
     // In 8x16 mode the same sprite covers sixteen lines, 65-80. Tile $02 means
@@ -415,12 +411,10 @@ GTEST_TEST(testSprite0Hit, oam_y_is_one_less_than_the_first_scanline)
     ppu.write(PPU::PPUCTRL, 0x20);
     ppu.OAM_memory[1] = 0x02;
     write_tile(ppu, 0x0000, 3, kSolid);
-    ppu.scanline = 80;
-    ppu.evaluate_sprite0_for_scanline();
+    ppu.evaluate_sprite0_for_scanline(80);
     EXPECT_TRUE(ppu.sprite0_on_this_scanline);
 
-    ppu.scanline = 81;
-    ppu.evaluate_sprite0_for_scanline();
+    ppu.evaluate_sprite0_for_scanline(81);
     EXPECT_FALSE(ppu.sprite0_on_this_scanline);
 }
 
@@ -475,6 +469,88 @@ GTEST_TEST(testSprite0Hit, oamaddr_is_aligned_down_to_a_sprite_record)
     // the next.
     ppu.write(PPU::OAMADDR, 0x06);
     EXPECT_TRUE(hit_during_one_frame(ppu)) << "OAMADDR is aligned down to the record containing it";
+}
+
+
+// --- WHEN sprite 0 is evaluated ------------------------------------------
+//
+// Evaluation for a line happens during the PREVIOUS line's dots 65-256, and is
+// resolved here at that line's dot 257. Two things follow, and neither held
+// when evaluation ran at dot 0 of the line being drawn.
+
+GTEST_TEST(testSprite0Hit, oam_written_after_the_window_does_not_reach_that_line)
+{
+    Bus console;
+    PPU& ppu = console.ppu;
+
+    // Sprite 0 parked well below the line under test, so nothing can hit yet.
+    set_up_an_overlapping_frame(ppu, 64, 200);
+
+    clock_until(ppu, PPU::pre_render_scanline, 1);
+    ppu.clock();  // clears the flag
+    ASSERT_EQ(0x00, ppu.registers.PPUSTATUS & 0x40);
+
+    // Past dot 257 of line 99: line 100 has already been evaluated.
+    clock_until(ppu, 99, 258);
+
+    // Now move sprite 0 onto lines 100-107. Line 100 must not see it, because
+    // its evaluation window has closed.
+    ppu.OAM_memory[0] = 99;
+    ppu.OAM_memory[3] = 64;
+
+    clock_until(ppu, 101, 0);
+    EXPECT_EQ(0x00, ppu.registers.PPUSTATUS & 0x40)
+        << "OAM changed after line 100's evaluation window, so line 100 cannot hit";
+
+    // Line 101 was evaluated at line 100's dot 257, with the new OAM in place,
+    // so it does hit - which is what makes the check above non-vacuous.
+    clock_until(ppu, 108, 0);
+    EXPECT_NE(0x00, ppu.registers.PPUSTATUS & 0x40)
+        << "the following lines were evaluated with the new OAM and must hit";
+}
+
+GTEST_TEST(testSprite0Hit, a_line_whose_evaluation_window_was_skipped_cannot_hit)
+{
+    Bus console;
+    PPU& ppu = console.ppu;
+
+    // Sprite 0 covers lines 100-107, with rendering on to begin with.
+    set_up_an_overlapping_frame(ppu, 64, 99);
+
+    clock_until(ppu, PPU::pre_render_scanline, 1);
+    ppu.clock();
+    ASSERT_EQ(0x00, ppu.registers.PPUSTATUS & 0x40);
+
+    // Part-way down the sprite, so sprite-0 state is live and says "present".
+    clock_until(ppu, 101, 100);
+    ASSERT_TRUE(ppu.sprite0_on_this_scanline) << "setup: sprite 0 should be live on line 101";
+
+    // Turn rendering off before line 102's evaluation window closes, so that
+    // window passes with rendering disabled and hardware builds no secondary
+    // OAM for line 102.
+    ppu.write(PPU::PPUMASK, 0x00);
+
+    // Clear the hit already recorded for lines 100-101 by hand - mid-frame
+    // there is no other way, and reading $2002 would also clear vblank and
+    // disturb the rest of the frame.
+    ppu.registers.PPUSTATUS = static_cast<uint8_t>(ppu.registers.PPUSTATUS & ~0x40);
+
+    // Rendering comes back part-way through line 102. Its evaluation never
+    // happened, so it must not hit however much of it is drawn - the stale
+    // "present" from line 101 must not carry over.
+    clock_until(ppu, 102, 40);
+    ppu.write(PPU::PPUMASK, kEverything);
+
+    clock_until(ppu, 103, 0);
+    EXPECT_EQ(0x00, ppu.registers.PPUSTATUS & 0x40)
+        << "line 102's evaluation window passed with rendering off, so it has no sprites";
+
+    // Line 103 onwards was evaluated with rendering on again, so normal service
+    // resumes - which is what stops the check above passing for the wrong
+    // reason.
+    clock_until(ppu, 106, 0);
+    EXPECT_NE(0x00, ppu.registers.PPUSTATUS & 0x40)
+        << "lines evaluated after rendering came back must hit normally";
 }
 
 }  // namespace sprite0

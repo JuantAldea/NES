@@ -362,13 +362,17 @@ public:
     // ONLY the hit flag. There is deliberately no sprite rendering here: no
     // secondary OAM, no eight-per-line limit, no overflow flag, no priority,
     // and no sprite pixels in the framebuffer. Sprite 0's OAM bytes are read
-    // straight out of OAM_memory[0..3].
+    // from the record OAMADDR points at.
     //
     // The flag is "set when any opaque pixel of sprite 0 overlaps any opaque
     // pixel of background, regardless of sprite priority" (NESdev, PPUSTATUS
     // bit 6), which needs nothing from sprite rendering except sprite 0's
     // opacity - so that is all that is computed.
-    void evaluate_sprite0_for_scanline();
+
+    // Resolves sprite 0 for target_scanline, which is the line AFTER the one
+    // being drawn. Called at dot 257, once the line's own pixels are done and
+    // hardware's evaluation window has closed.
+    void evaluate_sprite0_for_scanline(int target_scanline);
     void check_sprite0_hit(const int x);
 
     bool sprite0_on_this_scanline = false;

@@ -457,7 +457,7 @@ static uint8_t reverse_bits(uint8_t byte)
 // sprites are delayed a scanline by the way hardware evaluates them - so a
 // sprite with Y = 0 first appears on scanline 1, and one with Y = 239 never
 // appears at all.
-void PPU::evaluate_sprite0_for_scanline()
+void PPU::evaluate_sprite0_for_scanline(const int target_scanline)
 {
     sprite0_on_this_scanline = false;
 
@@ -477,7 +477,9 @@ void PPU::evaluate_sprite0_for_scanline()
     const uint8_t base = static_cast<uint8_t>(registers.OAMADDR & 0xFC);
 
     const int height = big_sprites ? 16 : 8;
-    const int row = scanline - (OAM_memory[base] + 1);
+    // OAM holds Y minus one: a sprite with Y = n first appears on scanline
+    // n + 1, which is why a Y of 255 can never be drawn.
+    const int row = target_scanline - (OAM_memory[base] + 1);
     if (row < 0 || row >= height) {
         return;
     }
@@ -561,16 +563,34 @@ void PPU::process_visible_scanline()
 {
     const bool pre_render = (scanline == pre_render_scanline);
 
-    if (rendering_enabled()) {
-        // Dot 0 is idle for the pipeline, which makes it the place to resolve
-        // sprite 0's row for the line about to be drawn. Hardware evaluates
-        // sprites during the PREVIOUS line's dots 65-256; the difference only
-        // shows if sprite 0's four OAM bytes are rewritten between the two,
-        // and none of the sprite-hit ROMs do that.
-        if (cycle == 0 && !pre_render) {
-            evaluate_sprite0_for_scanline();
+    // Sprite evaluation for the NEXT line runs during THIS line's dots 65-256,
+    // and the sprite pattern fetches that follow it occupy 257-320. Resolving
+    // sprite 0 at dot 257 puts it at the end of that window: late enough that
+    // the line's own pixels (dots 1-256) are finished, so a single set of
+    // sprite-0 state can be overwritten here without double buffering, and
+    // early enough that OAM writes made after this point cannot reach the line
+    // that is about to be drawn.
+    //
+    // It used to run at dot 0 of the line being drawn, which had two
+    // consequences. OAM rewritten between the two points was picked up a line
+    // early. And because it sat inside the rendering_enabled() guard, enabling
+    // rendering part-way through a frame left the previous evaluation in place,
+    // so a line whose evaluation never happened could still report a hit -
+    // hardware has no secondary OAM for such a line and cannot.
+    //
+    // Hence the else: no evaluation window means no sprite on the next line.
+    if (cycle == 257) {
+        if (rendering_enabled()) {
+            // The pre-render line evaluates for line 0; every visible line for
+            // the one after it. Line 239 evaluates for the post-render line,
+            // which draws nothing, so the result is simply unused.
+            evaluate_sprite0_for_scanline(pre_render ? 0 : scanline + 1);
+        } else {
+            sprite0_on_this_scanline = false;
         }
+    }
 
+    if (rendering_enabled()) {
         // Dots 1-256 fetch the tiles for THIS line (two tiles ahead of the
         // pixel being drawn), and 321-336 the first two tiles of the NEXT one.
         // Both regions shift; the gap between them, where hardware is fetching
