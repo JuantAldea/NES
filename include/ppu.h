@@ -376,6 +376,16 @@ public:
     void check_sprite0_hit(const int x);
 
     bool sprite0_on_this_scanline = false;
+
+    // OAMADDR as it stood when sprite evaluation began, aligned down to a
+    // sprite record.
+    //
+    // It has to be latched rather than read at evaluation time, because
+    // hardware forces OAMADDR to 0 across dots 257-320 of every rendering
+    // scanline - so by the time the evaluation is resolved, the value that
+    // chose the starting sprite is already gone.
+    uint8_t sprite_eval_oamaddr = 0;
+
     uint8_t sprite0_left_x = 0;
     // The eight columns of sprite 0's row, bit 7 leftmost, matching a pattern
     // byte's bit order - so horizontal flip is a bit reversal and nothing else.

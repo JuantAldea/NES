@@ -471,10 +471,10 @@ void PPU::evaluate_sprite0_for_scanline(const int target_scanline)
     // an OAMADDR pointing mid-record starts the record there. This models the
     // common case rather than the misaligned one.
     //
-    // NOT modelled: hardware also forces OAMADDR to 0 across dots 257-320 of
-    // every rendering scanline, which is what makes it 0 by default. Without
-    // that, the base here is simply whatever the CPU last wrote.
-    const uint8_t base = static_cast<uint8_t>(registers.OAMADDR & 0xFC);
+    // The value comes from the latch taken at dot 65, not from OAMADDR now:
+    // hardware clears OAMADDR across dots 257-320, so by the time this runs the
+    // value that chose the starting sprite has already been wiped.
+    const uint8_t base = sprite_eval_oamaddr;
 
     const int height = big_sprites ? 16 : 8;
     // OAM holds Y minus one: a sprite with Y = n first appears on scanline
@@ -591,6 +591,26 @@ void PPU::process_visible_scanline()
     }
 
     if (rendering_enabled()) {
+        // Sprite evaluation starts here and reads OAM from OAMADDR onwards, so
+        // this is the moment that decides which sprite is "sprite 0". Latched
+        // because the clear below destroys it before the evaluation is
+        // resolved at dot 257.
+        if (cycle == 65) {
+            sprite_eval_oamaddr = static_cast<uint8_t>(registers.OAMADDR & 0xFC);
+        }
+
+        // Hardware holds OAMADDR at 0 for the whole of the sprite-fetch
+        // window. This is what makes OAMADDR effectively 0 at the start of
+        // every evaluation, and therefore why sprite 0 is normally OAM[0]:
+        // the pre-render line clears it too, so even a value written during
+        // vblank is gone before line 0 is evaluated.
+        //
+        // It also means a game only sees the "sprite 0 moves" behaviour by
+        // writing $2003 mid-screen, between dots 321 and 64 of the next line.
+        if (cycle >= 257 && cycle <= 320) {
+            registers.OAMADDR = 0;
+        }
+
         // Dots 1-256 fetch the tiles for THIS line (two tiles ahead of the
         // pixel being drawn), and 321-336 the first two tiles of the NEXT one.
         // Both regions shift; the gap between them, where hardware is fetching

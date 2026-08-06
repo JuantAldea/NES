@@ -428,55 +428,114 @@ GTEST_TEST(testSprite0Hit, oam_y_is_one_less_than_the_first_scanline)
 // Every blargg sprite_hit ROM leaves OAMADDR at 0, so none of them can catch
 // this; it needs a hand-written case.
 
+// Puts a sprite that WILL overlap into the second OAM record, and parks the
+// first record off-screen so it can never hit. Only a non-zero OAMADDR can
+// produce a hit from this arrangement.
+void park_the_hitting_sprite_in_record_one(PPU& ppu)
+{
+    place_sprite0(ppu, 0xFF, 1, 0x00, 0xFF);  // OAM[0..3]: off-screen
+    ppu.OAM_memory[4] = 99;                   // OAM[4..7]: covers lines 100-107
+    ppu.OAM_memory[5] = 1;                    // solid tile
+    ppu.OAM_memory[6] = 0x00;
+    ppu.OAM_memory[7] = 64;
+}
+
+// Runs a frame from the pre-render line, writing OAMADDR at a given dot of
+// line 99 - the line whose evaluation decides line 100 - and reports whether a
+// hit happened by the end of line 100.
+bool hit_on_line_100_after_writing_oamaddr(PPU& ppu, int at_dot, uint8_t oamaddr)
+{
+    clock_until(ppu, PPU::pre_render_scanline, 1);
+    ppu.clock();  // clears the flag
+    EXPECT_EQ(0x00, ppu.registers.PPUSTATUS & 0x40);
+
+    clock_until(ppu, 99, at_dot);
+    ppu.write(PPU::OAMADDR, oamaddr);
+
+    clock_until(ppu, 101, 0);
+    return (ppu.registers.PPUSTATUS & 0x40) != 0;
+}
+
 GTEST_TEST(testSprite0Hit, a_non_zero_oamaddr_moves_which_sprite_can_hit)
 {
     Bus console;
     PPU& ppu = console.ppu;
-
-    // OAM[0] is parked far off-screen so it can never hit, and the sprite that
-    // SHOULD hit is put in the record at OAM[4..7].
     set_up_an_overlapping_frame(ppu, 64, 64);
-    place_sprite0(ppu, 0xFF, 1, 0x00, 0xFF);  // OAM[0]: off-screen, cannot hit
-    ppu.OAM_memory[4] = 64;                   // OAM[4]: overlapping the background
-    ppu.OAM_memory[5] = 1;                    // solid tile
-    ppu.OAM_memory[6] = 0x00;
-    ppu.OAM_memory[7] = 64;
+    park_the_hitting_sprite_in_record_one(ppu);
 
-    // With OAMADDR at 0, evaluation starts at the off-screen record: no hit.
-    ppu.write(PPU::OAMADDR, 0x00);
-    EXPECT_FALSE(hit_during_one_frame(ppu)) << "with OAMADDR at 0 the first record is OAM[0], which is off-screen";
+    // Dot 10 is before evaluation begins at dot 65, so this value is the one
+    // evaluation latches. The sprite in the second record is then the one that
+    // can hit.
+    EXPECT_TRUE(hit_on_line_100_after_writing_oamaddr(ppu, 10, 0x04))
+        << "evaluation starts at OAMADDR, so OAM[4..7] is the sprite that can hit";
+}
 
-    // Point OAMADDR at the second record and the same frame now hits.
-    ppu.write(PPU::OAMADDR, 0x04);
-    EXPECT_TRUE(hit_during_one_frame(ppu))
-        << "evaluation starts at OAMADDR, so the sprite at OAM[4..7] is the one that can hit";
+GTEST_TEST(testSprite0Hit, oamaddr_left_at_zero_evaluates_the_first_record)
+{
+    Bus console;
+    PPU& ppu = console.ppu;
+    set_up_an_overlapping_frame(ppu, 64, 64);
+    park_the_hitting_sprite_in_record_one(ppu);
+
+    // The same frame with OAMADDR still 0 evaluates the off-screen record, so
+    // nothing hits. Without this the test above could pass for the wrong
+    // reason.
+    EXPECT_FALSE(hit_on_line_100_after_writing_oamaddr(ppu, 10, 0x00))
+        << "with OAMADDR at 0 the first record is OAM[0], which is parked off-screen";
 }
 
 GTEST_TEST(testSprite0Hit, oamaddr_is_aligned_down_to_a_sprite_record)
 {
     Bus console;
     PPU& ppu = console.ppu;
-
     set_up_an_overlapping_frame(ppu, 64, 64);
-    place_sprite0(ppu, 0xFF, 1, 0x00, 0xFF);  // OAM[0]: cannot hit
-    ppu.OAM_memory[4] = 64;
-    ppu.OAM_memory[5] = 1;
-    ppu.OAM_memory[6] = 0x00;
-    ppu.OAM_memory[7] = 64;
+    park_the_hitting_sprite_in_record_one(ppu);
 
-    // $06 sits inside the second record; OAM is read as four-byte records, so
-    // it starts at $04 rather than reading three bytes of one sprite and one of
-    // the next.
-    ppu.write(PPU::OAMADDR, 0x06);
-    EXPECT_TRUE(hit_during_one_frame(ppu)) << "OAMADDR is aligned down to the record containing it";
+    // $06 sits inside the second record. OAM is read as four-byte records, so
+    // evaluation starts at $04 rather than reading three bytes of one sprite
+    // and one of the next.
+    EXPECT_TRUE(hit_on_line_100_after_writing_oamaddr(ppu, 10, 0x06))
+        << "OAMADDR is aligned down to the record containing it";
 }
 
+GTEST_TEST(testSprite0Hit, oamaddr_written_after_evaluation_starts_is_too_late)
+{
+    Bus console;
+    PPU& ppu = console.ppu;
+    set_up_an_overlapping_frame(ppu, 64, 64);
+    park_the_hitting_sprite_in_record_one(ppu);
 
-// --- WHEN sprite 0 is evaluated ------------------------------------------
-//
-// Evaluation for a line happens during the PREVIOUS line's dots 65-256, and is
-// resolved here at that line's dot 257. Two things follow, and neither held
-// when evaluation ran at dot 0 of the line being drawn.
+    // Evaluation latches OAMADDR at dot 65. A write after that cannot move
+    // which sprite is evaluated for the line that follows.
+    EXPECT_FALSE(hit_on_line_100_after_writing_oamaddr(ppu, 100, 0x04))
+        << "OAMADDR is latched when evaluation begins at dot 65, not read at the end of it";
+}
+
+GTEST_TEST(testSprite0Hit, oamaddr_written_during_vblank_is_cleared_before_line_0)
+{
+    Bus console;
+    PPU& ppu = console.ppu;
+    set_up_an_overlapping_frame(ppu, 64, 64);
+    park_the_hitting_sprite_in_record_one(ppu);
+
+    // Hardware holds OAMADDR at 0 across dots 257-320 of every rendering
+    // scanline, and the pre-render line is one of them. So a value written
+    // during vblank - the natural place to write it - is gone before line 0 is
+    // ever evaluated. This is why sprite 0 is OAM[0] in practice, and why the
+    // "write 0 to $2003 before a DMA" advice is about DMA rather than about
+    // sprite 0 selection.
+    clock_until(ppu, PPU::vblank_start_scanline, 10);
+    ppu.write(PPU::OAMADDR, 0x04);
+
+    clock_until(ppu, PPU::pre_render_scanline, 1);
+    ppu.clock();
+    ASSERT_EQ(0x00, ppu.registers.PPUSTATUS & 0x40);
+
+    clock_until(ppu, 110, 0);
+    EXPECT_EQ(0x00, ppu.registers.PPUSTATUS & 0x40)
+        << "the pre-render line clears OAMADDR, so a vblank write cannot select a sprite";
+    EXPECT_EQ(0x00, ppu.registers.OAMADDR) << "OAMADDR must have been cleared during rendering";
+}
 
 GTEST_TEST(testSprite0Hit, oam_written_after_the_window_does_not_reach_that_line)
 {
