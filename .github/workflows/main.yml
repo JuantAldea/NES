@@ -10,9 +10,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Qt is only needed by the qhex debugger, which the job below covers.
-      # Skipping it here keeps this job free of the heavyweight third-party Qt
-      # install action the previous version of this workflow depended on.
+      # SDL is only needed by the frontend, which the job below covers, and
+      # nothing under tests/ links it. Leaving it out here keeps the job that
+      # matters - the one running the ROM oracles - independent of the GUI.
       - name: Install build tools
         run: |
           # Kept from the previous workflow: without this, every apt-get install
@@ -46,7 +46,7 @@ jobs:
       # 5x slower; and Release/RelWithDebInfo would define NDEBUG and silently
       # neuter every assert-based regression test.
       - name: Configure
-        run: cmake -S . -B build -G Ninja -DNES_BUILD_QHEX=OFF
+        run: cmake -S . -B build -G Ninja -DNES_BUILD_FRONTEND=OFF
 
       - name: Build
         run: cmake --build build
@@ -73,25 +73,27 @@ jobs:
           echo "skipped:    $skipped  (SingleStepTests vectors not fetched in CI)"
           echo "executed:   $((total - skipped))"
 
-  qhex:
-    name: Build the Qt debugger
+  frontend:
+    name: Build the SDL2/ImGui frontend
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
 
-      # Qt from apt rather than a third-party action: one less dependency to
-      # rot, and the debugger only needs Widgets/Core/Gui.
-      - name: Install build tools and Qt
+      # libsdl2-dev is the only system package the frontend needs; Dear ImGui
+      # is fetched from source by CMake and compiled into the build, so there
+      # is no GUI toolkit to install beyond SDL itself.
+      - name: Install build tools and SDL2
         run: |
           sudo rm -f /var/lib/man-db/auto-update
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends ninja-build cmake g++ qtbase5-dev
+          sudo apt-get install -y --no-install-recommends ninja-build cmake g++ libsdl2-dev
 
       - name: Configure
-        run: cmake -S . -B build -G Ninja -DNES_BUILD_QHEX=ON
+        run: cmake -S . -B build -G Ninja -DNES_BUILD_FRONTEND=ON
 
-      # Compile-checks qhex and its QHexView dependency. The tests are covered
-      # by the job above, so only the debugger target is built here.
-      - name: Build qhex
-        run: cmake --build build --target qhex
+      # Compile-checks the frontend and its ImGui dependency. This job cannot
+      # RUN it - a GitHub runner has no display - so it proves the code builds
+      # and nothing more. The tests are covered by the job above.
+      - name: Build the frontend
+        run: cmake --build build --target nes_frontend

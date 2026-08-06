@@ -119,7 +119,7 @@ uint8_t Bus::read(const uint16_t addr)
 //
 // The access phase itself - CPU on master ticks divisible by 12, ahead of the
 // PPU - is the one the ROMs agree with, and is left alone.
-void Bus::clock()
+bool Bus::clock()
 {
     ++total_cycles;
 
@@ -157,8 +157,9 @@ void Bus::clock()
         apu.clock();
     }
 
+    bool completed_instruction = false;
     if (cpu_cycle) {
-        clock_CPU();
+        completed_instruction = clock_CPU();
     } else if (cpu_tick) {
         ppu.perform_OAM_DMA_cycle();
     }
@@ -175,6 +176,8 @@ void Bus::clock()
         // rose inside a DMA would be lost entirely.
         cpu.latch_nmi_edge();
     }
+
+    return completed_instruction;
 }
 
 void Bus::clock_PPU()
@@ -188,7 +191,26 @@ void Bus::clock_PPU()
 // dma_in_progress() itself, which meant the CPU tick and its interrupt sample
 // were guarded by two copies of the same condition - editing one would have
 // desynchronised them silently.
-void Bus::clock_CPU() { cpu.clock(false); }
+bool Bus::clock_CPU() { return cpu.clock(trace_cpu); }
+
+// The cap is not defensive padding. Two things genuinely never finish: a jammed
+// opcode (KIL/JAM), whose whole purpose is to stop fetching, and a CPU already
+// halted for the 513 cycles of an OAM DMA. A single-step that spun on either
+// would freeze the UI with no diagnosis at all, which is worse than reporting
+// that the CPU is stuck.
+//
+// 100000 master ticks is ~8300 CPU cycles: far more than the longest real
+// instruction plus a DMA that preempted it, and far less than a frame.
+bool Bus::step_instruction()
+{
+    constexpr int give_up_after = 100000;
+    for (int i = 0; i < give_up_after; ++i) {
+        if (clock()) {
+            return true;
+        }
+    }
+    return false;
+}
 
 void Bus::run_frame()
 {

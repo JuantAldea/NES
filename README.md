@@ -1,16 +1,16 @@
 # NES Emulator
 [![License: GPL v2](https://img.shields.io/badge/License-GPL%20v2-blue.svg)](https://www.gnu.org/licenses/old-licenses/gpl-2.0.en.html)
 
-A Nintendo Entertainment System emulator written in C++20, with a Qt debugger
-for inspecting a running machine.
+A Nintendo Entertainment System emulator written in C++20, with an SDL2 +
+Dear ImGui frontend that shows the picture and the machine drawing it side by
+side.
 
 ## Current status
 
-The CPU and the PPU are done far enough to draw a background. The emulator
-renders into a framebuffer of palette indices and sets the sprite 0 hit flag,
-but **nothing displays it yet** and there is no sprite rendering - so it can
-tell you exactly what a ROM did, and now also what it drew, without showing
-it to you.
+The CPU and the PPU are done far enough to draw a background, and the frontend
+puts it on screen. There is still **no sprite rendering** - sprite 0 hit is
+computed, but no sprite pixel is ever written - so a game will show its
+background and nothing that moves.
 
 | Area | State |
 |---|---|
@@ -21,10 +21,10 @@ it to you.
 | Sprites | Sprite 0 hit only. No priority, no 8-per-line, no overflow, no sprite pixels |
 | Cartridge | iNES, NROM (mapper 0) and CNROM (mapper 3), CHR-ROM and CHR-RAM |
 | APU | Frame counter and `/IRQ`. No audio. |
-| Display | Nothing renders the framebuffer |
+| Display | SDL2 + Dear ImGui: the screen and the debugger in one window |
 | Controllers | Not implemented |
 
-Next: a display for the framebuffer, and the rest of sprite rendering.
+Next: the rest of sprite rendering, then controllers.
 
 ## Features
 
@@ -92,11 +92,28 @@ Next: a display for the framebuffer, and the rest of sprite rendering.
         Passes all five `cpu_interrupts_v2` ROMs.
     *   **No audio.** No channels, no mixer, no output.
 
-### GUI Debugger (`qhex`)
-The project includes a graphical debugger built with Qt and QHexView, providing:
-*   A live hexadecimal view of the system memory.
-*   Real-time display of CPU registers and status flags.
-*   Controls for step-by-step execution, running, stopping, and resetting the emulation.
+### Frontend and debugger (`nes_frontend`)
+An SDL2 window hosting Dear ImGui panels:
+*   The 256x240 screen, scaled by an integer factor with nearest-neighbour
+    filtering, updated every frame.
+*   CPU registers, the decoded opcode at `PC`, and writable status flags.
+*   PPU state: scanline and dot, loopy `v`/`t`/`x`/`w` raw and decoded, and the
+    three status flags.
+*   A clipped hex view of the 2KB internal RAM, with `PC`, the stack pointer and
+    the stack base highlighted.
+*   Palette RAM as colour swatches, with the `$3F10`/`$3F14`/`$3F18`/`$3F1C`
+    aliases resolved so what is shown is what the PPU renders.
+*   Run, pause, single-step, step-one-frame, reset, and a CPU trace to stdout.
+
+No panel reads emulator state through `Bus::read` or `PPU::read`. Those are
+hardware ports where a read clears the vblank flag, advances the VRAM address or
+acknowledges an IRQ - a debugger that displayed them by reading them would
+change the run it is supposed to be observing.
+
+It replaced a Qt/QHexView debugger. Immediate mode suits a machine being
+single-stepped far better than a widget tree does, ImGui is vendored source
+rather than a system package, and SDL is what the APU's audio callback will need
+when there is audio to clock.
 
 ## Building the Project
 
@@ -104,11 +121,13 @@ The project includes a graphical debugger built with Qt and QHexView, providing:
 *   A C++20 compatible compiler (e.g., GCC, Clang)
 *   CMake (version 3.15 or later)
 *   Ninja (optional, for faster builds)
-*   Qt5 (Core, Widgets, Gui) - **optional**, only for the `qhex` debugger.
-    Configure with `-DNES_BUILD_QHEX=OFF` to skip it; the emulator and the test
-    suite build without Qt.
+*   SDL2 - **optional**, only for the `nes_frontend` target. Configure with
+    `-DNES_BUILD_FRONTEND=OFF` to skip it; CMake also skips it automatically if
+    SDL2 is not installed. The emulator libraries and the test suite build
+    without SDL, and nothing under `tests/` links the frontend.
 
-Google Test is fetched automatically by CMake, pinned to a release tag.
+Google Test and Dear ImGui are fetched automatically by CMake, each pinned to a
+release tag.
 
 ### Build Steps
 
@@ -134,14 +153,13 @@ The build process generates two executables in the `build/` directory.
 ### Command-Line (`NES`)
 Not production ready.
 
-### GUI Debugger (`qhex`)
-To use the graphical debugger:
+### Frontend and debugger (`nes_frontend`)
 ```sh
-./build/qhex
+./build/nes_frontend path/to/rom.nes    # loads and starts running
+./build/nes_frontend                    # then type a path, or drag a .nes in
 ```
-Use the "Load File" button to load a ROM into the emulator's memory at a specified address.
 
-![qhex Screenshot](https://github.com/JuantAldea/NES/blob/master/.github/docs/qhex.png)
+Panel positions are saved to `imgui.ini` in the working directory.
 
 ## Running Tests
 

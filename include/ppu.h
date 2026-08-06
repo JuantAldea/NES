@@ -185,9 +185,15 @@ public:
 
 private:
     uint16_t nametable_offset(const uint16_t addr) const;
-    static uint16_t palette_offset(const uint16_t addr);
 
 public:
+    // Public because anything that displays palette RAM has to apply the same
+    // fold. $3F10/$3F14/$3F18/$3F1C are aliases of $3F00/$04/$08/$0C, so the
+    // cells sitting behind them are never written and never read - a viewer
+    // that indexed palette_ram raw would show four entries the PPU does not
+    // use, in place of the four it does. Re-deriving the rule in the frontend
+    // instead would leave two copies free to drift apart.
+    static uint16_t palette_offset(const uint16_t addr);
 
     uint8_t& get_register(const RegisterMMap reg);
 

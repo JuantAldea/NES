@@ -36,9 +36,6 @@ set(CMAKE_SHARED_LINKER_FLAGS_CHECKED "" CACHE STRING "Shared linker flags for t
 mark_as_advanced(CMAKE_CXX_FLAGS_CHECKED CMAKE_C_FLAGS_CHECKED CMAKE_EXE_LINKER_FLAGS_CHECKED
                  CMAKE_SHARED_LINKER_FLAGS_CHECKED)
 
-set(CMAKE_AUTOMOC ON)
-set(CMAKE_AUTORCC ON)
-set(CMAKE_AUTOUIC ON)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_INCLUDE_CURRENT_DIR ON)
@@ -48,15 +45,16 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 add_compile_options(-Wall -Wextra -pedantic -Wno-unused-parameter)
 
-# The Qt-based debugger (qhex) is optional; the emulator libraries and the test
-# suite must configure and build without Qt present.
-option(NES_BUILD_QHEX "Build the Qt hex-editor/CPU debugger" ON)
+# The SDL2 + Dear ImGui frontend (screen + debugger) is optional; the emulator
+# libraries and the test suite must configure and build without SDL present.
+# Nothing under tests/ links it.
+option(NES_BUILD_FRONTEND "Build the SDL2/Dear ImGui frontend and debugger" ON)
 
-if(NES_BUILD_QHEX)
-    find_package(Qt5 COMPONENTS Widgets Core Gui)
-    if(NOT Qt5_FOUND)
-        message(STATUS "Qt5 not found - skipping the qhex debugger target")
-        set(NES_BUILD_QHEX OFF)
+if(NES_BUILD_FRONTEND)
+    find_package(SDL2 QUIET)
+    if(NOT SDL2_FOUND)
+        message(STATUS "SDL2 not found - skipping the frontend target")
+        set(NES_BUILD_FRONTEND OFF)
     endif()
 endif()
 
@@ -124,41 +122,70 @@ target_link_libraries(NES
     libInstruction
 )
 
-if(NES_BUILD_QHEX)
-    include_directories(${Qt5Widgets_INCLUDE_DIRS})
-    include_directories(${Qt5Core_INCLUDE_DIRS})
+if(NES_BUILD_FRONTEND)
+    # SDL2's own config package exports SDL2::SDL2 on every distribution that
+    # matters here; the variable form is the fallback for the older FindSDL2
+    # modules that do not.
+    if(TARGET SDL2::SDL2)
+        set(NES_SDL2_LIBS SDL2::SDL2)
+        set(NES_SDL2_INCLUDE_DIRS "")
+    else()
+        set(NES_SDL2_LIBS ${SDL2_LIBRARIES})
+        set(NES_SDL2_INCLUDE_DIRS ${SDL2_INCLUDE_DIRS})
+    endif()
 
+    # Dear ImGui ships no CMakeLists.txt of its own, so FetchContent only
+    # downloads it and the sources are compiled into a target here.
+    #
+    # Pinned to a release tag for the same reasons googletest is (see
+    # tests/CMakeLists.txt): a moving ref makes the build non-reproducible and
+    # breaks outright when upstream renames a branch.
+    #
+    # The plain branch, not `-docking`, is deliberate. Docking exists to put
+    # panels in separate OS windows; everything here lives in one, so taking it
+    # would mean pinning a permanently-unreleased branch for a feature the
+    # frontend does not use.
     FetchContent_Declare(
-        QHexView
-        SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/QHexView
-        GIT_REPOSITORY https://github.com/Dax89/QHexView.git
-        GIT_TAG        642db82e8fd649478db69f12245a08d7caef22ea
+        imgui
+        GIT_REPOSITORY https://github.com/ocornut/imgui.git
+        GIT_TAG        v1.92.9b
+        GIT_SHALLOW    TRUE
+        UPDATE_DISCONNECTED TRUE
+    )
+    FetchContent_MakeAvailable(imgui)
+
+    add_library(imgui
+        ${imgui_SOURCE_DIR}/imgui.cpp
+        ${imgui_SOURCE_DIR}/imgui_draw.cpp
+        ${imgui_SOURCE_DIR}/imgui_tables.cpp
+        ${imgui_SOURCE_DIR}/imgui_widgets.cpp
+        ${imgui_SOURCE_DIR}/backends/imgui_impl_sdl2.cpp
+        ${imgui_SOURCE_DIR}/backends/imgui_impl_sdlrenderer2.cpp
     )
 
-    FetchContent_GetProperties(QHexView)
-    FetchContent_MakeAvailable(QHexView)
-
-    add_library(QHexView
-        ${QHEXVIEW_SOURCES}
-        ${QHEXVIEW_HEADERS}
+    target_include_directories(imgui SYSTEM
+        PUBLIC
+            ${imgui_SOURCE_DIR}
+            ${imgui_SOURCE_DIR}/backends
+            ${NES_SDL2_INCLUDE_DIRS}
     )
 
-    find_package(Threads)
+    target_link_libraries(imgui PUBLIC ${NES_SDL2_LIBS})
 
-    add_executable(qhex qhex.cpp)
-    target_link_libraries(qhex
-        QHexView
+    # Third-party sources are not held to this project's warning flags. Without
+    # this, -Wall -Wextra -pedantic buries our own warnings under ImGui's.
+    target_compile_options(imgui PRIVATE -w)
+
+    add_executable(nes_frontend
+        frontend/main.cpp
+        frontend/debugger.cpp
+    )
+
+    target_link_libraries(nes_frontend
+        imgui
         libBus
         libCPU
         libInstruction
-        Qt5::Widgets
-        Qt5::Core
-        Qt5::Gui
-        Threads::Threads
-#[[
-        -fsanitize=address
-        -fno-omit-frame-pointer
-]]
     )
 endif()
 

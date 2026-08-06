@@ -25,9 +25,25 @@ public:
     // length of every DMA that had already run.
     uint64_t cpu_cycles = 0;
 
-    void clock();
-    void clock_CPU();
+    // Returns true on the master tick that completed a CPU instruction, which
+    // is the only moment an outside observer can safely inspect CPU state: in
+    // between, the schedule has a half-resolved address and a latched operand
+    // that belong to no architectural register.
+    //
+    // Every existing caller ignores the return and is unaffected.
+    bool clock();
+    bool clock_CPU();
     void clock_PPU();
+
+    // Passed to CPU::clock, which prints one line per instruction to stdout.
+    // Off by default so the headless harnesses stay silent; the frontend's
+    // Trace checkbox is the only thing that sets it.
+    bool trace_cpu = false;
+
+    // Runs until the CPU completes the instruction it is in the middle of.
+    // Returns false if it gave up instead - see the definition for why that is
+    // a real outcome and not defensive padding.
+    bool step_instruction();
 
     // Runs until the PPU finishes the frame it is in the middle of.
     //

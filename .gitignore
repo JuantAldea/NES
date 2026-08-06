@@ -32,8 +32,8 @@ build/
 *.out
 *.app
 
-# Fetched dependency (FetchContent SOURCE_DIR)
-QHexView/
+# Dear ImGui window layout, written by the frontend into the working directory
+imgui.ini
 
 # clangd index
 .cache/
