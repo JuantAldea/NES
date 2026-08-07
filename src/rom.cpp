@@ -3,6 +3,12 @@
 
 #include "../include/rom.h"
 
+// For bus->cpu.set_IRQ_line: the MMC3's counter drives a real wire into the
+// CPU, so the mapper needs the Bus definition rather than just a forward
+// declaration. bus.h includes rom.h, not the other way round, so this is safe
+// here and would not be in the header.
+#include "../include/bus.h"
+
 namespace
 {
 constexpr size_t INES_HEADER_SIZE = 16;
@@ -148,6 +154,21 @@ bool ROM::load(const std::string& path)
     }
     prg_ram_enabled = true;
     prg_ram_write_protected = false;
+
+    // The IRQ counter powers up disabled with everything clear. Releasing the
+    // /IRQ line matters as much as clearing the flag: loading a second
+    // cartridge into a running Bus would otherwise leave the previous game's
+    // assertion latched in the CPU, and the new one would take an interrupt it
+    // never asked for before executing a single instruction.
+    mmc3_irq_latch = 0;
+    mmc3_irq_counter = 0;
+    mmc3_irq_reload_pending = false;
+    mmc3_irq_enabled = false;
+    mmc3_irq_asserted = false;
+    mmc3_a12_high = false;
+    mmc3_a12_low_since = 0;
+    mmc3_update_irq_line();
+
     // Power-on bank is 0. The value is not specified by the hardware, but a
     // CNROM game sets it before drawing anything.
     chr_bank = 0;
@@ -215,13 +236,136 @@ void ROM::write(const uint16_t addr, const uint8_t data)
             }
             break;
 
+        case 0xC000:
+            if (odd) {
+                // $C001 does NOT reload the counter itself. It clears it and
+                // raises a flag that the NEXT rising edge of A12 acts on, which
+                // is why the reload value can be changed at $C000 after the
+                // fact and still take effect. Writing the counter directly here
+                // would make a $C001 immediately before an edge behave the same
+                // as one long before it, and 1-clocking measures the
+                // difference.
+                mmc3_irq_counter = 0;
+                mmc3_irq_reload_pending = true;
+            } else {
+                mmc3_irq_latch = data;
+            }
+            break;
+
+        case 0xE000:
+            if (odd) {
+                // $E001 enables. It does not re-examine the counter: a counter
+                // sitting at zero does not raise an IRQ until the next clock.
+                mmc3_irq_enabled = true;
+            } else {
+                // $E000 does two things at once, and both matter. It disables
+                // further IRQs AND acknowledges the current one - that is, it
+                // releases /IRQ. A handler that only cleared the enable flag
+                // would return to a line that is still held low and be
+                // re-entered forever.
+                mmc3_irq_enabled = false;
+                mmc3_irq_asserted = false;
+                mmc3_update_irq_line();
+            }
+            break;
+
         default:
-            // $C000-$FFFF is the IRQ counter, which is not implemented in this
-            // step. Writes are accepted and discarded so a ROM that programs it
-            // still runs; see the plan's Step 2.
+            // $8000-$FFFF is fully decoded by the three cases above; nothing
+            // else reaches here.
             break;
         }
     }
+}
+
+// A change on PPU address line A12, as the mapper sees it.
+//
+// The mapper is wired to the PPU's address bus and cannot tell a rendering
+// fetch from a $2006 write - both drive the same eleven-and-a-bit lines. So
+// this takes a raw address and looks at one bit of it, rather than being told
+// "a scanline happened".
+void ROM::mmc3_observe_a12(const uint16_t ppu_addr, const uint64_t ppu_cycle)
+{
+    if (mapper_id != 4) {
+        return;
+    }
+
+    const bool high = (ppu_addr & 0x1000) != 0;
+    const bool was_high = mmc3_a12_high;
+    mmc3_a12_high = high;
+
+    if (!high) {
+        // Falling edge: start the clock on how long the line stays down. A
+        // level that was already low must NOT restart it, or a run of $2xxx
+        // nametable fetches would keep resetting the timer and no edge would
+        // ever pass the filter.
+        if (was_high) {
+            mmc3_a12_low_since = ppu_cycle;
+        }
+        return;
+    }
+
+    if (was_high) {
+        return;  // still high - a level, not an edge.
+    }
+
+    // A rising edge, but only a long enough low period makes it a real one. See
+    // mmc3_a12_filter_dots for why the short ones have to be thrown away.
+    if (ppu_cycle - mmc3_a12_low_since < mmc3_a12_filter_dots) {
+        return;
+    }
+
+    mmc3_clock_irq_counter();
+}
+
+// One filtered rising edge. NESdev, and the ORDER here is the whole of it:
+//
+//   "if zero or the reload flag is true, it's reloaded with the IRQ latched
+//    value at $C000; otherwise, it decrements. If the IRQ counter is zero and
+//    IRQs are enabled ($E001), an IRQ is triggered."
+//
+// The zero test happens AFTER the reload-or-decrement, not before. Testing
+// first - "if the counter is zero, fire, then reload or decrement" - is the
+// classic MMC3 bug: it fires one edge late, so every raster split lands a
+// scanline low, and a latch of 0 never fires at all instead of firing on every
+// clock.
+//
+// This is the Sharp part (MMC3 revision B/C). Reloading to zero passes the test
+// below and raises an IRQ immediately, so a latch of $00 interrupts on every
+// clock - which is what 5-MMC3 asserts. The NEC revision A part suppresses that
+// case, and 6-MMC3_alt asserts the opposite; the two cannot both hold. Sharp is
+// implemented because Super Mario Bros. 3 and Mega Man 3 are Sharp boards, so
+// it is the behaviour real games were written against. See mmc3_rom_tests.cpp,
+// which pins 6-MMC3_alt's exact failure rather than hiding it.
+void ROM::mmc3_clock_irq_counter()
+{
+    if (mmc3_irq_counter == 0 || mmc3_irq_reload_pending) {
+        mmc3_irq_counter = mmc3_irq_latch;
+        mmc3_irq_reload_pending = false;
+    } else {
+        --mmc3_irq_counter;
+    }
+
+    if (mmc3_irq_counter == 0 && mmc3_irq_enabled) {
+        mmc3_irq_asserted = true;
+        mmc3_update_irq_line();
+    }
+}
+
+// /IRQ is open-drain and shared, so the mapper owns one bit of it and nothing
+// else. Going through CPU::set_IRQ_line rather than raise_IRQ is what keeps the
+// APU's frame counter and the DMC from having their assertions dropped when the
+// cartridge releases its own.
+void ROM::mmc3_update_irq_line()
+{
+    // The loader tests in memory_tests.cpp construct a ROM with no Bus at all,
+    // deliberately: parsing an iNES header needs nothing else, and giving those
+    // tests a whole console to exercise the header checks would be noise. A
+    // bus-less cartridge has no CPU to interrupt, so there is nothing to drive.
+    if (bus == nullptr) {
+        return;
+    }
+
+    bus->cpu.set_IRQ_line(CPU::IRQSource::cartridge, mmc3_irq_asserted);
 }
 
 // Which 1KB CHR bank a PPU address reads through.
