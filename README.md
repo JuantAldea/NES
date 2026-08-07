@@ -279,5 +279,36 @@ ctest --test-dir build -j8 --output-on-failure   # or pick your own level
 The 749 tests are dominated by the two per-opcode suites - 256 opcodes checked
 for their bus trace and 256 for their final state, 10,000 cases apiece.
 
+### Sanitizers
+
+`NES_SANITIZE` builds everything with the given `-fsanitize=` list. It is
+off by default, and orthogonal to the build type - the sanitizer build is the
+normal `Checked` build (`-O3 -g`, asserts live) plus instrumentation:
+
+```sh
+cmake -S . -B build-asan -G Ninja -DNES_SANITIZE=address,undefined
+cmake --build build-asan
+ASAN_OPTIONS=detect_leaks=1:detect_stack_use_after_return=1 \
+UBSAN_OPTIONS=print_stacktrace=1 ctest --test-dir build-asan -j8
+```
+
+CI runs exactly this on every push, as the **Test under ASan + UBSan** job.
+The suite currently reports **no** ASan errors, no UBSan diagnostics and no
+leaks.
+
+Two details worth knowing if you change this:
+
+* The build adds `-fno-sanitize-recover=all`. UBSan's default is to print a
+  diagnostic and continue, which exits 0 - so without this the job would go
+  green while stepping on undefined behaviour on every run.
+* Leak detection is deliberately left **on**. The argument for disabling it is
+  that a short-lived test binary leaking at exit is harmless noise, but that
+  argument assumes a dirty baseline; this suite has none, so detection is free
+  and the next leak becomes a build failure rather than something nobody sees.
+
+Instrumentation costs about **5x**: the ~342 tests CI executes take 3.7s
+normally and 19.6s under ASan+UBSan on 32 cores. That is why it is a separate
+CI job - the fast suite keeps reporting in seconds.
+
 ## License
 This project is licensed under the GNU General Public License v2.0. See the [LICENSE](LICENSE) file for details.
