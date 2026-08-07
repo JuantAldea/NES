@@ -8,10 +8,10 @@ side.
 ## Current status
 
 The CPU and the PPU render backgrounds and sprites, the frontend puts the
-picture on screen, and the controllers work. A mapper 0, 2 or 3 game should draw
-and respond to input - the 240p Test Suite runs, which is the most demanding
-thing here. There is no audio, and no mapper beyond those three, so MMC3's
-several hundred titles are still out of reach.
+picture on screen, and the controllers work. A mapper 0, 2, 3 or 4 game should
+draw and respond to input - Super Mario Bros plays, and the 240p Test Suite
+runs. MMC3 brings the scanline IRQ counter that raster splits need. There is
+still no audio.
 
 | Area | State |
 |---|---|
@@ -20,15 +20,14 @@ several hundred titles are still out of reach.
 | PPU address space | Pattern tables, nametable and palette mirroring, `$2007` buffer, OAM, open-bus decay |
 | PPU background | Loopy `v`/`t`/`x`/`w`, dot-exact tile pipeline, framebuffer of palette indices |
 | Sprites | Secondary OAM, per-dot evaluation, 8-per-line, the overflow search bug, priority, 8x16, flip. Passes blargg's 5 `sprite_overflow` and 11 `sprite_hit` ROMs |
-| Cartridge | iNES, NROM (0), UNROM (2) and CNROM (3), CHR-ROM and CHR-RAM |
+| Cartridge | iNES, NROM (0), UNROM (2), CNROM (3) and MMC3 (4), CHR-ROM and CHR-RAM |
+| MMC3 IRQ | A12-filtered scanline counter driving `/IRQ`. Passes 4 of blargg's 6 `mmc3_test_2` ROMs; see below |
 | APU | Frame counter and `/IRQ`. No audio. |
 | Display | SDL2 + Dear ImGui: the screen and the debugger in one window |
 | Controllers | Both ports at `$4016`/`$4017`, keyboard-driven. Passes blargg's `read_joy3` `test_buttons` |
 
-Next: MMC3 (mapper 4), which unlocks several hundred games and brings the
-scanline-counter IRQ - and with it the one deliberate PPU gap, the sprite
-pattern fetches skipped for empty slots, which only becomes observable once a
-mapper watches the PPU address bus.
+Next: APU audio, the largest subsystem still entirely absent. SDL is already a
+dependency and its audio callback is the natural clock for it.
 
 ### Verification: what has and has not been exercised
 
@@ -58,15 +57,29 @@ Two things about test counts that are easy to misread:
   Klaus. `cpu_exec_space` runs the CPU *through* I/O space, which is what pins
   CPU open bus.
 
-One deliberate divergence, asserted rather than hidden: `03-immediate` reports
+Two deliberate divergences, both asserted rather than hidden.
+
+`03-immediate` reports
 `AB ATX #n`. Opcode `$AB` computes `A = X = (A | magic) & immediate`, where
 `magic` is an analogue property of the physical chip. Measured, no value
 satisfies both oracles - `$FF` passes blargg and fails 3 SingleStepTests cases,
 `$EE` does the reverse. `$EE` is kept, and `tests/instr_test_roms.cpp` asserts
 that ROM fails on *exactly* ATX, so any other regression in it still shows up.
 
+`6-MMC3_alt` fails because it tests a different chip. Sharp and NEC MMC3 parts
+disagree about what happens when the IRQ latch is 0 - one reloads and fires on
+every clock, the other stops - and the two ROMs assert opposite things, so they
+cannot both pass. This implements **Sharp**, because SMB3 and Mega Man 3 are
+Sharp boards and that is what real games depend on.
+`tests/mmc3_rom_tests.cpp` pins `6-MMC3_alt`'s exact status and message, so a
+change in *how* it fails still surfaces.
+
+`4-scanline_timing` is a real gap rather than a divergence: it clears its first
+two subtests and fails the third on fine A12 timing. It is pinned the same way,
+so the day it starts passing, the test says so.
+
 Still unexercised by anything here: sustained play over minutes rather than a
-few thousand frames, and every mapper beyond 0, 2 and 3.
+few thousand frames, and every mapper beyond 0, 2, 3 and 4.
 
 ## Features
 
@@ -117,13 +130,27 @@ few thousand frames, and every mapper beyond 0, 2 and 3.
         here, covering CIRAM through `$2007` with both increment modes, PPU I/O
         mirroring, CHR-ROM reads, CNROM banking, sprite 0 hit, and OAM loaded
         from RAM, from ROM and from the PPU register file.
-    *   **No sprite rendering, no display.** No priority, no 8-per-line
-        evaluation, no overflow flag, no colour emphasis, and nothing draws the
-        framebuffer to a screen.
+    *   Sprites are complete: secondary OAM, per-dot evaluation, the
+        eight-per-line limit, the hardware overflow search bug, priority, 8x16
+        and both flips. Passes blargg's 11 `sprite_hit` and 5 `sprite_overflow`
+        ROMs.
+    *   Eight sprite pattern fetches happen on every rendering line, however
+        few sprites it has, because the empty ones still drive A12 and that is
+        what clocks an MMC3 counter. Proven by mutation: removing them fails
+        `2-details`.
+    *   **Still absent:** PPUMASK colour emphasis, and the "forced backdrop"
+        case where rendering is disabled with `v` pointing into palette space.
+        Both are documented in `include/ppu.h`.
 *   **Cartridge:**
-    *   iNES parsing with NROM (mapper 0) and CNROM (mapper 3), 16KB and 32KB
-        images, trainer support, and `$6000-$7FFF` PRG-RAM. CNROM's switchable
-        CHR window is what makes `ppu_read_buffer` reachable.
+    *   iNES parsing with NROM (0), UNROM (2), CNROM (3) and MMC3 (4), trainer
+        support, and `$6000-$7FFF` PRG-RAM. CNROM's switchable CHR window is
+        what makes `ppu_read_buffer` reachable; UNROM's PRG window is what runs
+        the 240p Test Suite.
+    *   MMC3 adds the register file, both PRG modes, CHR A12 inversion, runtime
+        mirroring and the scanline IRQ counter. Bus conflicts are deliberately
+        not modelled on any of these boards - cartridges store the bank number
+        at the address they write to, so the AND real hardware performs is a
+        no-op for correct software.
 *   **Bus:**
     *   A single address decode shared by reads and writes, so the two cannot
         disagree. Controller 1 at `$4016` is open bus for now.
@@ -232,7 +259,7 @@ so re-running is cheap.
 count actively hides this. The two per-opcode suites call `GTEST_SKIP` when the
 1.1 GB of vectors is absent, and a skipped test exits 0, so `ctest` counts it as
 a pass. With no vectors fetched the suite still reports "100% tests passed out
-of 749" while having executed 237 of them.
+of 872" while having executed 356 of them.
 
 The ROM suites behave the other way round: a missing ROM is a loud failure
 naming the fetch script to run, not a skip. So the failure modes are:
@@ -255,7 +282,7 @@ ninja -C build check     # or: make -C build check
 that writes a fixture writes a uniquely named one - and the suite is dominated
 by 512 per-opcode cases that parallelise perfectly.
 
-On 32 cores the full 749-test suite takes about **3 seconds**. Two things got
+On 32 cores the full 872-test suite takes about **4 seconds**. Two things got
 it there, and the second mattered more than the first:
 
 * Parallelism took it from 129s to 16s. Past that point the total was simply
@@ -276,7 +303,7 @@ ctest --test-dir build --output-on-failure
 ctest --test-dir build -j8 --output-on-failure   # or pick your own level
 ```
 
-The 854 tests are dominated by the two per-opcode suites - 256 opcodes checked
+The 872 tests are dominated by the two per-opcode suites - 256 opcodes checked
 for their bus trace and 256 for their final state, 10,000 cases apiece.
 
 ### Sanitizers

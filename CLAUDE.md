@@ -119,3 +119,23 @@ SingleStepTests runs), not for deciding.
 
 When an agent worktree is involved: it branches from `origin`, not `HEAD`, so
 fast-forward it before starting or unpushed commits go missing.
+
+### Which model does what
+
+The emulation work itself runs on the largest available model, and is not
+downgraded to save tokens. "Is this dummy read on cycle 4 or 5" is the entire
+value of the project; a cheaper answer there is not a cheaper answer, it is a
+wrong one that still compiles and still reports green.
+
+Subagents are cheaper, and the rule for when that is safe is: **a smaller model
+is acceptable exactly where the agent is required to show its evidence, so its
+output is checkable rather than trusted.**
+
+| Agent | Model | What makes it checkable |
+|---|---|---|
+| `hw-reference` | Sonnet | Must return source, URL and an explicit confidence level for every claim |
+| `rom-sweep` | Haiku | Must print the raw `ctest` output and the arithmetic behind its executed/skipped count |
+
+Strip those requirements and the model choice stops being defensible — so if
+either agent's instructions are ever loosened, raise its model in the same
+edit.
