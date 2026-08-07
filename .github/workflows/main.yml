@@ -80,6 +80,77 @@ jobs:
           echo "skipped:    $skipped  (SingleStepTests vectors + commercialRom, neither available in CI)"
           echo "executed:   $((total - skipped))"
 
+  sanitizers:
+    name: Test under ASan + UBSan
+    runs-on: ubuntu-latest
+
+    # The emulator is a pile of pointer arithmetic over fixed-size arrays -
+    # bus mirroring, PPU nametable folding, OAM indexing - and the suite drives
+    # it for hundreds of millions of cycles. That is exactly the shape of code
+    # ASan is good at, and until now the sanitizers had been run once, by hand,
+    # by a reviewer. This job makes that routine.
+    #
+    # It is a separate job from `test` rather than a step inside it so the
+    # normal suite still reports in a few seconds; this one is ~5x slower and
+    # should not sit in front of that feedback.
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install build tools
+        run: |
+          sudo rm -f /var/lib/man-db/auto-update
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ninja-build cmake g++
+
+      # Same fixtures as the `test` job, and same omission of
+      # fetch_single_step_tests.sh - see the comment there. Those 512 tests
+      # skip, so this job executes ~342 of them.
+      - name: Fetch test fixtures
+        run: |
+          tests/test_files/fetch_nestest.sh
+          tests/test_files/fetch_blargg_ppu.sh
+          tests/test_files/fetch_cpu_interrupts.sh
+          tests/test_files/fetch_ppu_address_space.sh
+          tests/test_files/fetch_blargg_ppu_2005.sh
+          tests/test_files/fetch_sprite_hit.sh
+          tests/test_files/fetch_ppu_read_buffer.sh
+          tests/test_files/fetch_sprite_overflow.sh
+          tests/test_files/fetch_read_joy3.sh
+          tests/test_files/fetch_visual_roms.sh
+          tests/test_files/fetch_cpu_behaviour.sh
+          tests/test_files/fetch_instr_test.sh
+          tests/test_files/fetch_cpu_exec_space.sh
+
+      # NES_SANITIZE keeps the default build type (Checked: -O3 -g, asserts
+      # live) and adds instrumentation on top. Asserts staying live matters
+      # here - they are the project's other correctness net, and a sanitizer
+      # build that quietly dropped them would cover less than the normal one.
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DNES_BUILD_FRONTEND=OFF -DNES_SANITIZE=address,undefined
+
+      - name: Build
+        run: cmake --build build
+
+      # detect_leaks is ON deliberately. The usual argument for turning it off
+      # - that a short-lived test binary leaking at exit is harmless noise - is
+      # an argument about tolerating a known-dirty baseline. This suite has no
+      # such baseline: it currently reports zero leaks, so leaving detection on
+      # costs nothing and makes the next leak a build failure instead of a
+      # thing nobody notices.
+      #
+      # detect_stack_use_after_return is measurably free here (19.9s vs 19.6s,
+      # inside the noise) and catches a class of bug the rest of this job
+      # cannot, so it is on too.
+      #
+      # print_stacktrace makes UBSan reports name a file:line instead of just
+      # a message. The binary is built with -fno-sanitize-recover=all, so a
+      # UBSan hit aborts and fails the test rather than printing and moving on.
+      - name: Test
+        env:
+          ASAN_OPTIONS: detect_leaks=1:detect_stack_use_after_return=1
+          UBSAN_OPTIONS: print_stacktrace=1:report_error_type=1
+        run: ctest --test-dir build -j"$(nproc)" --output-on-failure
+
   frontend:
     name: Build the SDL2/ImGui frontend
     runs-on: ubuntu-latest

@@ -45,6 +45,40 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 add_compile_options(-Wall -Wextra -pedantic -Wno-unused-parameter)
 
+# Sanitizers are opt-in and off by default: they change code generation for
+# every target, and the default build is the one people run constantly.
+#
+#   cmake -S . -B build-asan -G Ninja -DNES_SANITIZE=address,undefined
+#
+# NES_SANITIZE takes the raw -fsanitize= argument list, so `thread` or
+# `address` alone work too. It is deliberately NOT a new build type: the
+# sanitizer build wants exactly what Checked already provides (-O3 -g with
+# asserts live) plus instrumentation, and duplicating the build type would
+# mean keeping two copies of that rationale in sync.
+#
+# -O3 is kept rather than dropped to -O1. The suite is emulation-bound, and
+# ASan's slowdown multiplies whatever the baseline is; at -O1 the sanitizer
+# job would take roughly three times as long for no extra coverage. The frame
+# pointer is forced back on because -O3 drops it, and without it ASan's stack
+# traces degrade to noise.
+#
+# -fno-sanitize-recover=all matters more than it looks. UBSan's default is to
+# print a diagnostic and CARRY ON, which exits 0 - so a CI job would go green
+# while stepping on undefined behaviour on every run. Trapping makes the test
+# that hits it fail, which is the entire point of running this in CI.
+set(NES_SANITIZE "" CACHE STRING
+    "Sanitizers to build with, as a -fsanitize= list (e.g. address,undefined). Empty disables them.")
+
+if(NES_SANITIZE)
+    message(STATUS "Building with -fsanitize=${NES_SANITIZE}")
+    add_compile_options(
+        -fsanitize=${NES_SANITIZE}
+        -fno-sanitize-recover=all
+        -fno-omit-frame-pointer
+    )
+    add_link_options(-fsanitize=${NES_SANITIZE})
+endif()
+
 # The SDL2 + Dear ImGui frontend (screen + debugger) is optional; the emulator
 # libraries and the test suite must configure and build without SDL present.
 # Nothing under tests/ links it.
