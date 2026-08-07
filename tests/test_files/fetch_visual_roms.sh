@@ -1,16 +1,21 @@
 #!/bin/sh
 # Fetches the two ROMs used for LOOKING at the picture.
 #
-# Nothing in ctest runs these. They exist because the automated suite cannot
-# answer "does it look right" - the ROM oracles report pass/fail through RAM or
-# a nametable, and a renderer can satisfy every one of them while producing a
-# picture nobody would recognise. These are run by hand, through
-# `build/nes_frontend` or a PPM dump via include/frame_dump.h, and the output is
-# looked at.
+# They serve two purposes, and it is worth being clear which is which.
 #
-# They are pinned here so those checks are reproducible. Claiming "I looked at
-# it and it was fine" is worth very little if the next person cannot obtain the
-# same bytes.
+# AUTOMATED: tests/visual_rom_tests.cpp runs both under ctest. It asserts
+# structural facts, not appearance - 240pee switches PRG banks under its own
+# control (the only REAL mapper-2 image here, where unrom_tests.cpp only has
+# synthetic ones), spritecans saturates sprite evaluation at exactly eight per
+# line without exceeding it, and both render deterministically across two runs.
+#
+# BY HAND: judging whether the picture is RIGHT. No pass/fail ROM can do that -
+# a renderer can satisfy every oracle in the suite and still produce something
+# nobody would recognise. Run one through `build/nes_frontend`, or dump a PPM
+# with include/frame_dump.h, and look at it.
+#
+# Pinned so both are reproducible. "I looked at it and it was fine" is worth
+# little if the next person cannot obtain the same bytes.
 #
 #   spritecans.nes   NROM (mapper 0), 16KB PRG + 8KB CHR-ROM.
 #                    64 sprites bouncing, with deliberate OAM cycling so that no
