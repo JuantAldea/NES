@@ -370,39 +370,137 @@ public:
         0xE4E594, 0xCFEF96, 0xBDF4AB, 0xB3F3CC, 0xB5EBF2, 0xB8B8B8, 0x000000, 0x000000,
     };
 
-    // --- sprite 0 hit -------------------------------------------------------
+    // --- sprite rendering ---------------------------------------------------
     //
-    // ONLY the hit flag. There is deliberately no sprite rendering here: no
-    // secondary OAM, no eight-per-line limit, no overflow flag, no priority,
-    // and no sprite pixels in the framebuffer. Sprite 0's OAM bytes are read
-    // from the record OAMADDR points at.
+    // The sprite pipeline runs one scanline AHEAD of the pixels it produces,
+    // in three phases that do not overlap:
     //
-    // The flag is "set when any opaque pixel of sprite 0 overlaps any opaque
-    // pixel of background, regardless of sprite priority" (NESdev, PPUSTATUS
-    // bit 6), which needs nothing from sprite rendering except sprite 0's
-    // opacity - so that is all that is computed.
+    //   dots   1- 64  secondary OAM cleared to $FF
+    //   dots  65-256  sprite evaluation: scan primary OAM for sprites on the
+    //                 NEXT line, copy up to 8 into secondary OAM, set the
+    //                 overflow flag on the 9th
+    //   dots 257-320  pattern fetch: eight groups of eight dots load secondary
+    //                 OAM's sprites into the eight output units below
+    //
+    // So the units are loaded during line L and drawn during line L+1. That is
+    // what makes it safe for the fetch to overwrite them at dot 257: line L's
+    // own pixels (dots 1-256) are already finished.
 
-    // Resolves sprite 0 for target_scanline, which is the line AFTER the one
-    // being drawn. Called at dot 257, once the line's own pixels are done and
-    // hardware's evaluation window has closed.
-    void evaluate_sprite0_for_scanline(int target_scanline);
-    void check_sprite0_hit(const int x);
+    // 32 bytes: eight sprite records of {Y, tile, attributes, X}.
+    uint8_t secondary_oam[32] = {0};
 
-    bool sprite0_on_this_scanline = false;
+    // Sprite evaluation walks primary OAM as (sprite index n, byte index m),
+    // one OAM read on each odd dot and one secondary-OAM write on each even
+    // dot. It is a per-dot state machine rather than a batch loop because the
+    // moment the overflow flag is set is itself observable: 3.Timing measures
+    // it to within a CPU clock or two, and 5.Emulator exists specifically to
+    // defeat implementations that compute the flag once and cache it.
+    enum class SpriteEvalState : uint8_t {
+        // sprite_eval_latch holds a candidate Y read from OAM[4n + m].
+        ScanY,
+        // Copying bytes 1-3 of an in-range sprite into secondary OAM.
+        CopySprite,
+        // The three dummy reads hardware performs after the 9th in-range
+        // sprite is found (NESdev sprite evaluation, step 3a).
+        OverflowCopy,
+        // n has run off the end of OAM; the scan is over for this line.
+        Done,
+    };
+
+    SpriteEvalState sprite_eval_state = SpriteEvalState::Done;
+
+    // The sprite index (0-63) and byte index (0-3) the scan is looking at.
+    // Together they form the OAM address 4n + m, which is the ONE address the
+    // read phase ever uses - the difference between a normal scan and the
+    // buggy overflow scan is only in how the pair advances.
+    uint8_t sprite_eval_n = 0;
+    uint8_t sprite_eval_m = 0;
+
+    // Sprites copied into secondary OAM so far, 0-8. Doubles as the write
+    // cursor: the next sprite lands at secondary_oam[4 * found].
+    // KNOWN GAPS in sprite evaluation, found by adversarial review against the
+    // NESdev pages and deliberately left unimplemented rather than forgotten:
+    //
+    //  - The OAM hardware refresh bug. NESdev, PPU sprite evaluation (Notes):
+    //    on the 2C02G/H, starting evaluation with OAMADDR >= 8 copies the eight
+    //    bytes at OAMADDR & $F8 over the first eight bytes of OAM. Filed under
+    //    Errata, revision-specific, and no ROM in the suite covers it.
+    //
+    //  - $2004 WRITES during rendering. NESdev, PPU registers (OAMDATA): they
+    //    "do not modify values in OAM, but do perform a glitchy increment of
+    //    OAMADDR, bumping only the high 6 bits". This emulator writes OAM and
+    //    increments by 1. Pre-existing, not introduced by sprite evaluation.
+    //
+    //  - fetch_sprite_pattern returns early for slots past sprite_count, where
+    //    hardware always performs eight fetches, reading tile $FF for empty
+    //    slots. Unobservable on NROM/CNROM - but it becomes a real A12/IRQ
+    //    timing bug the moment a scanline-counting mapper such as MMC3 exists.
+    //
+    // Destination offset within the secondary-OAM slot being filled, counted
+    // separately from sprite_eval_m (the SOURCE byte index). They agree only
+    // when OAMADDR was record-aligned.
+    uint8_t sprite_eval_copy = 0;
+
+    uint8_t sprite_eval_found = 0;
+
+    // The byte read on an odd dot, consumed by the even dot that follows it.
+    uint8_t sprite_eval_latch = 0;
+
+    // Whether secondary OAM slot 0 holds OAM sprite 0. This is the whole of
+    // "which sprite can raise the hit flag": with a non-zero OAMADDR the first
+    // sprite evaluated is not OAM[0], so slot 0 is some other sprite and no
+    // hit is possible from it.
+    bool sprite_zero_in_secondary = false;
 
     // OAMADDR as it stood when sprite evaluation began, aligned down to a
-    // sprite record.
+    // sprite record. This is where the scan starts.
     //
     // It has to be latched rather than read at evaluation time, because
     // hardware forces OAMADDR to 0 across dots 257-320 of every rendering
-    // scanline - so by the time the evaluation is resolved, the value that
-    // chose the starting sprite is already gone.
+    // scanline - so by the time the sprites are fetched, the value that chose
+    // the starting sprite is already gone.
     uint8_t sprite_eval_oamaddr = 0;
 
-    uint8_t sprite0_left_x = 0;
-    // The eight columns of sprite 0's row, bit 7 leftmost, matching a pattern
-    // byte's bit order - so horizontal flip is a bit reversal and nothing else.
-    uint8_t sprite0_opaque_columns = 0;
+    // --- the eight sprite output units --------------------------------------
+    //
+    // Loaded during dots 257-320 of the previous line, consumed by
+    // render_pixel on dots 1-256 of this one.
+    //
+    // The pattern registers really do shift: on each dot a unit whose X
+    // counter has reached zero shifts one pixel out of the top. That is
+    // self-limiting - after eight shifts both bytes are zero, so the sprite
+    // simply stops being opaque - which is why nothing here has to track how
+    // many pixels of a sprite have been drawn.
+    uint8_t sprite_pattern_shift_low[8] = {0};
+    uint8_t sprite_pattern_shift_high[8] = {0};
+    uint8_t sprite_attribute_latch[8] = {0};
+    uint8_t sprite_x_counter[8] = {0};
+
+    // How many of the eight units hold a real sprite for the line being drawn,
+    // and whether unit 0 is OAM sprite 0. Snapshotted from the evaluation
+    // state at dot 257.
+    uint8_t sprite_count = 0;
+    bool sprite_zero_in_units = false;
+
+    // Is a sprite whose OAM Y byte is `y` on the line currently being
+    // evaluated? Sprites are delayed one scanline by evaluation running a line
+    // ahead: OAM holds Y one LESS than the first line the sprite appears on,
+    // so a sprite with Y = 239 appears only on line 239 and one with Y = 255
+    // can never be drawn at all.
+    //
+    // big_sprites is read live rather than latched, because 5.Emulator's test
+    // 5 changes sprite height mid-frame and expects the flag time to move.
+    bool sprite_in_range(const uint8_t y) const;
+
+    void clear_secondary_oam_dot();
+    void begin_sprite_evaluation();
+    void tick_sprite_evaluation();
+    void sprite_evaluation_read();
+    void sprite_evaluation_write();
+    void sprite_evaluation_advance_n();
+    void sprite_evaluation_advance_byte();
+    void load_sprite_units();
+    void fetch_sprite_pattern();
 
     void update_flags();
 };

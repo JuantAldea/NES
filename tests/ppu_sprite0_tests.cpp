@@ -382,6 +382,18 @@ GTEST_TEST(testSprite0Hit, an_8x16_sprite_takes_its_pattern_table_from_tile_bit_
 
 // --- the scanline a sprite occupies ----------------------------------------
 
+// How many sprites the output units hold while `line` is being drawn.
+//
+// This reads the pipeline's real result rather than calling an evaluator
+// directly: evaluation for line L happens during line L-1's dots 65-256 and is
+// loaded into the units at its dot 257, so sampling part-way through line L's
+// own visible dots is the only honest way to ask "is the sprite on this line".
+uint8_t sprites_on_line(PPU& ppu, int line)
+{
+    clock_until(ppu, line, 100);
+    return ppu.sprite_count;
+}
+
 GTEST_TEST(testSprite0Hit, oam_y_is_one_less_than_the_first_scanline)
 {
     // Sprite evaluation runs a line ahead, so OAM byte 0 is the scanline BEFORE
@@ -392,30 +404,35 @@ GTEST_TEST(testSprite0Hit, oam_y_is_one_less_than_the_first_scanline)
     write_the_standard_tiles(ppu);
     place_sprite0(ppu, 64, 1, 0x00, 0);
     ppu.write(PPU::PPUCTRL, 0x00);
+    // Evaluation only runs while rendering is enabled, so unlike the old
+    // direct-call version this has to actually turn it on.
+    ppu.write(PPU::PPUMASK, kEverything);
 
-    ppu.evaluate_sprite0_for_scanline(64);
-    EXPECT_FALSE(ppu.sprite0_on_this_scanline) << "scanline 64 is the Y byte itself";
+    clock_until(ppu, PPU::pre_render_scanline, 1);
 
-    ppu.evaluate_sprite0_for_scanline(65);
-    EXPECT_TRUE(ppu.sprite0_on_this_scanline) << "the sprite starts on the line after";
+    EXPECT_EQ(0u, sprites_on_line(ppu, 64)) << "scanline 64 is the Y byte itself";
+    EXPECT_EQ(1u, sprites_on_line(ppu, 65)) << "the sprite starts on the line after";
+    EXPECT_EQ(1u, sprites_on_line(ppu, 72)) << "eight lines, 65-72";
+    EXPECT_EQ(0u, sprites_on_line(ppu, 73)) << "and no more";
+}
 
-    ppu.evaluate_sprite0_for_scanline(72);
-    EXPECT_TRUE(ppu.sprite0_on_this_scanline) << "eight lines, 65-72";
-
-    ppu.evaluate_sprite0_for_scanline(73);
-    EXPECT_FALSE(ppu.sprite0_on_this_scanline) << "and no more";
-
-    // In 8x16 mode the same sprite covers sixteen lines, 65-80. Tile $02 means
-    // tiles 2 and 3; only the bottom one needs to be opaque for the last line
-    // of the range to register.
-    ppu.write(PPU::PPUCTRL, 0x20);
-    ppu.OAM_memory[1] = 0x02;
+GTEST_TEST(testSprite0Hit, an_8x16_sprite_covers_sixteen_scanlines)
+{
+    Bus console;
+    PPU& ppu = console.ppu;
+    run_past_reset_lockout(ppu);
+    write_the_standard_tiles(ppu);
+    place_sprite0(ppu, 64, 0x02, 0x00, 0);
+    // Tile $02 in 8x16 mode means tiles 2 and 3 of the table bit 0 selects.
     write_tile(ppu, 0x0000, 3, kSolid);
-    ppu.evaluate_sprite0_for_scanline(80);
-    EXPECT_TRUE(ppu.sprite0_on_this_scanline);
 
-    ppu.evaluate_sprite0_for_scanline(81);
-    EXPECT_FALSE(ppu.sprite0_on_this_scanline);
+    ppu.write(PPU::PPUCTRL, 0x20);  // 8x16
+    ppu.write(PPU::PPUMASK, kEverything);
+
+    clock_until(ppu, PPU::pre_render_scanline, 1);
+
+    EXPECT_EQ(1u, sprites_on_line(ppu, 80)) << "sixteen lines, 65-80";
+    EXPECT_EQ(0u, sprites_on_line(ppu, 81)) << "and no more";
 }
 
 
@@ -484,18 +501,46 @@ GTEST_TEST(testSprite0Hit, oamaddr_left_at_zero_evaluates_the_first_record)
         << "with OAMADDR at 0 the first record is OAM[0], which is parked off-screen";
 }
 
-GTEST_TEST(testSprite0Hit, oamaddr_is_aligned_down_to_a_sprite_record)
+// NESdev, $2003: "If OAMADDR is unaligned and does not point to the Y position
+// (first byte) of an OAM entry, then whatever it points to (tile index,
+// attribute, or X coordinate) will be reinterpreted as a Y position, and the
+// following bytes will be similarly reinterpreted."
+//
+// This replaces a test that asserted the OPPOSITE - that OAMADDR is aligned
+// down to the record containing it - and wrote that up as though it were the
+// hardware rule. It was this emulator's simplification presented as spec, and
+// because it passed, correcting the simplification would have meant deleting a
+// green test: exactly the shape of thing that keeps a bug alive.
+GTEST_TEST(testSprite0Hit, a_misaligned_oamaddr_reinterprets_the_following_bytes)
 {
     Bus console;
     PPU& ppu = console.ppu;
     set_up_an_overlapping_frame(ppu, 64, 64);
-    park_the_hitting_sprite_in_record_one(ppu);
 
-    // $06 sits inside the second record. OAM is read as four-byte records, so
-    // evaluation starts at $04 rather than reading three bytes of one sprite
-    // and one of the next.
+    // Records 0 and 1 are parked off-screen, so nothing is found by reading OAM
+    // as aligned four-byte records at all.
+    place_sprite0(ppu, 0xFF, 1, 0x00, 0xFF);
+    ppu.OAM_memory[4] = 0xFF;
+    ppu.OAM_memory[5] = 0xFF;
+
+    // A sprite laid out from OAM[6] onwards, straddling the boundary between
+    // records 1 and 2. As records this is nonsense; read from $06 it is
+    // Y=99 (covering line 100), a solid tile, attribute 0, X=64.
+    ppu.OAM_memory[6] = 99;
+    ppu.OAM_memory[7] = 1;
+    ppu.OAM_memory[8] = 0x00;
+    ppu.OAM_memory[9] = 64;
+
     EXPECT_TRUE(hit_on_line_100_after_writing_oamaddr(ppu, 10, 0x06))
-        << "OAMADDR is aligned down to the record containing it";
+        << "the byte at OAMADDR must be reinterpreted as a Y position";
+
+    // The control, and the thing the old behaviour did: starting at $04 reads
+    // OAM[4] = $FF as the Y, which is off-screen, and nothing else is in range.
+    // A build that aligns $06 down to $04 fails the assertion above and passes
+    // this one, so the pair distinguishes the two implementations rather than
+    // merely observing that something happened.
+    EXPECT_FALSE(hit_on_line_100_after_writing_oamaddr(ppu, 10, 0x04))
+        << "an aligned start at $04 reads $FF as the Y, so nothing is in range";
 }
 
 GTEST_TEST(testSprite0Hit, oamaddr_written_after_evaluation_starts_is_too_late)
@@ -580,9 +625,10 @@ GTEST_TEST(testSprite0Hit, a_line_whose_evaluation_window_was_skipped_cannot_hit
     ppu.clock();
     ASSERT_EQ(0x00, ppu.registers.PPUSTATUS & 0x40);
 
-    // Part-way down the sprite, so sprite-0 state is live and says "present".
+    // Part-way down the sprite, so the output units are live and hold sprite 0.
     clock_until(ppu, 101, 100);
-    ASSERT_TRUE(ppu.sprite0_on_this_scanline) << "setup: sprite 0 should be live on line 101";
+    ASSERT_EQ(1u, ppu.sprite_count) << "setup: sprite 0 should be in the units on line 101";
+    ASSERT_TRUE(ppu.sprite_zero_in_units) << "setup: unit 0 should be OAM sprite 0";
 
     // Turn rendering off before line 102's evaluation window closes, so that
     // window passes with rendering disabled and hardware builds no secondary
