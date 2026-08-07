@@ -58,6 +58,50 @@ public:
     uint8_t prg_bank = 0;
     uint8_t prg_bank_count = 0;
 
+    // --- MMC3 (mapper 4) ----------------------------------------------------
+    //
+    // Eight bank registers behind a select/data pair, rather than a single
+    // latch. $8000 chooses which of R0-R7 the next $8001 write lands in, and
+    // also carries the two mode bits that decide WHICH window each register
+    // drives:
+    //
+    //   R0, R1   2KB CHR banks   (bit 0 ignored - "R0 and R1 ignore the bottom bit")
+    //   R2-R5    1KB CHR banks
+    //   R6, R7   8KB PRG banks   (top two bits ignored - only 6 PRG address lines)
+    //
+    // The two mode bits invert which half of the address space the switchable
+    // windows occupy, which is why they are kept rather than folded in at write
+    // time: a later mode change has to re-point the existing register values.
+    uint8_t mmc3_bank_select = 0;   // the last value written to $8000
+    uint8_t mmc3_bank[8] = {0};     // R0-R7
+
+    // $8000 bit 6: 0 -> $8000-$9FFF switchable, $C000-$DFFF fixed to second-last
+    //              1 -> $C000-$DFFF switchable, $8000-$9FFF fixed to second-last
+    bool mmc3_prg_mode_swapped() const { return (mmc3_bank_select & 0x40) != 0; }
+
+    // $8000 bit 7: swaps the 2KB and 1KB CHR windows between $0000 and $1000.
+    bool mmc3_chr_a12_inverted() const { return (mmc3_bank_select & 0x80) != 0; }
+
+    // $A001: bit 7 enables the PRG-RAM chip, bit 6 write-protects it. Held here
+    // because the mapper owns them, but PrgRAM is a separate Bus device, so the
+    // Bus is what has to consult these.
+    bool prg_ram_enabled = true;
+    bool prg_ram_write_protected = false;
+
+    // How many 8KB PRG banks and 1KB CHR banks the cartridge carries. MMC3
+    // indexes in those units, unlike UNROM's 16KB and CNROM's 8KB.
+    uint16_t prg_8k_bank_count = 0;
+    uint16_t chr_1k_bank_count = 0;
+
     std::vector<uint8_t> prg_rom;
     std::vector<uint8_t> chr_rom;
+
+private:
+    // Which 1KB CHR bank the given PPU address currently reads through, and
+    // which 8KB PRG bank the given CPU address does. Split out because both are
+    // pure functions of the register file and the mode bits, and are far easier
+    // to test and to reason about than the same arithmetic inlined into
+    // chr_read()/read().
+    uint16_t mmc3_chr_bank_for(const uint16_t ppu_addr) const;
+    uint16_t mmc3_prg_bank_for(const uint16_t cpu_addr) const;
 };
