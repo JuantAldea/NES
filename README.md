@@ -53,6 +53,16 @@ Two things about test counts that are easy to misread:
 * **CI executes far fewer tests than it reports.** The 512 per-opcode
   SingleStepTests need 1.1 GB of vectors that CI does not fetch, so they skip
   there and run only locally. The workflow prints the breakdown on every run.
+  blargg's `instr_test-v5` singles cover all 256 opcodes in a few hundred KB and
+  DO run in CI, so instruction coverage there is no longer just nestest and
+  Klaus.
+
+One deliberate divergence, asserted rather than hidden: `03-immediate` reports
+`AB ATX #n`. Opcode `$AB` computes `A = X = (A | magic) & immediate`, where
+`magic` is an analogue property of the physical chip. Measured, no value
+satisfies both oracles - `$FF` passes blargg and fails 3 SingleStepTests cases,
+`$EE` does the reverse. `$EE` is kept, and `tests/instr_test_roms.cpp` asserts
+that ROM fails on *exactly* ATX, so any other regression in it still shows up.
 
 Still unexercised by anything here: sustained play over minutes rather than a
 few thousand frames, and every mapper beyond 0, 2 and 3.
