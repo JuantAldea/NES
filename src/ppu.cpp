@@ -421,22 +421,94 @@ void PPU::render_pixel()
                                        ((bg_attribute_shift_high & tap) ? 0x02 : 0x00));
     }
 
-    // Colour 0 of every palette is not stored: it reads through to the backdrop
-    // at $3F00. A transparent pixel and a disabled background are therefore the
-    // same pixel.
-    const uint16_t palette_addr =
-        pixel == 0 ? 0x3F00 : static_cast<uint16_t>(0x3F00 + (palette << 2) + pixel);
+    // --- the sprite multiplexer ------------------------------------------
+    //
+    // Only ONE sprite reaches the pixel: the lowest-numbered secondary-OAM slot
+    // with an opaque pixel here. Secondary OAM is filled in primary-OAM order,
+    // so "lowest slot" is "lowest OAM index", and that IS the sprite-versus-
+    // sprite priority rule - a sprite occludes every higher-numbered sprite
+    // regardless of its own priority bit. Attribute bit 5 decides only sprite
+    // versus BACKGROUND, below.
+    const bool sprites_visible = show_sprites && (x >= 8 || show_sprites_in_leftmost);
+
+    uint8_t sprite_pixel = 0;
+    uint8_t sprite_palette = 0;
+    bool sprite_behind_background = false;
+    bool sprite_zero_here = false;
+
+    for (int i = 0; i < sprite_count; ++i) {
+        // The X counter has not counted down to this sprite's left edge yet.
+        if (sprite_x_counter[i] != 0) {
+            continue;
+        }
+
+        const uint8_t bits = static_cast<uint8_t>(((sprite_pattern_shift_low[i] >> 7) & 0x01) |
+                                                  (((sprite_pattern_shift_high[i] >> 7) & 0x01) << 1));
+        if (bits == 0) {
+            continue;
+        }
+
+        sprite_pixel = bits;
+        sprite_palette = static_cast<uint8_t>(sprite_attribute_latch[i] & 0x03);
+        sprite_behind_background = (sprite_attribute_latch[i] & 0x20) != 0;
+        sprite_zero_here = (i == 0) && sprite_zero_in_units;
+        break;
+    }
+
+    // --- sprite 0 hit -----------------------------------------------------
+    //
+    // NESdev, PPUSTATUS bit 6: set "when any opaque pixel of sprite 0 overlaps
+    // an opaque pixel of background, REGARDLESS OF SPRITE PRIORITY" - so
+    // sprite_behind_background is deliberately NOT consulted here. Nor does it
+    // matter whether sprite 0 won the multiplexer, though in practice it always
+    // does: it sits in slot 0, so an opaque pixel of it beats every other slot.
+    //
+    // "Cannot detect collision at X=255, nor anywhere where either sprites or
+    // backgrounds are disabled via PPUMASK. This includes X=0..7 when the
+    // leftmost 8 pixels are hidden." Both left-clips are already folded in -
+    // `pixel` came through background_visible and `sprite_pixel` through
+    // sprites_visible - so a hit under either hidden column cannot reach here.
+    //
+    // X=255 is excluded by the hardware itself: the pixel pipeline has nowhere
+    // to carry the comparison to. Deleting that one condition makes blargg's
+    // 11.edge_timing report FAILED #3 and 06.right_edge FAILED #2.
+    if (sprites_visible && sprite_zero_here && sprite_pixel != 0 && pixel != 0 && x != 255) {
+        set_sprite0_hit();
+    }
+
+    // --- background versus sprite ----------------------------------------
+    //
+    // A transparent pixel always loses. When both are opaque, attribute bit 5
+    // decides. Sprite palettes live in the upper half of palette RAM at $3F10.
+    uint16_t palette_addr;
+    if (sprites_visible && sprite_pixel != 0 && (pixel == 0 || !sprite_behind_background)) {
+        palette_addr = static_cast<uint16_t>(0x3F10 + (sprite_palette << 2) + sprite_pixel);
+    } else if (pixel == 0) {
+        // Colour 0 of every palette is not stored: it reads through to the
+        // backdrop at $3F00. A transparent pixel and a disabled background are
+        // therefore the same pixel.
+        palette_addr = 0x3F00;
+    } else {
+        palette_addr = static_cast<uint16_t>(0x3F00 + (palette << 2) + pixel);
+    }
 
     // Greyscale (PPUMASK bit 0) forces the low four bits of the index, which
     // collapses every hue onto the grey column of the NES palette.
     const uint8_t colour = static_cast<uint8_t>(ppu_bus_read(palette_addr) & (greyscale ? 0x30 : 0x3F));
     framebuffer[scanline * screen_width + x] = colour;
 
-    // Sprite 0 hit needs the background's OPACITY at this dot, and this is the
-    // only place it is known. `pixel` is already through the background's
-    // left-clip, so a hit under a hidden left column cannot get this far.
-    if (pixel != 0) {
-        check_sprite0_hit(x);
+    // The units advance at the END of the dot, so the pixel chosen above is the
+    // one the counters described on entry. A sprite whose counter has reached
+    // zero shifts one pixel out of the top of its pattern registers; after
+    // eight shifts both bytes are zero and the sprite stops being opaque of its
+    // own accord, which is why nothing here tracks a per-sprite pixel count.
+    for (int i = 0; i < sprite_count; ++i) {
+        if (sprite_x_counter[i] != 0) {
+            --sprite_x_counter[i];
+            continue;
+        }
+        sprite_pattern_shift_low[i] = static_cast<uint8_t>(sprite_pattern_shift_low[i] << 1);
+        sprite_pattern_shift_high[i] = static_cast<uint8_t>(sprite_pattern_shift_high[i] << 1);
     }
 }
 
@@ -450,48 +522,255 @@ static uint8_t reverse_bits(uint8_t byte)
     return byte;
 }
 
-// Works out which of sprite 0's eight columns are opaque on the scanline about
-// to be drawn, and where they start.
-//
 // OAM byte 0 is the Y one LESS than the first line the sprite appears on -
-// sprites are delayed a scanline by the way hardware evaluates them - so a
-// sprite with Y = 0 first appears on scanline 1, and one with Y = 239 never
+// sprites are delayed a scanline by evaluation running a line ahead - so a
+// sprite with Y = 0 first appears on scanline 1, and one with Y = 255 never
 // appears at all.
-void PPU::evaluate_sprite0_for_scanline(const int target_scanline)
+//
+// Evaluation on line L is for line L+1, so the sprite covers L+1 when
+// (L+1) - (Y+1) is within its height; the two +1s cancel and the comparison is
+// against the CURRENT scanline. Writing it as target_scanline - (Y + 1) would
+// be the same arithmetic spelled less obviously.
+bool PPU::sprite_in_range(const uint8_t y) const
 {
-    sprite0_on_this_scanline = false;
+    const int row = scanline - static_cast<int>(y);
+    // Read live, not latched at the start of the line: 5.Emulator's test 5
+    // changes sprite height part-way through and expects the overflow flag's
+    // timing to move with it.
+    return row >= 0 && row < (big_sprites ? 16 : 8);
+}
 
-    // "Sprite 0" is not OAM[0]. Hardware sprite evaluation begins at whatever
-    // OAMADDR holds when it starts, and the sprite that can raise the hit flag
-    // is the FIRST one evaluated - so it is the sprite at OAMADDR, and a
-    // non-zero OAMADDR shifts which sprite that is. Games are expected to set
-    // OAMADDR to 0 before an OAM DMA precisely because of this.
-    //
-    // Aligned down to a four-byte boundary: OAM is read as sprite records, so
-    // an OAMADDR pointing mid-record starts the record there. This models the
-    // common case rather than the misaligned one.
-    //
-    // The value comes from the latch taken at dot 65, not from OAMADDR now:
-    // hardware clears OAMADDR across dots 257-320, so by the time this runs the
-    // value that chose the starting sprite has already been wiped.
-    const uint8_t base = sprite_eval_oamaddr;
+// Dots 1-64. Hardware writes $FF into one byte of secondary OAM on each even
+// dot, which is why this is 32 writes across 64 dots rather than a memset.
+//
+// $FF matters as a value, not just as "cleared": it is a Y of 255, which
+// sprite_in_range rejects on every scanline, so an unfilled slot is naturally
+// an empty one.
+void PPU::clear_secondary_oam_dot()
+{
+    if ((cycle % 2) == 0) {
+        secondary_oam[(cycle / 2) - 1] = 0xFF;
+    }
+}
 
-    const int height = big_sprites ? 16 : 8;
-    // OAM holds Y minus one: a sprite with Y = n first appears on scanline
-    // n + 1, which is why a Y of 255 can never be drawn.
-    const int row = target_scanline - (OAM_memory[base] + 1);
-    if (row < 0 || row >= height) {
+// Dot 65: the scan's starting point is fixed here.
+//
+// "Sprite 0" is not necessarily OAM[0]. Hardware sprite evaluation begins at
+// whatever OAMADDR holds when it starts, so a non-zero OAMADDR shifts which
+// sprite lands in secondary OAM slot 0 - and only that slot can raise the hit
+// flag. Games are expected to set OAMADDR to 0 before an OAM DMA precisely
+// because of this.
+//
+// Aligned down to a four-byte boundary: OAM is read as sprite records, so an
+// OAMADDR pointing mid-record starts the record there. This models the common
+// case rather than the misaligned one.
+void PPU::begin_sprite_evaluation()
+{
+    sprite_eval_oamaddr = static_cast<uint8_t>(registers.OAMADDR & 0xFC);
+
+    sprite_eval_n = static_cast<uint8_t>(sprite_eval_oamaddr >> 2);
+    sprite_eval_m = 0;
+    sprite_eval_found = 0;
+    sprite_eval_latch = 0;
+    sprite_zero_in_secondary = false;
+    sprite_eval_state = SpriteEvalState::ScanY;
+}
+
+// Dots 65-256, one dot at a time.
+//
+// Hardware does one primary-OAM read on each ODD dot and one secondary-OAM
+// write (or the decision that stands in for it) on each EVEN dot. Splitting it
+// that way is not decoration: it is what puts the overflow flag's set on a
+// specific dot, which is the whole of 3.Timing.
+void PPU::tick_sprite_evaluation()
+{
+    if (cycle % 2) {
+        sprite_evaluation_read();
+    } else {
+        sprite_evaluation_write();
+    }
+}
+
+// The odd dot. There is only ever ONE address: 4n + m.
+//
+// A normal scan holds m at 0 and steps n, so it reads each sprite's Y. The
+// buggy overflow scan steps BOTH, so it reads some other byte of a later
+// sprite and treats that as a Y. Sharing the address expression is what makes
+// the bug a property of how n and m advance rather than a special case here.
+void PPU::sprite_evaluation_read()
+{
+    if (sprite_eval_state == SpriteEvalState::Done) {
         return;
     }
 
-    const uint8_t tile = OAM_memory[base + 1];
-    const uint8_t attributes = OAM_memory[base + 2];
-    const bool flip_horizontally = attributes & 0x40;
+    const uint8_t address = static_cast<uint8_t>(sprite_eval_n * 4 + sprite_eval_m);
+    sprite_eval_latch = OAM_memory[address];
+}
+
+// n only ever moves forward, and the scan ends when it runs off the end of OAM
+// rather than wrapping. That is why a non-zero OAMADDR makes the sprites below
+// it disappear instead of being picked up on a second pass.
+void PPU::sprite_evaluation_advance_n()
+{
+    ++sprite_eval_n;
+    if (sprite_eval_n > 63) {
+        sprite_eval_state = SpriteEvalState::Done;
+    }
+}
+
+// The even dot: what the byte just read means, and where the scan goes next.
+//
+// Transcribed from NESdev "PPU sprite evaluation". Every caller of
+// sprite_evaluation_advance_n leaves it until LAST, because it can force the
+// Done state and must not have that overwritten by a state assignment after it.
+void PPU::sprite_evaluation_write()
+{
+    switch (sprite_eval_state) {
+    case SpriteEvalState::ScanY: {
+        const uint8_t y = sprite_eval_latch;
+
+        // The Y is written into the next free slot BEFORE it is known to be in
+        // range; an out-of-range one is simply overwritten by the next
+        // candidate. Hardware does this because the write is unconditional and
+        // the range check gates only the following three bytes.
+        if (sprite_eval_found < 8) {
+            secondary_oam[sprite_eval_found * 4] = y;
+        }
+
+        if (sprite_in_range(y)) {
+            if (sprite_eval_found < 8) {
+                // Slot 0 is the only one that can raise the sprite 0 hit, and
+                // it counts as "sprite 0" only when it holds the sprite the
+                // scan STARTED at - not merely whichever sprite happened to
+                // land in slot 0.
+                //
+                // NESdev, $2003: a non-zero OAMADDR "can cause the sprite at
+                // OAMADDR to be treated as it was sprite 0, both for sprite-0
+                // hit and priority". So the comparison is against the starting
+                // index, not against 0. Writing it as `n == 0` looks equivalent
+                // - and is, whenever OAMADDR is 0, which is every blargg
+                // sprite_hit ROM - but it silently drops the whole behaviour
+                // the moment a game moves OAMADDR mid-screen.
+                //
+                // If the sprite at OAMADDR is off this line it never reaches
+                // slot 0 at all, and the later sprite that does is NOT sprite
+                // 0: the line simply has no hit candidate.
+                if (sprite_eval_found == 0) {
+                    sprite_zero_in_secondary = (sprite_eval_n == (sprite_eval_oamaddr >> 2));
+                }
+                sprite_eval_m = 1;
+                sprite_eval_state = SpriteEvalState::CopySprite;
+            } else {
+                // The 9th in-range sprite. This dot is the one 3.Timing
+                // measures.
+                set_sprite_overflow();
+                sprite_eval_m = 1;
+                sprite_eval_state = SpriteEvalState::OverflowCopy;
+            }
+            break;
+        }
+
+        // Out of range.
+        if (sprite_eval_found >= 8) {
+            // THE OVERFLOW SEARCH BUG, emulated as buggy on purpose.
+            //
+            // Once eight sprites have been found the byte index advances
+            // ALONGSIDE the sprite index instead of staying at 0, so sprite n
+            // has byte (n mod 4) misread as its Y. NESdev calls this
+            // "increment n AND m (without carry)".
+            //
+            // 4.Obscure tests exactly this and nothing else: its test 2 wants
+            // the second byte of sprite #10 treated as a Y, test 3 the third
+            // byte of sprite #11, and so on. Advancing only n - the "sensible"
+            // reading - makes every one of those checks fail.
+            sprite_eval_m = static_cast<uint8_t>((sprite_eval_m + 1) & 0x03);
+        }
+        sprite_evaluation_advance_n();
+        break;
+    }
+
+    case SpriteEvalState::CopySprite:
+        secondary_oam[sprite_eval_found * 4 + sprite_eval_m] = sprite_eval_latch;
+        ++sprite_eval_m;
+        if (sprite_eval_m == 4) {
+            sprite_eval_m = 0;
+            ++sprite_eval_found;
+            sprite_eval_state = SpriteEvalState::ScanY;
+            sprite_evaluation_advance_n();
+        }
+        break;
+
+    case SpriteEvalState::OverflowCopy:
+        // Three dummy reads whose values go nowhere - secondary OAM is full.
+        // They still cost dots, which is the only reason they are modelled.
+        ++sprite_eval_m;
+        if (sprite_eval_m == 4) {
+            sprite_eval_m = 0;
+            sprite_eval_state = SpriteEvalState::ScanY;
+            sprite_evaluation_advance_n();
+        }
+        break;
+
+    case SpriteEvalState::Done:
+        // Hardware keeps reading OAM[n][0] and failing to copy it until
+        // hblank. Nothing observable comes of it.
+        break;
+    }
+}
+
+// Dot 257. Freezes the evaluation's result into the units the next line will
+// draw from.
+//
+// Safe to overwrite the units here because this line's own pixels (dots 1-256)
+// are finished. The units are single-buffered for exactly that reason.
+void PPU::load_sprite_units()
+{
+    sprite_count = sprite_eval_found;
+    sprite_zero_in_units = sprite_zero_in_secondary;
+
+    // Units past the sprite count are cleared rather than left stale. A sprite
+    // count that shrinks between lines would otherwise leave the previous
+    // line's pattern bits in a unit that render_pixel no longer bounds-checks
+    // its way past.
+    for (int i = 0; i < 8; ++i) {
+        sprite_pattern_shift_low[i] = 0;
+        sprite_pattern_shift_high[i] = 0;
+        sprite_attribute_latch[i] = 0;
+        sprite_x_counter[i] = 0xFF;
+    }
+}
+
+// Dots 257-320: eight groups of eight dots, one sprite each.
+//
+// The group's internal schedule mirrors a background tile fetch - two dots of
+// garbage nametable, two of garbage attribute, then pattern low and pattern
+// high - because it IS the same fetch machinery, pointed at OAM instead of the
+// nametable.
+void PPU::fetch_sprite_pattern()
+{
+    const int index = (cycle - 257) / 8;
+    const int step = (cycle - 257) % 8;
+
+    if (index >= sprite_count) {
+        return;
+    }
+
+    const uint8_t y = secondary_oam[index * 4];
+    const uint8_t tile = secondary_oam[index * 4 + 1];
+    const uint8_t attributes = secondary_oam[index * 4 + 2];
+
+    // The row within the sprite, by the same reasoning as sprite_in_range: the
+    // sprite is drawn on the NEXT line, and OAM's Y is one less than its first
+    // line, so the two offsets cancel.
+    const int row = scanline - static_cast<int>(y);
+    const int height = big_sprites ? 16 : 8;
     const bool flip_vertically = attributes & 0x80;
 
     // Vertical flip mirrors within the WHOLE sprite, so for an 8x16 it swaps
     // the two tiles as well as the rows inside them - which the arithmetic
-    // below gets for free by flipping the row index before splitting it.
+    // below gets for free by flipping the row index BEFORE splitting it into
+    // "which tile" and "which row of that tile". Flipping after the split
+    // would mirror each tile in place and leave the halves in the wrong order.
     const int pattern_row = flip_vertically ? (height - 1 - row) : row;
 
     uint16_t address;
@@ -501,59 +780,39 @@ void PPU::evaluate_sprite0_for_scanline(const int target_scanline)
         // the TOP tile, whose bottom half is the tile after it.
         const uint16_t table = (tile & 0x01) ? 0x1000 : 0x0000;
         const uint16_t top_tile = static_cast<uint16_t>(tile & 0xFE);
-        address = static_cast<uint16_t>(table + ((top_tile + (pattern_row >= 8 ? 1 : 0)) << 4) + (pattern_row & 0x07));
+        address =
+            static_cast<uint16_t>(table + ((top_tile + (pattern_row >= 8 ? 1 : 0)) << 4) + (pattern_row & 0x07));
     } else {
         address = static_cast<uint16_t>(sprite_pattern_8x8_table_addr + (tile << 4) + pattern_row);
     }
 
-    // A sprite pixel is opaque when its two bitplane bits are not both zero,
-    // which is the OR of the two bytes taken bit by bit. Nothing here needs the
-    // colour, only the opacity.
-    uint8_t opaque = static_cast<uint8_t>(ppu_bus_read(address) | ppu_bus_read(static_cast<uint16_t>(address + 8)));
-    if (flip_horizontally) {
-        opaque = reverse_bits(opaque);
+    const bool flip_horizontally = attributes & 0x40;
+
+    switch (step) {
+    case 2:
+        // Bits 2-4 of the attribute byte do not exist in OAM at all (see the
+        // OAMDATA write path), so what lands here is already only the palette,
+        // priority and flip bits.
+        sprite_attribute_latch[index] = attributes;
+        break;
+    case 3:
+        sprite_x_counter[index] = secondary_oam[index * 4 + 3];
+        break;
+    case 5: {
+        const uint8_t low = ppu_bus_read(address);
+        sprite_pattern_shift_low[index] = flip_horizontally ? reverse_bits(low) : low;
+        break;
     }
-
-    sprite0_opaque_columns = opaque;
-    sprite0_left_x = OAM_memory[base + 3];
-    sprite0_on_this_scanline = opaque != 0;
-}
-
-// Called with the screen X of a dot whose BACKGROUND pixel is opaque.
-//
-// NESdev, PPUSTATUS bit 6: "Sprite 0 hit cannot detect collision at X=255, nor
-// anywhere where either sprites or backgrounds are disabled via PPUMASK. This
-// includes X=0..7 when the leftmost 8 pixels are hidden." The background half
-// of that is already accounted for - render_pixel only calls this when the
-// background pixel survived its own left-clip - so what is left is the sprite
-// half and X=255.
-void PPU::check_sprite0_hit(const int x)
-{
-    if (!sprite0_on_this_scanline || !show_sprites) {
-        return;
+    case 7: {
+        // The two bitplanes of a tile are eight bytes apart, not interleaved.
+        const uint8_t high = ppu_bus_read(static_cast<uint16_t>(address + 8));
+        sprite_pattern_shift_high[index] = flip_horizontally ? reverse_bits(high) : high;
+        break;
     }
-
-    // X=255 is excluded by the hardware itself: the pixel pipeline has nowhere
-    // to carry the comparison to.
-    if (x == 255) {
-        return;
-    }
-
-    if (x < 8 && !show_sprites_in_leftmost) {
-        return;
-    }
-
-    const int column = x - sprite0_left_x;
-    if (column < 0 || column >= 8) {
-        return;
-    }
-
-    if ((sprite0_opaque_columns >> (7 - column)) & 0x01) {
-        // "Immediately set when any opaque pixel of sprite 0 overlaps any
-        // opaque pixel of background, REGARDLESS OF SPRITE PRIORITY" - so the
-        // attribute's priority bit is not consulted, and neither is whatever
-        // else may be drawn over the top.
-        set_sprite0_hit();
+    default:
+        // The first dot of each pair, and the two garbage nametable dots:
+        // hardware puts an address on the bus and there is nothing to model.
+        break;
     }
 }
 
@@ -563,40 +822,49 @@ void PPU::process_visible_scanline()
 {
     const bool pre_render = (scanline == pre_render_scanline);
 
-    // Sprite evaluation for the NEXT line runs during THIS line's dots 65-256,
-    // and the sprite pattern fetches that follow it occupy 257-320. Resolving
-    // sprite 0 at dot 257 puts it at the end of that window: late enough that
-    // the line's own pixels (dots 1-256) are finished, so a single set of
-    // sprite-0 state can be overwritten here without double buffering, and
-    // early enough that OAM writes made after this point cannot reach the line
-    // that is about to be drawn.
-    //
-    // It used to run at dot 0 of the line being drawn, which had two
-    // consequences. OAM rewritten between the two points was picked up a line
-    // early. And because it sat inside the rendering_enabled() guard, enabling
-    // rendering part-way through a frame left the previous evaluation in place,
-    // so a line whose evaluation never happened could still report a hit -
-    // hardware has no secondary OAM for such a line and cannot.
-    //
-    // Hence the else: no evaluation window means no sprite on the next line.
-    if (cycle == 257) {
-        if (rendering_enabled()) {
-            // The pre-render line evaluates for line 0; every visible line for
-            // the one after it. Line 239 evaluates for the post-render line,
-            // which draws nothing, so the result is simply unused.
-            evaluate_sprite0_for_scanline(pre_render ? 0 : scanline + 1);
-        } else {
-            sprite0_on_this_scanline = false;
-        }
-    }
-
     if (rendering_enabled()) {
-        // Sprite evaluation starts here and reads OAM from OAMADDR onwards, so
-        // this is the moment that decides which sprite is "sprite 0". Latched
-        // because the clear below destroys it before the evaluation is
-        // resolved at dot 257.
+        // --- the sprite pipeline, one line ahead of the pixels ------------
+        //
+        // Evaluation during dots 65-256 of THIS line fills secondary OAM for
+        // the NEXT one, and the fetches at 257-320 load it into the output
+        // units. Everything is single-buffered, which is safe only because the
+        // three phases are disjoint and the units are not touched until dot
+        // 257, by which time this line's own pixels (dots 1-256) are done.
+        //
+        // An earlier design resolved sprites at dot 0 of the line being drawn.
+        // That picked up OAM rewritten between the two points a line early,
+        // and - because it sat inside this rendering_enabled() guard - left a
+        // stale result in place when rendering was enabled mid-frame, so a
+        // line whose evaluation never happened could still report a hit.
+        // Hardware has no secondary OAM for such a line and cannot.
+        if (cycle >= 1 && cycle <= 64) {
+            clear_secondary_oam_dot();
+        }
+
+        // Sprite evaluation reads OAM from OAMADDR onwards, so this is the
+        // moment that decides which sprite lands in slot 0 and can therefore
+        // raise the hit flag. Latched because the clear below destroys OAMADDR
+        // before the sprites are fetched at 257-320.
         if (cycle == 65) {
-            sprite_eval_oamaddr = static_cast<uint8_t>(registers.OAMADDR & 0xFC);
+            begin_sprite_evaluation();
+        }
+
+        // The pre-render line clears secondary OAM and latches OAMADDR like
+        // any other, but does NOT evaluate: it would be evaluating for line 0,
+        // and no sprite can appear there. A sprite is drawn on lines Y+1
+        // onwards, so reaching line 0 would need Y=255, which is exactly the
+        // value hardware treats as off-screen (2.Details test 7). Leaving
+        // sprite_eval_found at 0 is what gives line 0 its empty unit set.
+        if (!pre_render && cycle >= 65 && cycle <= 256) {
+            tick_sprite_evaluation();
+        }
+
+        if (cycle == 257) {
+            load_sprite_units();
+        }
+
+        if (cycle >= 257 && cycle <= 320) {
+            fetch_sprite_pattern();
         }
 
         // Hardware holds OAMADDR at 0 for the whole of the sprite-fetch
@@ -668,6 +936,15 @@ void PPU::process_visible_scanline()
             // to MMC3's scanline counter, not to the picture.
             nametable_latch = ppu_bus_read(tile_address());
         }
+    } else if (cycle == 257) {
+        // No evaluation window means no sprites on the next line. Without this
+        // the units keep whatever the last enabled line left in them, so
+        // enabling rendering part-way down the screen would draw a line of
+        // sprites that hardware never evaluated - the same stale-state bug the
+        // old sprite-0 shortcut had, in its new form.
+        sprite_eval_found = 0;
+        sprite_zero_in_secondary = false;
+        load_sprite_units();
     }
 
     // Dots 1-256 of a visible line each produce one pixel. This runs even with
