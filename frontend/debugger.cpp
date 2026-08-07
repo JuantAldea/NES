@@ -6,7 +6,6 @@
 
 #include "../include/bus.h"
 #include "../include/frame_dump.h"
-#include "../include/instruction.h"
 
 namespace nes_gui
 {
@@ -19,25 +18,6 @@ const ImVec4 colour_pc(1.00f, 0.35f, 0.35f, 1.0f);
 const ImVec4 colour_sp(0.45f, 0.65f, 1.00f, 1.0f);
 const ImVec4 colour_stack_base(0.40f, 0.90f, 0.45f, 1.0f);
 const ImVec4 colour_zero(0.45f, 0.45f, 0.45f, 1.0f);
-
-// Reading the opcode byte at PC is a bus read, and reads are not free
-// everywhere: $2000-$3FFF and $4000-$401F are hardware ports where a read
-// clears the vblank flag, advances the VRAM address, or acknowledges an IRQ.
-//
-// Code never legitimately executes from there, so a PC pointing into that range
-// already means the program has gone wrong - and fetching the byte to put a
-// label on it would corrupt PPU and APU state on top of that, turning a
-// visible bug into an invisible one.
-bool safe_to_peek(const uint16_t addr) { return addr < 0x2000 || addr > 0x401F; }
-
-const char* instruction_name_at_pc(Bus& console)
-{
-    const uint16_t pc = console.cpu.registers.PC;
-    if (!safe_to_peek(pc)) {
-        return "(unreadable)";
-    }
-    return InstructionSet::Table[console.read(pc)].name.c_str();
-}
 
 void flag_checkbox(Bus& console, const char* label, const CPU::FLAGS flag)
 {
@@ -58,53 +38,6 @@ void hex_byte(const uint8_t value, const ImVec4* colour)
 }
 
 }  // namespace
-
-bool step_instruction(Bus& console, FrontendState& state)
-{
-    const uint16_t previous_pc = console.cpu.registers.PC;
-
-    if (!console.step_instruction()) {
-        state.trapped = true;
-        state.trap_pc = previous_pc;
-        state.running = false;
-        state.status = "CPU never completed an instruction - jammed opcode?";
-        return false;
-    }
-
-    // Every one of the test ROMs ends on a branch to itself, and so does a
-    // runaway program that fell into one. Catching it is the difference between
-    // "the emulator stopped" and a spinning UI.
-    if (console.cpu.registers.PC == previous_pc) {
-        state.trapped = true;
-        state.trap_pc = previous_pc;
-        state.running = false;
-        return false;
-    }
-
-    state.trapped = false;
-    return true;
-}
-
-bool load_cartridge(Bus& console, FrontendState& state, const std::string& path)
-{
-    if (path.empty()) {
-        state.status = "No ROM path given";
-        return false;
-    }
-
-    if (!console.load_cartridge(path)) {
-        state.status = "Failed to load " + path;
-        return false;
-    }
-
-    // The reset vector lives in the cartridge, so it can only be fetched once
-    // the cartridge is mapped.
-    console.cpu.reset();
-    state.trapped = false;
-    state.running = false;
-    state.status = "Loaded " + path;
-    return true;
-}
 
 void draw_controls_panel(Bus& console, FrontendState& state)
 {

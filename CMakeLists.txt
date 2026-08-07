@@ -179,6 +179,7 @@ if(NES_BUILD_FRONTEND)
     add_executable(nes_frontend
         frontend/main.cpp
         frontend/debugger.cpp
+        frontend/debugger_state.cpp
     )
 
     target_link_libraries(nes_frontend

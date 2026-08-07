@@ -25,7 +25,12 @@ include(GoogleTest)
 # picked up without a manual re-configure.
 file(GLOB_RECURSE tests_SRC CONFIGURE_DEPENDS "*.cpp")
 
-add_executable(tests ${tests_SRC})
+# frontend/debugger_state.cpp is compiled INTO the test binary rather than
+# linked from the frontend target. That target needs SDL and ImGui; this file
+# needs neither, by design (see the comment at the top of debugger_state.h), so
+# the suite still builds on a machine with no SDL installed and
+# -DNES_BUILD_FRONTEND=OFF stays a supported configuration.
+add_executable(tests ${tests_SRC} ${CMAKE_CURRENT_SOURCE_DIR}/../frontend/debugger_state.cpp)
 
 # Fixtures are located via an absolute path baked in at configure time, so the
 # test binary can be run from any working directory rather than only under
