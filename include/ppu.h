@@ -177,6 +177,12 @@ public:
     uint8_t ppu_bus_read(const uint16_t addr);
     void ppu_bus_write(const uint16_t addr, const uint8_t data);
 
+    // Offers an address to the cartridge, which is where a scanline-counting
+    // mapper such as MMC3 watches address line A12. Called by the two functions
+    // above and by the $2006 write that commits a new v; see the definition for
+    // why palette accesses are excluded.
+    void observe_ppu_address_bus(const uint16_t addr);
+
     // $2007 reads are delayed by one: the value returned is what the PREVIOUS
     // read fetched, and the current fetch refills the latch. Palette reads are
     // the exception - they come back immediately, while the latch is still
@@ -418,19 +424,16 @@ public:
 
     // Sprites copied into secondary OAM so far, 0-8. Doubles as the write
     // cursor: the next sprite lands at secondary_oam[4 * found].
-    // KNOWN GAP in sprite evaluation, found by adversarial review against the
-    // NESdev pages and deliberately left unimplemented rather than forgotten:
     //
-    //  - fetch_sprite_pattern returns early for slots past sprite_count, where
-    //    hardware always performs eight fetches, reading tile $FF for empty
-    //    slots. Unobservable on NROM/CNROM, because nothing watches the PPU
-    //    address bus - but it becomes a real A12/IRQ timing bug the moment a
-    //    scanline-counting mapper such as MMC3 exists. Fix it with that mapper,
-    //    not before, since there is no way to test it until then.
+    // The known gap that used to be recorded here - fetch_sprite_pattern
+    // returning early for slots past sprite_count, where hardware always
+    // performs eight fetches - is CLOSED. It was unobservable until a mapper
+    // watched the PPU address bus, and MMC3 is that mapper; see the dummy-fetch
+    // branch in fetch_sprite_pattern.
     //
-    // Two sibling findings from the same review ARE implemented: the 2C02G/H
-    // OAM refresh bug (oam_refresh_bug) and the glitchy OAMADDR increment on a
-    // $2004 write during rendering.
+    // Two sibling findings from the same adversarial review against the NESdev
+    // pages are also implemented: the 2C02G/H OAM refresh bug (oam_refresh_bug)
+    // and the glitchy OAMADDR increment on a $2004 write during rendering.
     //
     // Destination offset within the secondary-OAM slot being filled, counted
     // separately from sprite_eval_m (the SOURCE byte index). They agree only

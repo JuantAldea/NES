@@ -809,7 +809,45 @@ void PPU::fetch_sprite_pattern()
     const int index = (cycle - 257) / 8;
     const int step = (cycle - 257) % 8;
 
-    if (index >= sprite_count) {
+    // Hardware performs EIGHT sprite pattern fetches on every rendering line,
+    // however few sprites the line actually has. The empty slots read tile $FF,
+    // because that is what the dot 1-64 clear left in secondary OAM, and the
+    // read still happens - the PPU has no way to skip a fetch, the eight groups
+    // of eight dots are wired into the timing.
+    //
+    // For eight lines of NROM output that is invisible, which is why this used
+    // to return early. It stops being invisible the moment a mapper watches the
+    // address bus: with the background at $0000 and sprites at $1000 - the
+    // standard MMC3 layout - the ONLY thing that raises A12 on a line is the
+    // sprite fetch. Skipping it on a line with no sprites means skipping that
+    // line's IRQ clock, so a raster split drifts by one scanline for every
+    // empty line above it. 4-scanline_timing is what catches that.
+    const bool dummy = index >= sprite_count;
+
+    if (dummy) {
+        // The address of a dummy fetch: tile $FF out of the sprite pattern
+        // table. Only bit 12 of it is ever observed, and that bit is the table
+        // select - which is the whole reason this branch exists.
+        //
+        // In 8x16 mode the table comes from bit 0 of the tile number rather
+        // than PPUCTRL, and tile $FF has that bit set, so the dummy fetches
+        // land at $1FF0 regardless of what PPUCTRL says. That is not a detail
+        // to smooth over: it is why an 8x16 game gets its A12 rise on lines
+        // with no sprites even with PPUCTRL pointing at $0000.
+        const uint16_t table = big_sprites ? 0x1000 : sprite_pattern_8x8_table_addr;
+        const uint16_t dummy_address = static_cast<uint16_t>(table + 0x0FF0);
+
+        // The fetched bytes are deliberately DISCARDED rather than loaded into
+        // a unit. Hardware does load them, but into a unit whose X counter is
+        // $FF, so it can never reach the screen; render_pixel stops at
+        // sprite_count and would ignore them anyway. Reading and dropping keeps
+        // the bus activity - the part that is observable - without putting
+        // anything into the rendering state that could change a pixel.
+        if (step == 5) {
+            (void)ppu_bus_read(dummy_address);
+        } else if (step == 7) {
+            (void)ppu_bus_read(static_cast<uint16_t>(dummy_address + 8));
+        }
         return;
     }
 
@@ -1053,9 +1091,26 @@ uint16_t PPU::palette_offset(const uint16_t addr)
     return index;
 }
 
+// Every access that reaches the PPU's address bus, and the one place a
+// scanline-counting mapper can watch it from.
+//
+// The palette is the exception, and it has to be: palette RAM lives INSIDE the
+// 2C02, so a palette access drives nothing externally. render_pixel reads
+// $3F00-$3F1F on every visible dot, and $3F00 has bit 12 set - hooking it would
+// hold A12 high for the whole of every scanline and the MMC3 counter would
+// never see a single edge. Only $0000-$3EFF, the pattern tables and nametables
+// that physically leave the chip, are offered to the mapper.
+void PPU::observe_ppu_address_bus(const uint16_t addr)
+{
+    if (addr < 0x3F00) {
+        bus->rom.mmc3_observe_a12(addr, total_cycles);
+    }
+}
+
 uint8_t PPU::ppu_bus_read(const uint16_t addr)
 {
     const uint16_t a = addr & vram_addr_mask;
+    observe_ppu_address_bus(a);
 
     if (a < 0x2000) {
         // Pattern tables live on the cartridge: CHR-ROM if it brought any,
@@ -1081,6 +1136,7 @@ uint8_t PPU::ppu_bus_read(const uint16_t addr)
 void PPU::ppu_bus_write(const uint16_t addr, const uint8_t data)
 {
     const uint16_t a = addr & vram_addr_mask;
+    observe_ppu_address_bus(a);
 
     if (a < 0x2000) {
         // CHR-ROM is not writable; CHR-RAM is. A cartridge with CHR-ROM
@@ -1290,6 +1346,17 @@ void PPU::write(const uint16_t addr, const uint8_t data)
         } else {
             temp_addr = static_cast<uint16_t>((temp_addr & 0xFF00) | data);
             registers.PPUADDR = temp_addr;
+
+            // v is the address bus. Committing a new value to it drives the
+            // lines whether or not anything is read through them, so a mapper
+            // watching A12 sees this exactly as it sees a rendering fetch.
+            //
+            // This is the hook blargg's IRQ ROMs are built on - they clock the
+            // counter "by writing to $2006 to change the current VRAM address",
+            // with rendering off and no fetches happening at all. Only the
+            // SECOND write does it: the first stages a byte in t, and t is not
+            // wired to anything outside the PPU.
+            observe_ppu_address_bus(registers.PPUADDR & vram_addr_mask);
         }
         high_byte_input = !high_byte_input;
         break;
@@ -1299,6 +1366,9 @@ void PPU::write(const uint16_t addr, const uint8_t data)
         // path below.
         ppu_bus_write(registers.PPUADDR, data);
         advance_vram_address();
+        // As on the read path: the post-increment v is left on the address bus
+        // and the mapper sees it.
+        observe_ppu_address_bus(registers.PPUADDR & vram_addr_mask);
         break;
     case OAMDMA:
         registers.OAMDMA = data;
@@ -1435,6 +1505,14 @@ uint8_t PPU::read(const uint16_t addr)
         }
 
         advance_vram_address();
+
+        // The increment leaves the NEW v on the address bus, and that is a
+        // second thing the mapper sees. It is not the same event as the read
+        // above: a read at $0FFF has A12 low, and the increment to $1000 is
+        // what raises it. 3-A12_clocking's subtest 5, "should be clocked when
+        // A12 changes to 1 via PPUDATA read", is precisely this case - the
+        // access itself never had A12 high at all.
+        observe_ppu_address_bus(registers.PPUADDR & vram_addr_mask);
 
         // A palette read drives only bits 0-5; bits 6-7 were never driven, so
         // they keep ageing from whenever they last were. A buffered read drives

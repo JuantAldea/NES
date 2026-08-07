@@ -88,6 +88,54 @@ public:
     bool prg_ram_enabled = true;
     bool prg_ram_write_protected = false;
 
+    // --- MMC3 scanline IRQ counter ------------------------------------------
+    //
+    // The MMC3 has no idea what a scanline is. It counts RISING EDGES OF PPU
+    // ADDRESS LINE A12, and a scanline happens to produce exactly one of them
+    // in the usual configuration: the background fetches sit in one pattern
+    // table and the sprite fetches in the other, so A12 goes up once per line
+    // when the fetch phase crosses over. Games get "interrupt at scanline N" by
+    // counting those edges - which is why a game that puts both tables on the
+    // same side gets no IRQs at all, and why the counter is clocked just as
+    // happily by a program poking $2006 with rendering switched off.
+    //
+    // blargg's readme for the IRQ ROMs is explicit about that second case:
+    // "The ROMs mainly test behavior by manually clocking the MMC3's IRQ
+    // counter by writing to $2006 to change the current VRAM address." A design
+    // that hooked only the rendering fetches would pass none of them.
+    uint8_t mmc3_irq_latch = 0;    // $C000, the value reloaded into the counter
+    uint8_t mmc3_irq_counter = 0;  // the live count
+    bool mmc3_irq_reload_pending = false;  // set by $C001, consumed by the next edge
+    bool mmc3_irq_enabled = false;         // $E001 enables, $E000 disables
+    bool mmc3_irq_asserted = false;        // are we currently pulling /IRQ low?
+
+    // The A12 line as the mapper last saw it, and the PPU dot at which it went
+    // low. Only the duration matters, so one timestamp is enough.
+    bool mmc3_a12_high = false;
+    uint64_t mmc3_a12_low_since = 0;
+
+    // A rising edge only counts if A12 has been low for a while first. NESdev:
+    // the counter is "triggered on a rising edge after the line has remained
+    // low for three falling edges of M2" - M2 is the CPU clock, so three of its
+    // cycles, and the PPU runs three times faster, giving nine PPU dots.
+    //
+    // The filter is not an optimisation, it is what makes the count mean
+    // "scanline". Within one background tile fetch A12 drops for exactly four
+    // dots (the nametable and attribute reads at $2xxx, between two pattern
+    // reads at $1xxx); without the filter every tile would clock the counter
+    // and an IRQ meant for one scanline would arrive 32 times a line.
+    //
+    // Nine rather than four-plus-one because the margin has to survive both
+    // sides: real clocks follow low periods of 16 dots and up, so there is a
+    // wide gap between "noise" and "signal" and the threshold only has to land
+    // inside it. 3-A12_clocking is what pins this - see mmc3_rom_tests.cpp.
+    static constexpr uint64_t mmc3_a12_filter_dots = 9;
+
+    // Called by the PPU on every access that drives its EXTERNAL address bus,
+    // and on the $2006 write that commits a new address to v. `ppu_cycle` is
+    // PPU::total_cycles, which is the only clock both sides share.
+    void mmc3_observe_a12(const uint16_t ppu_addr, const uint64_t ppu_cycle);
+
     // How many 8KB PRG banks and 1KB CHR banks the cartridge carries. MMC3
     // indexes in those units, unlike UNROM's 16KB and CNROM's 8KB.
     uint16_t prg_8k_bank_count = 0;
@@ -104,4 +152,14 @@ private:
     // chr_read()/read().
     uint16_t mmc3_chr_bank_for(const uint16_t ppu_addr) const;
     uint16_t mmc3_prg_bank_for(const uint16_t cpu_addr) const;
+
+    // One filtered rising edge of A12: reload or decrement, then decide whether
+    // to pull /IRQ low. Split out from mmc3_observe_a12 so the edge DETECTION
+    // and the counter SEMANTICS can be read - and mutated - independently.
+    void mmc3_clock_irq_counter();
+
+    // Pushes mmc3_irq_asserted onto the CPU's cartridge /IRQ bit. Every path
+    // that can change the assertion goes through here, so there is one place
+    // where the wire is driven rather than four.
+    void mmc3_update_irq_line();
 };
