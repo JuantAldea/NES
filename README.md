@@ -30,6 +30,37 @@ scanline-counter IRQ - and with it the one deliberate PPU gap, the sprite
 pattern fetches skipped for empty slots, which only becomes observable once a
 mapper watches the PPU address bus.
 
+### TODO: no commercial game has ever been run
+
+Every oracle here is a *test* ROM - written to isolate one behaviour and report
+a verdict - plus two freely-licensed homebrew programs. **A retail game has
+never been loaded.** That is a real gap in verification, not a formality, and
+it is recorded here rather than left for someone to discover:
+
+* **Sustained scrolling.** Nothing exercises mid-frame `$2005`/`$2006` writes at
+  speed for minutes at a time. The loopy `v`/`t`/`x`/`w` work passes unit tests
+  and the sprite-hit ROMs, and 240pee's scroll tests pass, but a game scrolls
+  continuously in a way no test screen does.
+* **Sprite-0-hit status bar splits** driven every frame at 60 Hz, rather than
+  the isolated hits the eleven `sprite_hit` ROMs measure.
+* **Sustained OAM DMA** every frame alongside everything else competing for the
+  bus.
+* **Long runs.** The longest thing here finishes in a few thousand frames. Drift
+  that takes minutes to become visible would not be caught.
+
+No commercial ROM is fetched by anything in this repository, and none should be:
+they are copyrighted, unlike the redistributable test dumps the fetch scripts
+pull. Closing this means pointing the frontend at a cartridge you own and have
+dumped yourself:
+
+```sh
+./build/nes_frontend /path/to/your/own/dump.nes
+```
+
+Until someone does that and reports what happened, treat "runs games" as
+*unproven* - the emulator passes everything that has been pointed at it, which
+is a narrower claim than it sounds.
+
 ## Features
 
 ### Core Components
