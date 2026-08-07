@@ -219,6 +219,105 @@ GTEST_TEST(testSprites, reading_oamdata_with_rendering_off_always_reaches_primar
     EXPECT_EQ(0x20, ppu.read(PPU::OAMDATA)) << "with rendering off there is no clear to read through";
 }
 
+// --- $2004 writes during rendering, and the OAM refresh bug ---------------
+
+// NESdev, OAMDATA: writes "during rendering ... do not modify values in OAM,
+// but do perform a glitchy increment of OAMADDR, bumping only the high 6 bits".
+GTEST_TEST(testSprites, writing_oamdata_during_rendering_skips_oam_and_bumps_the_sprite_index)
+{
+    Bus console;
+    PPU& ppu = console.ppu;
+    set_up(ppu);
+
+    for (int i = 0; i < 256; ++i) {
+        ppu.OAM_memory[i] = 0x11;
+    }
+    ppu.write(PPU::PPUMASK, kEverything);
+
+    clock_until(ppu, 100, 100);  // mid visible line, rendering on
+    ppu.write(PPU::OAMADDR, 0x10);
+    ppu.write(PPU::OAMDATA, 0x5A);
+
+    EXPECT_EQ(0x11, ppu.OAM_memory[0x10]) << "OAM must be untouched during rendering";
+    EXPECT_EQ(0x14, ppu.registers.OAMADDR) << "only the high 6 bits bump: OAMADDR advances a whole record";
+}
+
+GTEST_TEST(testSprites, writing_oamdata_outside_rendering_still_stores_normally)
+{
+    Bus console;
+    PPU& ppu = console.ppu;
+    set_up(ppu);
+    ppu.write(PPU::PPUMASK, 0x00);  // rendering disabled
+
+    clock_until(ppu, 100, 100);
+    ppu.write(PPU::OAMADDR, 0x10);
+    ppu.write(PPU::OAMDATA, 0x5A);
+
+    EXPECT_EQ(0x5A, ppu.OAM_memory[0x10]) << "with rendering off the write must land";
+    EXPECT_EQ(0x11, ppu.registers.OAMADDR) << "and OAMADDR advances by one byte, not four";
+}
+
+// NESdev, $2003: "if OAMADDR is not less than eight when rendering starts, the
+// eight bytes starting at OAMADDR & 0xF8 are copied to the first eight bytes of
+// OAM". Once per frame, on the pre-render line.
+GTEST_TEST(testSprites, a_high_oamaddr_triggers_the_oam_refresh_bug_once_per_frame)
+{
+    Bus console;
+    PPU& ppu = console.ppu;
+    set_up(ppu);
+
+    for (int i = 0; i < 256; ++i) {
+        ppu.OAM_memory[i] = static_cast<uint8_t>(i);
+    }
+    ppu.write(PPU::PPUMASK, kEverything);
+    ppu.write(PPU::OAMADDR, 0x25);  // & $F8 == $20
+
+    clock_until(ppu, PPU::pre_render_scanline, 1);
+
+    for (int i = 0; i < 8; ++i) {
+        EXPECT_EQ(0x20 + i, ppu.OAM_memory[i]) << "OAM[" << i << "] should hold the byte from $20+" << i;
+    }
+    EXPECT_EQ(0x08, ppu.OAM_memory[8]) << "only the first eight bytes are replaced";
+}
+
+GTEST_TEST(testSprites, a_low_oamaddr_leaves_oam_alone)
+{
+    Bus console;
+    PPU& ppu = console.ppu;
+    set_up(ppu);
+
+    for (int i = 0; i < 256; ++i) {
+        ppu.OAM_memory[i] = static_cast<uint8_t>(i);
+    }
+    ppu.write(PPU::PPUMASK, kEverything);
+    ppu.write(PPU::OAMADDR, 0x04);  // below 8: & $F8 is 0, so the copy is a no-op
+
+    clock_until(ppu, PPU::pre_render_scanline, 1);
+
+    for (int i = 0; i < 8; ++i) {
+        EXPECT_EQ(i, ppu.OAM_memory[i]) << "OAM must be untouched for OAMADDR < 8";
+    }
+}
+
+GTEST_TEST(testSprites, the_refresh_bug_does_not_fire_with_rendering_disabled)
+{
+    Bus console;
+    PPU& ppu = console.ppu;
+    set_up(ppu);
+
+    for (int i = 0; i < 256; ++i) {
+        ppu.OAM_memory[i] = static_cast<uint8_t>(i);
+    }
+    ppu.write(PPU::PPUMASK, 0x00);  // "when rendering starts" - it never does
+    ppu.write(PPU::OAMADDR, 0x25);
+
+    clock_until(ppu, PPU::pre_render_scanline, 1);
+
+    for (int i = 0; i < 8; ++i) {
+        EXPECT_EQ(i, ppu.OAM_memory[i]) << "no rendering, no refresh bug";
+    }
+}
+
 // --- the eight-sprites-per-line limit -------------------------------------
 
 GTEST_TEST(testSprites, only_the_first_eight_sprites_on_a_line_are_drawn)

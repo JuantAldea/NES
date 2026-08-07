@@ -418,23 +418,19 @@ public:
 
     // Sprites copied into secondary OAM so far, 0-8. Doubles as the write
     // cursor: the next sprite lands at secondary_oam[4 * found].
-    // KNOWN GAPS in sprite evaluation, found by adversarial review against the
+    // KNOWN GAP in sprite evaluation, found by adversarial review against the
     // NESdev pages and deliberately left unimplemented rather than forgotten:
-    //
-    //  - The OAM hardware refresh bug. NESdev, PPU sprite evaluation (Notes):
-    //    on the 2C02G/H, starting evaluation with OAMADDR >= 8 copies the eight
-    //    bytes at OAMADDR & $F8 over the first eight bytes of OAM. Filed under
-    //    Errata, revision-specific, and no ROM in the suite covers it.
-    //
-    //  - $2004 WRITES during rendering. NESdev, PPU registers (OAMDATA): they
-    //    "do not modify values in OAM, but do perform a glitchy increment of
-    //    OAMADDR, bumping only the high 6 bits". This emulator writes OAM and
-    //    increments by 1. Pre-existing, not introduced by sprite evaluation.
     //
     //  - fetch_sprite_pattern returns early for slots past sprite_count, where
     //    hardware always performs eight fetches, reading tile $FF for empty
-    //    slots. Unobservable on NROM/CNROM - but it becomes a real A12/IRQ
-    //    timing bug the moment a scanline-counting mapper such as MMC3 exists.
+    //    slots. Unobservable on NROM/CNROM, because nothing watches the PPU
+    //    address bus - but it becomes a real A12/IRQ timing bug the moment a
+    //    scanline-counting mapper such as MMC3 exists. Fix it with that mapper,
+    //    not before, since there is no way to test it until then.
+    //
+    // Two sibling findings from the same review ARE implemented: the 2C02G/H
+    // OAM refresh bug (oam_refresh_bug) and the glitchy OAMADDR increment on a
+    // $2004 write during rendering.
     //
     // Destination offset within the secondary-OAM slot being filled, counted
     // separately from sprite_eval_m (the SOURCE byte index). They agree only
@@ -494,6 +490,7 @@ public:
 
     void clear_secondary_oam_dot();
     void begin_sprite_evaluation();
+    void oam_refresh_bug();
     void tick_sprite_evaluation();
     void sprite_evaluation_read();
     void sprite_evaluation_write();

@@ -230,6 +230,9 @@ void PPU::clock()
             // TODO is it idle as well?
             break;
         case pre_render_scanline:
+            if (cycle == 0) {
+                oam_refresh_bug();
+            }
             if (cycle == 1) {
                clear_vblank();
                clear_sprite0_hit();
@@ -562,6 +565,33 @@ void PPU::clear_secondary_oam_dot()
 // because of this.
 //
 // Aligned down to a four-byte boundary: OAM is read as sprite records, so an
+// The 2C02G/H OAM hardware refresh bug.
+//
+// NESdev, $2003: "if OAMADDR is not less than eight when rendering starts, the
+// eight bytes starting at OAMADDR & 0xF8 are copied to the first eight bytes of
+// OAM". The sprite-evaluation page states the same effect with the condition
+// "not zero" rather than "not less than eight" - the two agree, because
+// OAMADDR & $F8 is 0 for any OAMADDR below 8 and the copy is then OAM[0..7]
+// onto itself.
+//
+// "When rendering starts" is once per FRAME, not once per scanline, which is
+// why this sits on the pre-render line rather than inside the per-line
+// evaluation. It is filed under Errata and is revision-specific: no ROM in the
+// suite covers it, and it is modelled because leaving it out while modelling
+// the adjacent non-zero-OAMADDR behaviour in detail was an inconsistency an
+// adversarial review flagged, not because a game is known to need it.
+void PPU::oam_refresh_bug()
+{
+    if (!rendering_enabled() || registers.OAMADDR < 8) {
+        return;
+    }
+
+    const uint8_t source = static_cast<uint8_t>(registers.OAMADDR & 0xF8);
+    for (int i = 0; i < 8; ++i) {
+        OAM_memory[i] = OAM_memory[static_cast<uint8_t>(source + i)];
+    }
+}
+
 // Evaluation starts at OAMADDR exactly, INCLUDING its low two bits.
 //
 // NESdev, $2003: "If OAMADDR is unaligned and does not point to the Y position
@@ -1194,6 +1224,21 @@ void PPU::write(const uint16_t addr, const uint8_t data)
         registers.OAMADDR = data;
         break;
     case OAMDATA:
+        // NESdev, OAMDATA: writes "during rendering (on the pre-render line and
+        // the visible lines 0-239, provided either sprite or background
+        // rendering is enabled) do not modify values in OAM, but do perform a
+        // glitchy increment of OAMADDR, bumping only the high 6 bits (i.e., it
+        // bumps the [n] value in PPU sprite evaluation".
+        //
+        // Bumping only the high six bits is OAMADDR += 4: n is OAMADDR >> 2, so
+        // advancing n by one skips a whole sprite record. A game writing OAM
+        // mid-frame therefore corrupts its own sprite indices rather than
+        // storing anything, which is why the advice is to use $4014 instead.
+        if (rendering_enabled() && (scanline < post_render_scanline || scanline == pre_render_scanline)) {
+            registers.OAMADDR = static_cast<uint8_t>(registers.OAMADDR + 4);
+            break;
+        }
+
         // Byte 2 of each sprite is its attributes, and bits 2-4 of that byte
         // have no storage in the PPU at all - they are not merely masked on
         // read. Dropping them here rather than on the read path means sprite
