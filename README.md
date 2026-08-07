@@ -30,36 +30,32 @@ scanline-counter IRQ - and with it the one deliberate PPU gap, the sprite
 pattern fetches skipped for empty slots, which only becomes observable once a
 mapper watches the PPU address bus.
 
-### TODO: no commercial game has ever been run
+### Verification: what has and has not been exercised
 
-Every oracle here is a *test* ROM - written to isolate one behaviour and report
-a verdict - plus two freely-licensed homebrew programs. **A retail game has
-never been loaded.** That is a real gap in verification, not a formality, and
-it is recorded here rather than left for someone to discover:
+Most oracles here are *test* ROMs - written to isolate one behaviour and report
+a verdict - plus two freely-licensed homebrew programs. A retail game is a
+different kind of load, so `tests/local_rom_tests.cpp` runs one end to end when
+it is available: it boots to the title screen, presses Start, holds Right, and
+checks that the playfield scrolls and the sprite-0 status bar split fires.
+Measured on Super Mario Bros: coarse X takes 26 of a possible 32 values over 300
+frames, and the split fires on 249 of them.
 
-* **Sustained scrolling.** Nothing exercises mid-frame `$2005`/`$2006` writes at
-  speed for minutes at a time. The loopy `v`/`t`/`x`/`w` work passes unit tests
-  and the sprite-hit ROMs, and 240pee's scroll tests pass, but a game scrolls
-  continuously in a way no test screen does.
-* **Sprite-0-hit status bar splits** driven every frame at 60 Hz, rather than
-  the isolated hits the eleven `sprite_hit` ROMs measure.
-* **Sustained OAM DMA** every frame alongside everything else competing for the
-  bus.
-* **Long runs.** The longest thing here finishes in a few thousand frames. Drift
-  that takes minutes to become visible would not be caught.
+**Those tests skip unless you supply the ROM yourself.** Nothing here fetches a
+commercial game - they are copyrighted, unlike the redistributable test dumps
+the fetch scripts pull. Drop a dump of a cartridge you own at
+`tests/test_files/local/smb.nes` and they switch from SKIPPED to executed; see
+that directory's README.
 
-No commercial ROM is fetched by anything in this repository, and none should be:
-they are copyrighted, unlike the redistributable test dumps the fetch scripts
-pull. Closing this means pointing the frontend at a cartridge you own and have
-dumped yourself:
+Two things about test counts that are easy to misread:
 
-```sh
-./build/nes_frontend /path/to/your/own/dump.nes
-```
+* **`ctest` counts a skipped test as a pass.** `GTEST_SKIP` exits 0. The honest
+  figure for any run is *executed*, not *passed*.
+* **CI executes far fewer tests than it reports.** The 512 per-opcode
+  SingleStepTests need 1.1 GB of vectors that CI does not fetch, so they skip
+  there and run only locally. The workflow prints the breakdown on every run.
 
-Until someone does that and reports what happened, treat "runs games" as
-*unproven* - the emulator passes everything that has been pointed at it, which
-is a narrower claim than it sounds.
+Still unexercised by anything here: sustained play over minutes rather than a
+few thousand frames, and every mapper beyond 0, 2 and 3.
 
 ## Features
 

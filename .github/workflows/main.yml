@@ -72,9 +72,10 @@ jobs:
         run: |
           listing=$(ctest --test-dir build -N)
           total=$(echo "$listing" | sed -n 's/^Total Tests: //p')
-          skipped=$(echo "$listing" | grep -cE 'SingleStepBusTrace|SingleStepVectors' || true)
+          # commercialRom tests need a ROM the user supplies; CI never has one.
+          skipped=$(echo "$listing" | grep -cE 'SingleStepBusTrace|SingleStepVectors|commercialRom' || true)
           echo "registered: $total"
-          echo "skipped:    $skipped  (SingleStepTests vectors not fetched in CI)"
+          echo "skipped:    $skipped  (SingleStepTests vectors + commercialRom, neither available in CI)"
           echo "executed:   $((total - skipped))"
 
   frontend:
