@@ -232,5 +232,103 @@ GTEST_TEST(mmc3, the_register_pair_is_decoded_from_bit_13_and_parity_only)
     EXPECT_EQ(4, console.read(0x8000)) << "$9FFE/$9FFF are $8000/$8001";
 }
 
+// --- the A12 filter -------------------------------------------------------
+//
+// These exist because a mutation survived. Lowering mmc3_a12_filter_dots from 9
+// to 1 failed NOTHING in the whole suite, which meant the filter - the thing
+// that makes the counter mean "scanline" rather than "tile fetch" - had no test
+// at all.
+//
+// The ROMs could not catch it. 4-scanline_timing runs with PPUCTRL=$00, both
+// pattern tables at $0000, so A12 never rises during its rendering and there is
+// no short low period to reject. Measured directly: zero rising edges on a
+// visible scanline.
+//
+// So the filter is driven here instead, through mmc3_observe_a12 with explicit
+// cycle numbers. NESdev: the counter is "triggered on a rising edge after the
+// line has remained low for three falling edges of M2" - three CPU cycles, nine
+// PPU dots.
+
+namespace
+{
+
+// Drives A12 low at `low_at`, then high at `high_at`, and reports whether the
+// counter clocked. The counter is armed with a latch of 1 so that a single
+// clock takes it to a value distinguishable from its start.
+bool edge_clocks_counter(Bus& console, const uint64_t low_at, const uint64_t high_at)
+{
+    ROM& rom = console.rom;
+
+    console.write(0xC000, 0x05);  // latch
+    console.write(0xC001, 0x00);  // request reload on the next edge
+
+    // A long, unambiguous edge to consume the reload and leave a known count.
+    rom.mmc3_observe_a12(0x0000, 0);
+    rom.mmc3_observe_a12(0x1000, 100);
+    const uint8_t before = rom.mmc3_irq_counter;
+
+    rom.mmc3_observe_a12(0x0000, low_at);
+    rom.mmc3_observe_a12(0x1000, high_at);
+
+    return rom.mmc3_irq_counter != before;
+}
+
+}  // namespace
+
+GTEST_TEST(mmc3A12Filter, a_rise_after_a_short_low_is_rejected)
+{
+    BankedRom rom("mmc3_a12_short.nes", 2, 1);
+    Bus console;
+    ASSERT_TRUE(console.load_cartridge(rom.path));
+
+    // Four dots is what A12 actually drops for inside a single background tile
+    // fetch - the nametable and attribute reads at $2xxx between two pattern
+    // reads at $1xxx. Without the filter every tile would clock the counter and
+    // an IRQ meant for one scanline would arrive 32 times a line.
+    EXPECT_FALSE(edge_clocks_counter(console, 1000, 1004)) << "a 4-dot low is tile-fetch noise, not a scanline";
+    EXPECT_FALSE(edge_clocks_counter(console, 2000, 2008)) << "8 dots is still below the 9-dot threshold";
+}
+
+GTEST_TEST(mmc3A12Filter, a_rise_after_a_long_low_clocks_the_counter)
+{
+    BankedRom rom("mmc3_a12_long.nes", 2, 1);
+    Bus console;
+    ASSERT_TRUE(console.load_cartridge(rom.path));
+
+    // The control, and the half that makes the test above mean something: the
+    // same call sequence with a longer low period MUST clock. Without this a
+    // filter that rejected everything would pass.
+    EXPECT_TRUE(edge_clocks_counter(console, 1000, 1009)) << "9 dots is the threshold and must count";
+    EXPECT_TRUE(edge_clocks_counter(console, 2000, 2016)) << "a real scanline gap is 16+ dots";
+}
+
+// A level is not an edge. A run of $2xxx nametable fetches keeps A12 low, and
+// re-arming the timer on each of them would mean no low period ever grew long
+// enough to pass the filter.
+GTEST_TEST(mmc3A12Filter, staying_low_does_not_restart_the_timer)
+{
+    BankedRom rom("mmc3_a12_level.nes", 2, 1);
+    Bus console;
+    ASSERT_TRUE(console.load_cartridge(rom.path));
+    ROM& r = console.rom;
+
+    console.write(0xC000, 0x05);
+    console.write(0xC001, 0x00);
+    r.mmc3_observe_a12(0x0000, 0);
+    r.mmc3_observe_a12(0x1000, 100);
+    const uint8_t before = r.mmc3_irq_counter;
+
+    // Falls once, then several more low accesses, then rises well past the
+    // threshold measured from the FIRST fall.
+    r.mmc3_observe_a12(0x0000, 1000);
+    r.mmc3_observe_a12(0x2000, 1002);
+    r.mmc3_observe_a12(0x2400, 1004);
+    r.mmc3_observe_a12(0x0000, 1006);
+    r.mmc3_observe_a12(0x1000, 1012);
+
+    EXPECT_NE(before, r.mmc3_irq_counter)
+        << "the low period is measured from the first fall; later low accesses must not restart it";
+}
+
 }  // namespace mmc3
 }  // namespace tests
