@@ -98,6 +98,7 @@ target_include_directories(libPPU
 
 add_library(libBus
     src/bus.cpp
+    src/device.cpp
     src/rom.cpp
     src/apu.cpp
 )

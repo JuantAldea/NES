@@ -152,10 +152,17 @@ void APU::write(const uint16_t addr, const uint8_t data)
 uint8_t APU::read(const uint16_t addr)
 {
     if (addr != APUSTATUS) {
-        // The rest of the range this device is mapped to is write-only and
-        // reads as open bus. That includes $4017, which is the frame counter on
-        // write but controller 2 on read - the controller is not implemented.
-        return 0;
+        // The rest of the range this device is mapped to is write-only, so
+        // nothing drives the bus and the read sees whatever was last on it.
+        //
+        // Returning 0 here instead is what blargg's cpu_exec_space_apu catches:
+        // it executes code through $4000-$40FF, so the bytes fetched there ARE
+        // the open-bus value, and a constant 0 sends execution somewhere else.
+        //
+        // $4017 no longer reaches this path on a read. It is the frame counter
+        // on write and controller port 2 on read, and Bus::decode routes the
+        // two directions to different devices.
+        return open_bus();
     }
 
     // Bit 6 is the frame interrupt flag. Bit 7 would be the DMC interrupt and

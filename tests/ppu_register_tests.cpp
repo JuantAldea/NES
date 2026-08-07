@@ -431,9 +431,37 @@ GTEST_TEST(testPPURegisters, write_only_registers_read_back_the_open_bus)
 
     console.ppu.write(PPU::PPUCTRL, 0x3C);
 
-    for (const uint16_t addr : {PPU::PPUCTRL, PPU::PPUMASK, PPU::OAMADDR, PPU::PPUSCROLL, PPU::PPUADDR, PPU::OAMDMA}) {
+    // OAMDMA is deliberately NOT in this list, and its removal is not a test
+    // being relaxed. $4014 is not a PPU register: OAM DMA lives in the 2A03
+    // alongside the CPU, and only Bus::decode routes it to this device. Its
+    // read therefore sees the CPU data bus, not the PPU's internal latch - a
+    // separate wire, asserted in the test below.
+    //
+    // The write side of the same distinction was already established: a $4014
+    // write does not drive the PPU latch either.
+    for (const uint16_t addr : {PPU::PPUCTRL, PPU::PPUMASK, PPU::OAMADDR, PPU::PPUSCROLL, PPU::PPUADDR}) {
         EXPECT_EQ(0x3C, console.ppu.read(addr)) << "register " << std::hex << addr;
     }
+}
+
+// blargg's cpu_exec_space_apu is what forced this apart: it executes THROUGH
+// $4000-$40FF, and the fetch at $4014 has to come back as the CPU bus value for
+// execution to carry on to $4015. Returning the PPU latch there sent it to a
+// wrong address, which the ROM reports as "Mysteriously Landed at $1734".
+GTEST_TEST(testPPURegisters, reading_oamdma_returns_the_cpu_bus_not_the_ppu_latch)
+{
+    Bus console;
+    run_past_reset_lockout(console.ppu);
+
+    // Drive the two latches to different values so the test can tell them
+    // apart: $3C into the PPU's, $A5 onto the CPU's.
+    console.ppu.write(PPU::PPUCTRL, 0x3C);
+    ASSERT_EQ(0x3C, console.ppu.read(PPU::PPUCTRL)) << "precondition: the PPU latch holds $3C";
+
+    console.write(0x0000, 0xA5);
+
+    EXPECT_EQ(0xA5, console.read(0x4014)) << "$4014 must read the CPU data bus";
+    EXPECT_NE(0x3C, console.read(0x4014)) << "$4014 must NOT read the PPU's internal latch";
 }
 
 GTEST_TEST(testPPURegisters, reads_refresh_the_open_bus)

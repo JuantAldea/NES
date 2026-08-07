@@ -55,7 +55,8 @@ Two things about test counts that are easy to misread:
   there and run only locally. The workflow prints the breakdown on every run.
   blargg's `instr_test-v5` singles cover all 256 opcodes in a few hundred KB and
   DO run in CI, so instruction coverage there is no longer just nestest and
-  Klaus.
+  Klaus. `cpu_exec_space` runs the CPU *through* I/O space, which is what pins
+  CPU open bus.
 
 One deliberate divergence, asserted rather than hidden: `03-immediate` reports
 `AB ATX #n`. Opcode `$AB` computes `A = X = (A | magic) & immediate`, where

@@ -78,6 +78,9 @@ tests/test_files/cpu_behaviour
 # Blargg instr_test-v5 rom_singles, fetched by tests/test_files/fetch_instr_test.sh
 tests/test_files/instr_test
 
+# Blargg cpu_exec_space ROMs, fetched by tests/test_files/fetch_cpu_exec_space.sh
+tests/test_files/cpu_exec_space
+
 # Locally-supplied ROMs (yours, from your own cartridges). Never fetched, never
 # committed - see tests/test_files/local/README.md. The README itself is kept.
 tests/test_files/local/*

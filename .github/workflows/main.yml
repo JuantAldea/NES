@@ -45,6 +45,7 @@ jobs:
           tests/test_files/fetch_visual_roms.sh
           tests/test_files/fetch_cpu_behaviour.sh
           tests/test_files/fetch_instr_test.sh
+          tests/test_files/fetch_cpu_exec_space.sh
 
       # The default build type is Checked (-O3 -g, asserts live). The suite
       # spends nearly all its time emulating, so an unoptimised build is about

@@ -82,7 +82,11 @@ public:
             shift[port] = static_cast<uint8_t>((shift[port] >> 1) | 0x80);
         }
 
-        return static_cast<uint8_t>(bit | open_bus_bits);
+        // NESdev: "In the NES and Famicom, the top three (or five) bits are not
+        // driven, and so retain the bits of the previous byte on the bus." That
+        // is the real CPU open-bus latch now; this used to hardcode $40, which
+        // happens to be what the bus holds during `LDA $4016` and nothing else.
+        return static_cast<uint8_t>(bit | (open_bus() & 0xE0));
     }
 
     // Convenience for the frontend and for tests.
@@ -98,19 +102,6 @@ private:
         shift[0] = buttons[0];
         shift[1] = buttons[1];
     }
-
-    // KNOWN SIMPLIFICATION. NESdev: "In the NES and Famicom, the top three (or
-    // five) bits are not driven, and so retain the bits of the previous byte on
-    // the bus." Modelling that properly needs a CPU-wide open-bus latch, which
-    // this emulator does not have - the PPU's latch is its own and does not
-    // extend here.
-    //
-    // $40 is the right answer for the case that matters: the last byte on the
-    // bus before the data phase of `LDA $4016` is the high byte of the address,
-    // $40. Games that mask the result (the overwhelming majority) cannot tell
-    // the difference. A game that compared the whole byte against something
-    // could, and would be mis-served here.
-    static constexpr uint8_t open_bus_bits = 0x40;
 
     bool strobe = false;
     uint8_t shift[2] = {0, 0};

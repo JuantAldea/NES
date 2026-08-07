@@ -26,6 +26,20 @@ public:
     // length of every DMA that had already run.
     uint64_t cpu_cycles = 0;
 
+    // The CPU data bus is not driven by anything on a read of a write-only
+    // register or of unmapped space, so it holds whatever was last put there -
+    // by the previous read, or by the value half of a write.
+    //
+    // Returning 0 for those instead is what blargg's cpu_exec_space_apu
+    // catches: it executes code THROUGH $4000-$40FF, so the bytes the CPU
+    // fetches there ARE the open-bus value, and a constant 0 sends execution to
+    // the wrong address.
+    //
+    // Unlike the PPU's own latch (PPU::open_bus) this one does not decay. The
+    // CPU bus is refreshed every cycle, so the decay is not observable; the
+    // PPU's is, and ppu_open_bus measures it.
+    uint8_t cpu_open_bus = 0;
+
     // Returns true on the master tick that completed a CPU instruction, which
     // is the only moment an outside observer can safely inspect CPU state: in
     // between, the schedule has a half-resolved address and a latched operand

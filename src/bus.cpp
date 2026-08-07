@@ -74,6 +74,10 @@ Bus::DecodedAddress Bus::decode(const uint16_t addr, const Access access)
 
 void Bus::write(const uint16_t addr, const uint8_t data)
 {
+    // The value sits on the data bus whether or not anything latches it, so a
+    // write refreshes open bus even at an address no device backs.
+    cpu_open_bus = data;
+
     const DecodedAddress d = decode(addr, Access::Write);
     if (d.device) {
         d.device->write(d.effective_addr, data);
@@ -97,10 +101,14 @@ uint8_t Bus::read(const uint16_t addr)
 {
     const DecodedAddress d = decode(addr, Access::Read);
     if (d.device) {
-        return d.device->read(d.effective_addr);
+        cpu_open_bus = d.device->read(d.effective_addr);
+        return cpu_open_bus;
     }
-    // Open-bus ranges (no device): reads return 0.
-    return 0;
+
+    // Nothing drives the bus here, so it keeps its previous value. A device
+    // whose register is write-only reports the same thing for itself, through
+    // Device::open_bus().
+    return cpu_open_bus;
 }
 
 // One master-clock tick. The CPU divides it by 12 and the PPU by 4, so a CPU

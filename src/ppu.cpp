@@ -1337,6 +1337,19 @@ uint8_t PPU::read(const uint16_t addr)
     // returns whatever is currently sitting on the PPU's internal data bus
     // latch rather than trapping. We approximate that with `open_bus`,
     // updated on every register access below and in PPU::write.
+
+    // $4014 is NOT one of them. OAM DMA lives in the 2A03 alongside the CPU,
+    // and only Bus::decode routes it here at all - so a read of it sees the CPU
+    // data bus, not the PPU's internal latch. They are different wires.
+    //
+    // This mirrors the write side, where a $4014 write is already stopped from
+    // driving the PPU latch. blargg's cpu_exec_space_apu catches the read half:
+    // it executes THROUGH $4000-$40FF, and the fetch at $4014 has to come back
+    // as CPU open bus for execution to reach $4015 at all.
+    if (addr == OAMDMA) {
+        return Device::open_bus();
+    }
+
     const RegisterMMap reg = static_cast<PPU::RegisterMMap>(addr);
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wswitch"

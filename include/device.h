@@ -17,4 +17,12 @@ struct Device
 
 protected:
     Bus* bus;
+
+    // The last value driven on the CPU's data bus.
+    //
+    // A read of an address nothing drives - a write-only register, or unmapped
+    // space - returns whatever was last on the bus, because nothing pulled it
+    // anywhere else. Defined in device.cpp rather than inline, because reaching
+    // into Bus needs its definition and bus.h already includes this header.
+    uint8_t open_bus() const;
 };

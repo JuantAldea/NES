@@ -326,15 +326,25 @@ GTEST_TEST(testMemory, unmapped_ranges_are_open_bus)
 {
     Bus console;
 
-    // Write through the unmapped address itself and read it straight back. If
-    // any device backs the range the value sticks and the read returns it;
-    // genuine open bus reads 0. Probing unrelated addresses does not work here
-    // - a wrong decode aliases $4018 to ram[$18] and $4020 to prg_ram[$20],
-    // which a test that only seeded $0000 and $6000 would never touch.
+    // Seed a known byte in RAM to read through, as the marker below.
+    console.write(0x0010, 0x5A);
+
+    // The technique had to change when open bus became real. This used to write
+    // $FF to the unmapped address and expect the read back to be 0 - but 0 was
+    // the SIMPLIFICATION, not the hardware. A write puts its value on the data
+    // bus, so on a real NES reading straight back returns $FF whether or not
+    // anything is there, and the old test could no longer tell the two apart.
+    //
+    // So: write $FF, then read a known address to put something else on the
+    // bus, THEN read the unmapped one. A device that latched the write returns
+    // $FF; genuine open bus returns the marker.
     for (const uint16_t addr : {0x4018, 0x401A, 0x401F, 0x4020, 0x5000, 0x5FFF}) {
         console.write(addr, 0xFF);
-        EXPECT_EQ(0x00, console.read(addr))
-            << "$" << std::hex << addr << " is backed by a device; expected open bus";
+        ASSERT_EQ(0x5A, console.read(0x0010)) << "marker read failed; the rest of this test is meaningless";
+
+        EXPECT_EQ(0x5A, console.read(addr))
+            << "$" << std::hex << addr << std::dec
+            << " returned the value written to it, so something is backing it; expected open bus";
     }
 
     // And the discarded writes must not have landed anywhere observable.

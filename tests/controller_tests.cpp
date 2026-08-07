@@ -169,18 +169,34 @@ GTEST_TEST(controllers, writing_4017_drives_the_apu_and_not_the_controller)
 }
 
 // NESdev: the top bits "are not driven, and so retain the bits of the previous
-// byte on the bus". This emulator returns $40 for them, which is what the real
-// bus holds during `LDA $4016` - the high byte of the address. Pinned so the
-// simplification is visible rather than incidental; see the comment on
-// Controllers::open_bus_bits.
-GTEST_TEST(controllers, the_undriven_bits_read_back_as_the_documented_approximation)
+// byte on the bus".
+//
+// This used to assert $41/$40, because the top bits were hardcoded to $40 - the
+// value the bus happens to hold during `LDA $4016` and nothing else. That was a
+// documented simplification, and the test documented it faithfully; both are
+// gone now that Bus tracks a real open-bus latch.
+//
+// The assertion below is stronger for it: the undriven bits must FOLLOW the
+// bus, so the test puts two different values there and requires the read to
+// change accordingly. A hardcoded constant of any value fails it.
+GTEST_TEST(controllers, the_undriven_bits_follow_the_cpu_data_bus)
 {
     Bus console;
     console.controllers.set_port(0, Controllers::A);
     latch(console);
 
-    EXPECT_EQ(0x41, console.read(0x4016)) << "A pressed, plus the undriven high bits";
-    EXPECT_EQ(0x40, console.read(0x4016)) << "B not pressed, plus the undriven high bits";
+    // A write drives its value onto the bus. $E0 sets all three undriven bits.
+    console.write(0x0000, 0xE0);
+    EXPECT_EQ(0xE1, console.read(0x4016)) << "A pressed (bit 0), plus the bus value in bits 5-7";
+
+    // A different bus value must give a different answer.
+    console.write(0x0000, 0x20);
+    EXPECT_EQ(0x20, console.read(0x4016)) << "B not pressed, plus the new bus value";
+
+    // Bits 1-4 are never driven by a standard controller and must stay clear
+    // regardless of what is on the bus.
+    console.write(0x0000, 0xFF);
+    EXPECT_EQ(0x00, console.read(0x4016) & 0x1E) << "bits 1-4 are not part of the standard controller";
 }
 
 // A write to $4016 must not be observable as memory, and reading must not
