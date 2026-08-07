@@ -7,7 +7,8 @@ Bus::Bus()
       ppu{this},
       ram{this},
       prg_ram{this},
-      rom{this}
+      rom{this},
+      controllers{this}
 {
     // Bus::clock places the interrupt sample one PPU dot after the CPU's bus
     // access, which the CPU cannot do for itself.
@@ -19,36 +20,47 @@ bool Bus::load_cartridge(const std::string& path) { return rom.load(path); }
 
 // Single address decode used by both read() and write(). This is the only
 // place CPU addresses get mapped to a device + effective (mirrored) address,
-// so a read and a write to the same CPU address can never disagree about
-// where they land.
+// so the two paths cannot drift apart on any address where hardware agrees.
+//
+// It used to say they "can never disagree", full stop. That was true only
+// while the controllers were unimplemented. $4017 really is two devices - the
+// APU frame counter on write, controller port 2 on read - so the direction is
+// now a parameter. Keeping one function with an Access argument, rather than
+// letting read() and write() each grow a special case, is what preserves the
+// original guarantee everywhere it still holds.
 //
 // NES CPU memory map (as relevant here):
 //   $0000-$1FFF  2KB internal RAM, mirrored every $0800
 //   $2000-$3FFF  8 PPU registers, mirrored every 8 bytes
 //   $4000-$4013, $4015  APU registers
 //   $4014        PPU OAMDMA
-//   $4016-$4017  controllers (stubbed: no device, open bus)
+//   $4016        controller strobe (write), controller 1 data (read)
+//   $4017        APU frame counter (write), controller 2 data (READ - a
+//                different device from the write; see the Access parameter)
 //   $4018-$401F  APU/IO test registers (stubbed: no device, open bus)
 //   $4020-$5FFF  cartridge expansion area (stubbed: no device, open bus)
 //   $6000-$7FFF  8KB cartridge PRG-RAM
 //   $8000-$FFFF  cartridge PRG-ROM
-Bus::DecodedAddress Bus::decode(const uint16_t addr)
+Bus::DecodedAddress Bus::decode(const uint16_t addr, const Access access)
 {
     if (addr < 0x2000) {
         return {&ram, static_cast<uint16_t>(addr % 0x0800)};
     } else if (addr < 0x4000) {
         return {&ppu, static_cast<uint16_t>(0x2000 + (addr % 8))};
-    } else if (addr <= 0x4013 || addr == 0x4015 || addr == 0x4017) {
-        // $4017 is the APU frame counter on write. It is also controller 2 on
-        // read, which is not implemented; the APU returns open bus for it.
-        return {&apu, addr};
     } else if (addr == 0x4014) {
         return {&ppu, addr};
+    } else if (addr == 0x4016) {
+        // Symmetric: the write is the strobe for BOTH ports, the read is
+        // port 1. One device owns both because one strobe line does.
+        return {&controllers, addr};
+    } else if (addr == 0x4017) {
+        // The one address where the two directions are genuinely different
+        // devices on hardware.
+        return access == Access::Write ? DecodedAddress{&apu, addr} : DecodedAddress{&controllers, addr};
+    } else if (addr <= 0x4013 || addr == 0x4015) {
+        return {&apu, addr};
     } else if (addr <= 0x401F) {
-        // $4016 (controller 1) and the $4018-$401F test range are not
-        // implemented; treat as open bus rather than routing to RAM/APU.
-        // $4017 is handled above: it is the APU frame counter on write, and
-        // controller 2 on read, which the APU reports as open bus.
+        // $4018-$401F are CPU test registers, disabled on a retail NES.
         return {nullptr, addr};
     } else if (addr < 0x6000) {
         // Cartridge expansion area; no device backs it.
@@ -62,7 +74,7 @@ Bus::DecodedAddress Bus::decode(const uint16_t addr)
 
 void Bus::write(const uint16_t addr, const uint8_t data)
 {
-    const DecodedAddress d = decode(addr);
+    const DecodedAddress d = decode(addr, Access::Write);
     if (d.device) {
         d.device->write(d.effective_addr, data);
     }
@@ -83,7 +95,7 @@ void Bus::write_ram(const uint16_t start_addr, const size_t n_bytes, const uint8
 
 uint8_t Bus::read(const uint16_t addr)
 {
-    const DecodedAddress d = decode(addr);
+    const DecodedAddress d = decode(addr, Access::Read);
     if (d.device) {
         return d.device->read(d.effective_addr);
     }

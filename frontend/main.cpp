@@ -60,6 +60,38 @@ void upload_framebuffer(SDL_Texture* texture, const PPU& ppu, std::vector<uint32
     SDL_UpdateTexture(texture, nullptr, scratch.data(), PPU::screen_width * static_cast<int>(sizeof(uint32_t)));
 }
 
+// Keyboard to controller port 1.
+//
+// Sampled once per iteration from SDL's key state rather than from key events,
+// because the controller reports which buttons are HELD at the moment the game
+// strobes $4016. Driving it from keydown/keyup edges would mean a button
+// pressed and released between two strobes was never seen at all, and one held
+// across a lost focus event would stick down forever.
+//
+// Nothing is written while ImGui wants the keyboard: without that check, typing
+// a ROM path into the text field also walks the player left.
+void poll_controller(Bus& console)
+{
+    if (ImGui::GetIO().WantCaptureKeyboard) {
+        console.controllers.set_port(0, 0);
+        return;
+    }
+
+    const Uint8* keys = SDL_GetKeyboardState(nullptr);
+
+    uint8_t mask = 0;
+    if (keys[SDL_SCANCODE_X]) mask |= Controllers::A;
+    if (keys[SDL_SCANCODE_Z]) mask |= Controllers::B;
+    if (keys[SDL_SCANCODE_RSHIFT] || keys[SDL_SCANCODE_LSHIFT]) mask |= Controllers::Select;
+    if (keys[SDL_SCANCODE_RETURN]) mask |= Controllers::Start;
+    if (keys[SDL_SCANCODE_UP]) mask |= Controllers::Up;
+    if (keys[SDL_SCANCODE_DOWN]) mask |= Controllers::Down;
+    if (keys[SDL_SCANCODE_LEFT]) mask |= Controllers::Left;
+    if (keys[SDL_SCANCODE_RIGHT]) mask |= Controllers::Right;
+
+    console.controllers.set_port(0, mask);
+}
+
 void draw_screen_panel(SDL_Texture* texture, nes_gui::FrontendState& state)
 {
     ImGui::Begin("Screen");
@@ -174,6 +206,10 @@ int main(int argc, char** argv)
         const double elapsed =
             static_cast<double>(now - previous_counter) / static_cast<double>(SDL_GetPerformanceFrequency());
         previous_counter = now;
+
+        // Before the emulation below, so the frame about to run sees the keys
+        // held now rather than the ones held a frame ago.
+        poll_controller(console);
 
         if (state.running) {
             accumulator += elapsed;

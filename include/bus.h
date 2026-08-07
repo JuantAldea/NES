@@ -1,5 +1,6 @@
 #pragma once
 #include "apu.h"
+#include "controller.h"
 #include "cpu.h"
 #include "device.h"
 #include "ppu.h"
@@ -64,14 +65,24 @@ public:
     SystemRAM ram;
     PrgRAM prg_ram;
     ROM rom;
+    Controllers controllers;
 
 protected:
-    // Single address-decode table shared by read() and write() so the two
-    // paths can never disagree about which device (and which mirrored
-    // effective address) a given CPU address maps to.
+    // Reads and writes go through ONE decode function, so the two paths cannot
+    // drift apart on any address where hardware agrees - which is every address
+    // but one.
+    //
+    // $4017 is the exception, and it is a real property of the NES rather than
+    // an emulator convenience: writing it sets the APU frame counter, reading
+    // it returns controller port 2. They are different devices. That is why
+    // decode takes a direction instead of the read and write paths each growing
+    // their own special case, which is exactly how the two would come to
+    // disagree about the addresses where hardware does NOT.
+    enum class Access { Read, Write };
+
     struct DecodedAddress {
         Device* device;  // nullptr for open-bus ranges (no device backs them)
         uint16_t effective_addr;
     };
-    DecodedAddress decode(const uint16_t addr);
+    DecodedAddress decode(const uint16_t addr, const Access access);
 };

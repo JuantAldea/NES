@@ -311,8 +311,17 @@ GTEST_TEST(testMemory, failed_load_after_success_fully_unloads)
     EXPECT_TRUE(rom.chr_rom.empty());
 }
 
-// $4016-$401F and $4020-$5FFF have no device. Nothing asserted that they read
+// $4018-$401F and $4020-$5FFF have no device. Nothing asserted that they read
 // as open bus rather than aliasing into RAM or PRG-RAM.
+//
+// $4016 and $4017 USED to be in this list, and their removal is not a test
+// being relaxed to fit the code. They were unmapped only because the
+// controllers were unimplemented, so the assertion recorded a gap in this
+// emulator rather than a property of the NES - on hardware $4016 is the
+// controller strobe and both are readable controller ports. The gap is now
+// closed and controller_tests.cpp asserts what they actually do.
+//
+// $4018-$401F stay: those are CPU test registers, disabled on a retail NES.
 GTEST_TEST(testMemory, unmapped_ranges_are_open_bus)
 {
     Bus console;
@@ -320,9 +329,9 @@ GTEST_TEST(testMemory, unmapped_ranges_are_open_bus)
     // Write through the unmapped address itself and read it straight back. If
     // any device backs the range the value sticks and the read returns it;
     // genuine open bus reads 0. Probing unrelated addresses does not work here
-    // - a wrong decode aliases $4016 to ram[$16] and $4020 to prg_ram[$20],
+    // - a wrong decode aliases $4018 to ram[$18] and $4020 to prg_ram[$20],
     // which a test that only seeded $0000 and $6000 would never touch.
-    for (const uint16_t addr : {0x4016, 0x4017, 0x401F, 0x4020, 0x5000, 0x5FFF}) {
+    for (const uint16_t addr : {0x4018, 0x401A, 0x401F, 0x4020, 0x5000, 0x5FFF}) {
         console.write(addr, 0xFF);
         EXPECT_EQ(0x00, console.read(addr))
             << "$" << std::hex << addr << " is backed by a device; expected open bus";

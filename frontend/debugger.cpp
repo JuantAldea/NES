@@ -78,6 +78,9 @@ void draw_controls_panel(Bus& console, FrontendState& state)
         console.trace_cpu = state.trace;
     }
 
+    // Discoverability: the mapping is otherwise guessable only by trying keys.
+    ImGui::TextDisabled("pad: arrows  X=A  Z=B  Shift=Select  Enter=Start");
+
     ImGui::Separator();
     ImGui::Text("frame %llu", static_cast<unsigned long long>(console.ppu.frame));
     ImGui::Text("CPU cycles %llu", static_cast<unsigned long long>(console.cpu_cycles));
