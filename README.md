@@ -276,7 +276,7 @@ ctest --test-dir build --output-on-failure
 ctest --test-dir build -j8 --output-on-failure   # or pick your own level
 ```
 
-The 749 tests are dominated by the two per-opcode suites - 256 opcodes checked
+The 854 tests are dominated by the two per-opcode suites - 256 opcodes checked
 for their bus trace and 256 for their final state, 10,000 cases apiece.
 
 ### Sanitizers

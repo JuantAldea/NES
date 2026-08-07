@@ -1,4 +1,7 @@
+# Any build directory. Not just `build/`: the sanitizer job and the README both
+# use `build-asan/`, and a second tree for comparing configurations is routine.
 build/
+build-*/
 # Prerequisites
 *.d
 

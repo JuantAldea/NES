@@ -60,7 +60,7 @@ jobs:
       - name: Test
         run: ctest --test-dir build -j"$(nproc)" --output-on-failure
 
-      # "100% tests passed out of 685" is a MISLEADING headline here, and this
+      # "100% tests passed out of 854" is a MISLEADING headline here, and this
       # step exists to say so on every run.
       #
       # GTEST_SKIP makes a test exit 0, so ctest counts a skipped test as a
