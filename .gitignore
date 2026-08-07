@@ -72,5 +72,8 @@ tests/test_files/read_joy3
 # Visual-check ROMs, fetched by tests/test_files/fetch_visual_roms.sh
 tests/test_files/visual
 
+# Blargg CPU reset / dummy-access ROMs, fetched by tests/test_files/fetch_cpu_behaviour.sh
+tests/test_files/cpu_behaviour
+
 # ppu_read_buffer test ROM, fetched by tests/test_files/fetch_ppu_read_buffer.sh
 tests/test_files/ppu_read_buffer

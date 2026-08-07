@@ -129,6 +129,11 @@ public:
     bool clock(bool trace);
     bool branch_is_taken() const;
     void reset();
+
+    // Switching the machine on with a cartridge present. Distinct from reset():
+    // a reset preserves A/X/Y and subtracts 3 from S, where power-on establishes
+    // them. See the definition for the ROM that forced the distinction.
+    void power_on();
     uint8_t& register_A() { return registers.A; };
     uint8_t& register_X() { return registers.X; };
     uint8_t& register_Y() { return registers.Y; };

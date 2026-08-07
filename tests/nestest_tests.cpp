@@ -688,11 +688,22 @@ GTEST_TEST(nestestDiffer, cpu_trace_matches_golden_log_through_bus)
         << "aborting: cannot measure divergence without a valid ROM image";
 
     // reset() reads the ROM's real vector ($C004); nestest's automated entry
-    // point is $C000, so override PC afterwards. SP/P/cycles come from reset().
+    // point is $C000, so override PC afterwards.
     console.cpu.reset();
     ASSERT_EQ(console.cpu.registers.PC, 0xC004) << "cartridge reset vector not visible through the Bus";
     console.cpu.registers.PC = 0xC000;
     console.cpu.total_cycles = 7;
+
+    // SP is set explicitly rather than inherited from reset(), because this is
+    // the SECOND reset this CPU has seen - Bus's constructor performs the first.
+    // A reset subtracts 3 from S and does not reload it (blargg's cpu_reset
+    // "registers": "Reset should set I flag, subtract 3 from S, nothing more"),
+    // so two of them leave $FA. nestest's golden log begins at SP:FD, i.e. one
+    // reset from power-on, which is the state being reproduced here.
+    //
+    // This used to be inherited silently, because reset() forced SP to $FD
+    // every time and a second call was indistinguishable from the first.
+    console.cpu.registers.SP = 0xFD;
 
     const std::string log_path = std::string(NES_TEST_FILES_DIR) + "/nestest.log";
     std::ifstream log_file(log_path);

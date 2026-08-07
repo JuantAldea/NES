@@ -919,18 +919,58 @@ bool CPU::read_indexed_indirect_pointer()
     }
 }
 
-void CPU::reset()
+// Power-on, which is NOT the same event as a reset and had no representation
+// here until blargg's cpu_reset "registers" ROM asked for both.
+//
+// That ROM checks the two separately: "At power A,X,Y=0 P=$34 S=$FD", then
+// "Reset should set I flag, subtract 3 from S, nothing more". A single function
+// cannot answer both once reset stops reloading S, because the difference
+// between them is precisely whether the previous state survives.
+//
+// Bus's constructor resets before any cartridge is mapped, so anything loading
+// a cartridge afterwards has already spent one reset. Calling this instead
+// establishes the state a machine is actually in when it is switched on with a
+// cartridge in the slot.
+void CPU::power_on()
 {
     registers = {0};
-
-    // The reset sequence performs three dummy stack accesses that decrement SP
-    // without writing anything, so SP settles at $FD rather than $FF.
     registers.SP = 0xFD;
-
-    // U (always set) and I (interrupts masked on reset). B is deliberately not
-    // set: it is not a real bit of P, only a value that appears in the copy
-    // pushed to the stack by BRK/PHP.
     registers.P = static_cast<uint8_t>(FLAGS::U) | static_cast<uint8_t>(FLAGS::I);
+    registers.PC = static_cast<uint16_t>(read(0xFFFC)) | (static_cast<uint16_t>(read(0xFFFD)) << 8);
+    current_op_code = read(registers.PC);
+
+    cycles_left = 0;
+    nmi_requested = false;
+    irq_requested = false;
+    servicing_nmi = false;
+    nmi_committed = false;
+    total_cycles = 0;
+}
+
+void CPU::reset()
+{
+    // A RESET is not a power-on. blargg's cpu_reset "registers" states the rule
+    // in one line, and reports Failed #3 against anything else:
+    //
+    //     "Reset should set I flag, subtract 3 from S, nothing more"
+    //
+    // So A, X, Y and every flag but I survive it. This used to assign
+    // registers = {0} and force SP to $FD, which is what power-on looks like -
+    // correct on the first call and wrong on every later one. Nothing caught it
+    // because reset() is called as SETUP by almost every test here and asserted
+    // on by none.
+    //
+    // The two cases need no separate paths. The register members are
+    // value-initialised to 0, so the first call subtracts 3 from 0 and wraps to
+    // the $FD that power-on is supposed to leave behind. The three dummy stack
+    // accesses that cause that decrement do not write anything, which is why
+    // RAM survives a reset and ram_after_reset can check it.
+    registers.SP = static_cast<uint8_t>(registers.SP - 3);
+
+    // U is not a real bit of P and reads back set regardless. B is deliberately
+    // not set: it is not a bit either, only a value that appears in the copy
+    // pushed to the stack by BRK/PHP.
+    registers.P |= static_cast<uint8_t>(FLAGS::U) | static_cast<uint8_t>(FLAGS::I);
     registers.PC = static_cast<uint16_t>(read(0xFFFC)) | (static_cast<uint16_t>(read(0xFFFD)) << 8);
     current_op_code = read(registers.PC);
 
