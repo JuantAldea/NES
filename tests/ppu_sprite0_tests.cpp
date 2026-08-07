@@ -501,18 +501,46 @@ GTEST_TEST(testSprite0Hit, oamaddr_left_at_zero_evaluates_the_first_record)
         << "with OAMADDR at 0 the first record is OAM[0], which is parked off-screen";
 }
 
-GTEST_TEST(testSprite0Hit, oamaddr_is_aligned_down_to_a_sprite_record)
+// NESdev, $2003: "If OAMADDR is unaligned and does not point to the Y position
+// (first byte) of an OAM entry, then whatever it points to (tile index,
+// attribute, or X coordinate) will be reinterpreted as a Y position, and the
+// following bytes will be similarly reinterpreted."
+//
+// This replaces a test that asserted the OPPOSITE - that OAMADDR is aligned
+// down to the record containing it - and wrote that up as though it were the
+// hardware rule. It was this emulator's simplification presented as spec, and
+// because it passed, correcting the simplification would have meant deleting a
+// green test: exactly the shape of thing that keeps a bug alive.
+GTEST_TEST(testSprite0Hit, a_misaligned_oamaddr_reinterprets_the_following_bytes)
 {
     Bus console;
     PPU& ppu = console.ppu;
     set_up_an_overlapping_frame(ppu, 64, 64);
-    park_the_hitting_sprite_in_record_one(ppu);
 
-    // $06 sits inside the second record. OAM is read as four-byte records, so
-    // evaluation starts at $04 rather than reading three bytes of one sprite
-    // and one of the next.
+    // Records 0 and 1 are parked off-screen, so nothing is found by reading OAM
+    // as aligned four-byte records at all.
+    place_sprite0(ppu, 0xFF, 1, 0x00, 0xFF);
+    ppu.OAM_memory[4] = 0xFF;
+    ppu.OAM_memory[5] = 0xFF;
+
+    // A sprite laid out from OAM[6] onwards, straddling the boundary between
+    // records 1 and 2. As records this is nonsense; read from $06 it is
+    // Y=99 (covering line 100), a solid tile, attribute 0, X=64.
+    ppu.OAM_memory[6] = 99;
+    ppu.OAM_memory[7] = 1;
+    ppu.OAM_memory[8] = 0x00;
+    ppu.OAM_memory[9] = 64;
+
     EXPECT_TRUE(hit_on_line_100_after_writing_oamaddr(ppu, 10, 0x06))
-        << "OAMADDR is aligned down to the record containing it";
+        << "the byte at OAMADDR must be reinterpreted as a Y position";
+
+    // The control, and the thing the old behaviour did: starting at $04 reads
+    // OAM[4] = $FF as the Y, which is off-screen, and nothing else is in range.
+    // A build that aligns $06 down to $04 fails the assertion above and passes
+    // this one, so the pair distinguishes the two implementations rather than
+    // merely observing that something happened.
+    EXPECT_FALSE(hit_on_line_100_after_writing_oamaddr(ppu, 10, 0x04))
+        << "an aligned start at $04 reads $FF as the Y, so nothing is in range";
 }
 
 GTEST_TEST(testSprite0Hit, oamaddr_written_after_evaluation_starts_is_too_late)

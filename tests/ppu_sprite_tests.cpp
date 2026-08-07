@@ -160,13 +160,63 @@ GTEST_TEST(testSprites, sprites_are_hidden_by_the_ppumask_left_clip)
     Bus console;
     PPU& ppu = console.ppu;
     set_up(ppu);
-    place_sprite(ppu, 0, 100, 1, 0x00, 0);
+
+    // Straddling the clip boundary at x=4, NOT parked entirely inside it.
+    // With the sprite wholly within x=0..7 both halves of this test reduce to
+    // "nothing was drawn", which a sprite that failed to render for any
+    // unrelated reason satisfies just as well. Straddling gives the test its
+    // own positive control: the same sprite must vanish on one side of x=8 and
+    // appear on the other, so only a correctly placed clip passes.
+    place_sprite(ppu, 0, 100, 1, 0x00, 4);
 
     ppu.write(PPU::PPUMASK, kShowBackground | kShowSprites | kShowBackgroundLeft);
     render_a_frame(ppu);
 
-    EXPECT_EQ(kBackdrop, pixel_at(ppu, 0, 101)) << "PPUMASK bit 2 is clear, so x=0..7 is blanked";
-    EXPECT_EQ(kBackdrop, pixel_at(ppu, 7, 101));
+    EXPECT_EQ(kBackdrop, pixel_at(ppu, 4, 101)) << "PPUMASK bit 2 is clear, so x=0..7 is blanked";
+    EXPECT_EQ(kBackdrop, pixel_at(ppu, 7, 101)) << "x=7 is the last blanked column";
+    EXPECT_EQ(kSpriteColour, pixel_at(ppu, 8, 101)) << "x=8 is the first visible column - the sprite IS there";
+    EXPECT_EQ(kSpriteColour, pixel_at(ppu, 11, 101)) << "and continues to the end of the sprite";
+}
+
+// $2004 is wired to secondary OAM while it is being cleared, not to primary
+// OAM. NESdev, PPU sprite evaluation, cycles 1-64: "Secondary OAM ... is
+// initialized to $FF - attempting to read $2004 will return $FF."
+GTEST_TEST(testSprites, reading_oamdata_during_the_secondary_oam_clear_returns_ff)
+{
+    Bus console;
+    PPU& ppu = console.ppu;
+    set_up(ppu);
+
+    for (int i = 0; i < 256; ++i) {
+        ppu.OAM_memory[i] = static_cast<uint8_t>(i);
+    }
+    ppu.write(PPU::PPUMASK, kEverything);
+
+    clock_until(ppu, 100, 30);  // inside dots 1-64 of a visible line
+    ppu.write(PPU::OAMADDR, 0x20);
+    EXPECT_EQ(0xFF, ppu.read(PPU::OAMDATA)) << "during the clear, $2004 reads secondary OAM, not OAM[$20]";
+
+    // The control: outside that window the same read returns primary OAM, so
+    // this is not simply "$2004 always reads $FF".
+    clock_until(ppu, 100, 100);
+    ppu.write(PPU::OAMADDR, 0x20);
+    EXPECT_EQ(0x20, ppu.read(PPU::OAMDATA)) << "past dot 64 the read reaches primary OAM again";
+}
+
+GTEST_TEST(testSprites, reading_oamdata_with_rendering_off_always_reaches_primary_oam)
+{
+    Bus console;
+    PPU& ppu = console.ppu;
+    set_up(ppu);
+
+    for (int i = 0; i < 256; ++i) {
+        ppu.OAM_memory[i] = static_cast<uint8_t>(i);
+    }
+    ppu.write(PPU::PPUMASK, 0x00);  // rendering disabled: no evaluation happens
+
+    clock_until(ppu, 100, 30);
+    ppu.write(PPU::OAMADDR, 0x20);
+    EXPECT_EQ(0x20, ppu.read(PPU::OAMDATA)) << "with rendering off there is no clear to read through";
 }
 
 // --- the eight-sprites-per-line limit -------------------------------------

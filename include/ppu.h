@@ -418,6 +418,29 @@ public:
 
     // Sprites copied into secondary OAM so far, 0-8. Doubles as the write
     // cursor: the next sprite lands at secondary_oam[4 * found].
+    // KNOWN GAPS in sprite evaluation, found by adversarial review against the
+    // NESdev pages and deliberately left unimplemented rather than forgotten:
+    //
+    //  - The OAM hardware refresh bug. NESdev, PPU sprite evaluation (Notes):
+    //    on the 2C02G/H, starting evaluation with OAMADDR >= 8 copies the eight
+    //    bytes at OAMADDR & $F8 over the first eight bytes of OAM. Filed under
+    //    Errata, revision-specific, and no ROM in the suite covers it.
+    //
+    //  - $2004 WRITES during rendering. NESdev, PPU registers (OAMDATA): they
+    //    "do not modify values in OAM, but do perform a glitchy increment of
+    //    OAMADDR, bumping only the high 6 bits". This emulator writes OAM and
+    //    increments by 1. Pre-existing, not introduced by sprite evaluation.
+    //
+    //  - fetch_sprite_pattern returns early for slots past sprite_count, where
+    //    hardware always performs eight fetches, reading tile $FF for empty
+    //    slots. Unobservable on NROM/CNROM - but it becomes a real A12/IRQ
+    //    timing bug the moment a scanline-counting mapper such as MMC3 exists.
+    //
+    // Destination offset within the secondary-OAM slot being filled, counted
+    // separately from sprite_eval_m (the SOURCE byte index). They agree only
+    // when OAMADDR was record-aligned.
+    uint8_t sprite_eval_copy = 0;
+
     uint8_t sprite_eval_found = 0;
 
     // The byte read on an odd dot, consumed by the even dot that follows it.
@@ -475,6 +498,7 @@ public:
     void sprite_evaluation_read();
     void sprite_evaluation_write();
     void sprite_evaluation_advance_n();
+    void sprite_evaluation_advance_byte();
     void load_sprite_units();
     void fetch_sprite_pattern();
 

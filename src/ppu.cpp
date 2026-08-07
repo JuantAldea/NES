@@ -562,14 +562,24 @@ void PPU::clear_secondary_oam_dot()
 // because of this.
 //
 // Aligned down to a four-byte boundary: OAM is read as sprite records, so an
-// OAMADDR pointing mid-record starts the record there. This models the common
-// case rather than the misaligned one.
+// Evaluation starts at OAMADDR exactly, INCLUDING its low two bits.
+//
+// NESdev, $2003: "If OAMADDR is unaligned and does not point to the Y position
+// (first byte) of an OAM entry, then whatever it points to (tile index,
+// attribute, or X coordinate) will be reinterpreted as a Y position, and the
+// following bytes will be similarly reinterpreted."
+//
+// So m is the byte index within the record, seeded from OAMADDR rather than
+// forced to 0. An earlier version masked with $FC and a test asserted that as
+// though it were hardware; it was neither, and it would have had to be deleted
+// before this could be corrected.
 void PPU::begin_sprite_evaluation()
 {
-    sprite_eval_oamaddr = static_cast<uint8_t>(registers.OAMADDR & 0xFC);
+    sprite_eval_oamaddr = registers.OAMADDR;
 
     sprite_eval_n = static_cast<uint8_t>(sprite_eval_oamaddr >> 2);
-    sprite_eval_m = 0;
+    sprite_eval_m = static_cast<uint8_t>(sprite_eval_oamaddr & 0x03);
+    sprite_eval_copy = 0;
     sprite_eval_found = 0;
     sprite_eval_latch = 0;
     sprite_zero_in_secondary = false;
@@ -610,6 +620,17 @@ void PPU::sprite_evaluation_read()
 // n only ever moves forward, and the scan ends when it runs off the end of OAM
 // rather than wrapping. That is why a non-zero OAMADDR makes the sprites below
 // it disappear instead of being picked up on a second pass.
+// One byte forward through OAM, carrying from m into n. A copy walks the array
+// linearly; only the out-of-range path in ScanY skips a whole record at a time.
+void PPU::sprite_evaluation_advance_byte()
+{
+    ++sprite_eval_m;
+    if (sprite_eval_m == 4) {
+        sprite_eval_m = 0;
+        sprite_evaluation_advance_n();
+    }
+}
+
 void PPU::sprite_evaluation_advance_n()
 {
     ++sprite_eval_n;
@@ -658,13 +679,20 @@ void PPU::sprite_evaluation_write()
                 if (sprite_eval_found == 0) {
                     sprite_zero_in_secondary = (sprite_eval_n == (sprite_eval_oamaddr >> 2));
                 }
-                sprite_eval_m = 1;
+                // The destination offset in secondary OAM is counted
+                // separately from the source byte index. They coincide only
+                // when OAMADDR was aligned; a misaligned scan copies four
+                // CONSECUTIVE bytes starting at the reinterpreted Y, which is
+                // not the same as bytes 1-3 of the record it happens to be in.
+                sprite_eval_copy = 1;
+                sprite_evaluation_advance_byte();
                 sprite_eval_state = SpriteEvalState::CopySprite;
             } else {
                 // The 9th in-range sprite. This dot is the one 3.Timing
                 // measures.
                 set_sprite_overflow();
-                sprite_eval_m = 1;
+                sprite_eval_copy = 1;
+                sprite_evaluation_advance_byte();
                 sprite_eval_state = SpriteEvalState::OverflowCopy;
             }
             break;
@@ -690,24 +718,24 @@ void PPU::sprite_evaluation_write()
     }
 
     case SpriteEvalState::CopySprite:
-        secondary_oam[sprite_eval_found * 4 + sprite_eval_m] = sprite_eval_latch;
-        ++sprite_eval_m;
-        if (sprite_eval_m == 4) {
-            sprite_eval_m = 0;
+        secondary_oam[sprite_eval_found * 4 + sprite_eval_copy] = sprite_eval_latch;
+        ++sprite_eval_copy;
+        sprite_evaluation_advance_byte();
+        if (sprite_eval_copy == 4) {
+            sprite_eval_copy = 0;
             ++sprite_eval_found;
             sprite_eval_state = SpriteEvalState::ScanY;
-            sprite_evaluation_advance_n();
         }
         break;
 
     case SpriteEvalState::OverflowCopy:
         // Three dummy reads whose values go nowhere - secondary OAM is full.
         // They still cost dots, which is the only reason they are modelled.
-        ++sprite_eval_m;
-        if (sprite_eval_m == 4) {
-            sprite_eval_m = 0;
+        ++sprite_eval_copy;
+        sprite_evaluation_advance_byte();
+        if (sprite_eval_copy == 4) {
+            sprite_eval_copy = 0;
             sprite_eval_state = SpriteEvalState::ScanY;
-            sprite_evaluation_advance_n();
         }
         break;
 
@@ -1297,6 +1325,21 @@ uint8_t PPU::read(const uint16_t addr)
     case OAMDATA:
         // Unlike $2007, a read of $2004 does NOT advance the address. Software
         // reading OAM back has to drive $2003 for each byte.
+        //
+        // During dots 1-64 of a rendering scanline the PPU is busy filling
+        // secondary OAM with $FF, and $2004 is wired to that, not to primary
+        // OAM. NESdev, PPU sprite evaluation, cycles 1-64: "Secondary OAM
+        // (32-byte buffer for current sprites on scanline) is initialized to
+        // $FF - attempting to read $2004 will return $FF."
+        //
+        // This is the other half of the sentence clear_secondary_oam_dot
+        // implements. Modelling only the write half meant the $FF was visible
+        // in rendering but not to software, which is the sort of split that
+        // makes a game's OAM readback look like a memory bug.
+        if (rendering_enabled() && scanline <= post_render_scanline - 1 && cycle >= 1 && cycle <= 64) {
+            drive_open_bus(0xFF);
+            return open_bus;
+        }
         drive_open_bus(OAM_memory[registers.OAMADDR]);
         return open_bus;
 
