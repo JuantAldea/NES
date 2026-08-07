@@ -58,9 +58,17 @@ bool ROM::load(const std::string& path)
     // from the high nibble of flags7.
     const uint8_t parsed_mapper_id = (flags7 & 0xF0) | (flags6 >> 4);
 
-    if (parsed_mapper_id != 0 && parsed_mapper_id != 3) {
+    if (parsed_mapper_id != 0 && parsed_mapper_id != 2 && parsed_mapper_id != 3) {
         std::cerr << "ROM: mapper " << static_cast<int>(parsed_mapper_id)
-                  << " is not supported (only NROM/mapper 0 and CNROM/mapper 3)\n";
+                  << " is not supported (only NROM/0, UNROM/2 and CNROM/3)\n";
+        return false;
+    }
+
+    // UNROM switches PRG rather than CHR, so it carries no CHR-ROM at all - the
+    // console's CHR-RAM is the pattern memory. A header claiming CHR banks is
+    // not a UNROM image whatever byte 7 says.
+    if (parsed_mapper_id == 2 && chr_rom_banks != 0) {
+        std::cerr << "ROM: UNROM has no CHR-ROM, header advertises " << chr_rom_banks << " bank(s)\n";
         return false;
     }
 
@@ -87,8 +95,16 @@ bool ROM::load(const std::string& path)
         return false;
     }
 
-    if (prg_rom_banks == 0 || prg_rom_banks > 2) {
-        std::cerr << "ROM: NROM requires 1 or 2 PRG-ROM banks, header advertises " << prg_rom_banks << "\n";
+    // UNROM is the mapper that exists to carry more PRG than the CPU can
+    // address, so the NROM ceiling of two banks does not apply. Eight or
+    // sixteen 16KB banks (128KB or 256KB) are the real board sizes.
+    if (parsed_mapper_id == 2) {
+        if (prg_rom_banks < 2 || prg_rom_banks > 16) {
+            std::cerr << "ROM: UNROM requires 2 to 16 PRG-ROM banks, header advertises " << prg_rom_banks << "\n";
+            return false;
+        }
+    } else if (prg_rom_banks == 0 || prg_rom_banks > 2) {
+        std::cerr << "ROM: NROM/CNROM require 1 or 2 PRG-ROM banks, header advertises " << prg_rom_banks << "\n";
         return false;
     }
 
@@ -108,6 +124,8 @@ bool ROM::load(const std::string& path)
     mapper_id = parsed_mapper_id;
     horizontal_mirroring = !(flags6 & 0x01);
     chr_bank_count = static_cast<uint8_t>(chr_rom_banks);
+    prg_bank_count = static_cast<uint8_t>(prg_rom_banks);
+    prg_bank = 0;
     // Power-on bank is 0. The value is not specified by the hardware, but a
     // CNROM game sets it before drawing anything.
     chr_bank = 0;
@@ -136,6 +154,16 @@ void ROM::write(const uint16_t addr, const uint8_t data)
     if (mapper_id == 3 && addr >= 0x8000 && chr_bank_count != 0) {
         chr_bank = static_cast<uint8_t>(data & (chr_bank_count - 1));
     }
+
+    // UNROM latches a PRG bank the same way, from any address in cartridge
+    // space. Bus conflicts are not modelled here either, for the same reason.
+    //
+    // The mask is by bank COUNT rather than a fixed width: real boards decode
+    // only as many bits as they have banks, so a write of $0F to a 128KB
+    // cartridge selects bank 7, not a bank that does not exist.
+    if (mapper_id == 2 && addr >= 0x8000 && prg_bank_count != 0) {
+        prg_bank = static_cast<uint8_t>(data & (prg_bank_count - 1));
+    }
 }
 
 uint8_t ROM::chr_read(const uint16_t addr) const
@@ -155,6 +183,15 @@ uint8_t ROM::read(const uint16_t addr)
 {
     if (prg_rom.empty()) {
         return 0;
+    }
+
+    // UNROM: $8000-$BFFF is a switchable 16KB window, $C000-$FFFF is HARD-WIRED
+    // to the last bank. The fixed half is not a convenience - it is what makes
+    // the mapper usable at all, because the reset and NMI vectors live at
+    // $FFFA-$FFFF and a game that switched them out could never come back.
+    if (mapper_id == 2) {
+        const size_t bank = (addr < 0xC000) ? prg_bank : (prg_bank_count - 1);
+        return prg_rom[bank * PRG_ROM_BANK_SIZE + (addr & 0x3FFF)];
     }
 
     // NROM: 16KB PRG-ROM images are mirrored across $8000-$BFFF and $C000-$FFFF;

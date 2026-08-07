@@ -5,7 +5,8 @@
 
 #include "device.h"
 
-// iNES (.nes) cartridge loader for NROM (mapper 0) and CNROM (mapper 3).
+// iNES (.nes) cartridge loader for NROM (mapper 0), UNROM (mapper 2) and
+// CNROM (mapper 3).
 //
 // CNROM is NROM plus a switchable CHR window: a write anywhere in
 // $8000-$FFFF latches which 8KB CHR-ROM bank the PPU sees. PRG behaves
@@ -50,6 +51,12 @@ public:
     // a plain index.
     uint8_t chr_bank = 0;
     uint8_t chr_bank_count = 0;
+
+    // UNROM's switchable 16KB PRG window at $8000-$BFFF, and how many banks the
+    // cartridge carries. $C000-$FFFF is always the last bank, so the vectors
+    // cannot be switched away.
+    uint8_t prg_bank = 0;
+    uint8_t prg_bank_count = 0;
 
     std::vector<uint8_t> prg_rom;
     std::vector<uint8_t> chr_rom;

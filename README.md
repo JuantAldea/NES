@@ -8,10 +8,10 @@ side.
 ## Current status
 
 The CPU and the PPU render backgrounds and sprites, the frontend puts the
-picture on screen, and the controllers work. A mapper-0 or mapper-3 game should
-draw and respond to input. There is no audio, and no mapper beyond those two -
-which rules out most of the library, since MMC3 alone covers several hundred
-titles.
+picture on screen, and the controllers work. A mapper 0, 2 or 3 game should draw
+and respond to input - the 240p Test Suite runs, which is the most demanding
+thing here. There is no audio, and no mapper beyond those three, so MMC3's
+several hundred titles are still out of reach.
 
 | Area | State |
 |---|---|
@@ -20,7 +20,7 @@ titles.
 | PPU address space | Pattern tables, nametable and palette mirroring, `$2007` buffer, OAM, open-bus decay |
 | PPU background | Loopy `v`/`t`/`x`/`w`, dot-exact tile pipeline, framebuffer of palette indices |
 | Sprites | Secondary OAM, per-dot evaluation, 8-per-line, the overflow search bug, priority, 8x16, flip. Passes blargg's 5 `sprite_overflow` and 11 `sprite_hit` ROMs |
-| Cartridge | iNES, NROM (mapper 0) and CNROM (mapper 3), CHR-ROM and CHR-RAM |
+| Cartridge | iNES, NROM (0), UNROM (2) and CNROM (3), CHR-ROM and CHR-RAM |
 | APU | Frame counter and `/IRQ`. No audio. |
 | Display | SDL2 + Dear ImGui: the screen and the debugger in one window |
 | Controllers | Both ports at `$4016`/`$4017`, keyboard-driven. Passes blargg's `read_joy3` `test_buttons` |
