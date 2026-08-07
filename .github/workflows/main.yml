@@ -40,6 +40,8 @@ jobs:
           tests/test_files/fetch_blargg_ppu_2005.sh
           tests/test_files/fetch_sprite_hit.sh
           tests/test_files/fetch_ppu_read_buffer.sh
+          tests/test_files/fetch_sprite_overflow.sh
+          tests/test_files/fetch_read_joy3.sh
 
       # The default build type is Checked (-O3 -g, asserts live). The suite
       # spends nearly all its time emulating, so an unoptimised build is about

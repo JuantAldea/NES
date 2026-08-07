@@ -7,10 +7,11 @@ side.
 
 ## Current status
 
-The CPU and the PPU are done far enough to draw a background, and the frontend
-puts it on screen. There is still **no sprite rendering** - sprite 0 hit is
-computed, but no sprite pixel is ever written - so a game will show its
-background and nothing that moves.
+The CPU and the PPU render backgrounds and sprites, the frontend puts the
+picture on screen, and the controllers work. A mapper-0 or mapper-3 game should
+draw and respond to input. There is no audio, and no mapper beyond those two -
+which rules out most of the library, since MMC3 alone covers several hundred
+titles.
 
 | Area | State |
 |---|---|
@@ -18,13 +19,16 @@ background and nothing that moves.
 | PPU frame timing | Dot-accurate: vblank, NMI, suppression, odd-frame skip |
 | PPU address space | Pattern tables, nametable and palette mirroring, `$2007` buffer, OAM, open-bus decay |
 | PPU background | Loopy `v`/`t`/`x`/`w`, dot-exact tile pipeline, framebuffer of palette indices |
-| Sprites | Sprite 0 hit only. No priority, no 8-per-line, no overflow, no sprite pixels |
+| Sprites | Secondary OAM, per-dot evaluation, 8-per-line, the overflow search bug, priority, 8x16, flip. Passes blargg's 5 `sprite_overflow` and 11 `sprite_hit` ROMs |
 | Cartridge | iNES, NROM (mapper 0) and CNROM (mapper 3), CHR-ROM and CHR-RAM |
 | APU | Frame counter and `/IRQ`. No audio. |
 | Display | SDL2 + Dear ImGui: the screen and the debugger in one window |
-| Controllers | Not implemented |
+| Controllers | Both ports at `$4016`/`$4017`, keyboard-driven. Passes blargg's `read_joy3` `test_buttons` |
 
-Next: the rest of sprite rendering, then controllers.
+Next: MMC3 (mapper 4), which unlocks several hundred games and brings the
+scanline-counter IRQ - and with it the one deliberate PPU gap, the sprite
+pattern fetches skipped for empty slots, which only becomes observable once a
+mapper watches the PPU address bus.
 
 ## Features
 

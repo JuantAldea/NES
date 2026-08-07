@@ -66,5 +66,8 @@ tests/test_files/sprite_hit
 # Blargg sprite overflow ROMs, fetched by tests/test_files/fetch_sprite_overflow.sh
 tests/test_files/sprite_overflow
 
+# Blargg read_joy3 controller ROM, fetched by tests/test_files/fetch_read_joy3.sh
+tests/test_files/read_joy3
+
 # ppu_read_buffer test ROM, fetched by tests/test_files/fetch_ppu_read_buffer.sh
 tests/test_files/ppu_read_buffer
