@@ -25,9 +25,6 @@ namespace mmc3
 namespace
 {
 
-constexpr size_t kPrg16k = 16 * 1024;
-constexpr size_t kChr8k = 8 * 1024;
-
 // An MMC3 image whose every 8KB PRG bank is filled with its own index, and
 // every 1KB CHR bank likewise. `prg16` is in 16KB header units, so bank count
 // in MMC3's own 8KB units is twice that.
