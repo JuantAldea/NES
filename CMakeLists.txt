@@ -79,10 +79,46 @@ if(NES_SANITIZE)
     add_link_options(-fsanitize=${NES_SANITIZE})
 endif()
 
+# Clang's static analyzer, the third correctness net after the ROM oracles and
+# the asserts, and the only one that does not need a test to reach the code.
+#
+#   tests/run_scan_build.sh          (or `ninja -C build analyze`)
+#
+# scan-build works by interposing: it puts its own wrappers in CC/CXX, so a
+# tree configured under it records /usr/lib/clang/{ccc-analyzer,c++-analyzer}
+# as the compiler. Detecting that is what lets the rest of this file behave
+# differently for an analysis tree without a separate option to get out of sync
+# with reality - the tree either IS an analyzer tree or it is not.
+if(CMAKE_CXX_COMPILER MATCHES "(ccc-analyzer|c\\+\\+-analyzer)")
+    set(NES_UNDER_ANALYZER TRUE)
+    message(STATUS "Configuring as a scan-build analysis tree")
+else()
+    set(NES_UNDER_ANALYZER FALSE)
+endif()
+
 # The SDL2 + Dear ImGui frontend (screen + debugger) is optional; the emulator
 # libraries and the test suite must configure and build without SDL present.
 # Nothing under tests/ links it.
-option(NES_BUILD_FRONTEND "Build the SDL2/Dear ImGui frontend and debugger" ON)
+#
+# It defaults OFF under the analyzer. MEASURED reason, not caution: analysing
+# with the frontend on produces 16 findings from ImGui itself - null
+# dereferences, a division by zero, dead stores - and none of them are ours.
+# scan-build's --exclude keeps them out of the bug count but cannot keep them
+# out of the build log, so the only way for every analyzer line in that log to
+# be actionable is not to compile ImGui at all. This is the same call as
+# `target_compile_options(imgui PRIVATE -w)` further down, for the same reason.
+#
+# Our own frontend sources analyse clean, so -DNES_BUILD_FRONTEND=ON is a
+# supported thing to do here; the default just picks the quiet side. Note
+# frontend/debugger_state.cpp is analysed either way, because the test binary
+# compiles it directly (see tests/CMakeLists.txt).
+if(NES_UNDER_ANALYZER)
+    set(NES_BUILD_FRONTEND_DEFAULT OFF)
+else()
+    set(NES_BUILD_FRONTEND_DEFAULT ON)
+endif()
+
+option(NES_BUILD_FRONTEND "Build the SDL2/Dear ImGui frontend and debugger" ${NES_BUILD_FRONTEND_DEFAULT})
 
 if(NES_BUILD_FRONTEND)
     find_package(SDL2 QUIET)
@@ -228,6 +264,30 @@ endif()
 # Added last so the test target inherits CMAKE_CXX_STANDARD and the warning
 # flags set above, and so the library targets it links already exist.
 add_subdirectory(tests)
+
+# `ninja analyze` - the static analyzer, alongside `check` and `check-counts`.
+#
+#   ninja -C build analyze
+#
+# It does NOT analyse this build tree. scan-build has to own the configure step
+# to get its wrappers recorded as the compiler, so the script drives a separate
+# build-scan/ tree, exactly as the sanitizers get build-asan/ rather than
+# flags bolted onto the default tree. The target is a convenience so the
+# command is discoverable from the same place as the other two.
+#
+# Guarded on NOT being an analyzer tree, which would otherwise define a target
+# whose own recipe re-enters the analyzer - `ninja analyze` inside build-scan
+# would recurse until something gave way.
+#
+# UNIX-only for the same reason check-counts is: the script is /bin/sh.
+if(UNIX AND NOT NES_UNDER_ANALYZER)
+    add_custom_target(analyze
+        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_scan_build.sh
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        USES_TERMINAL
+        COMMENT "Running clang's static analyzer over a fresh build-scan/ tree"
+    )
+endif()
 
 set(CPACK_PROJECT_NAME ${PROJECT_NAME})
 set(CPACK_PROJECT_VERSION ${PROJECT_VERSION})

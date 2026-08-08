@@ -38,11 +38,37 @@ ASAN_OPTIONS=detect_leaks=1:detect_stack_use_after_return=1 ctest --test-dir bui
 `-DNES_BUILD_FRONTEND=OFF` skips SDL2. Nothing under `tests/` links the
 frontend, so the suite must always configure and build without SDL present.
 
+Static analysis (a separate tree again, `build-scan/`):
+
+```sh
+tests/run_scan_build.sh           # or `ninja -C build analyze`
+# scan-build: No bugs found.
+```
+
+It reports **zero** findings today, so `--status-bugs` gates CI with no
+baseline file to keep. Two things about it that are not obvious:
+
+* **It needs no test ROMs**, because nothing runs — it is the only check here
+  that a network failure cannot turn red. It is also the only one that reaches
+  code no test exercises, which is exactly where the oracles and the asserts
+  are blind.
+* **The tree is wiped on every run, deliberately.** scan-build only sees what
+  the build actually compiles, so an up-to-date tree analyses nothing and still
+  prints "No bugs found". That is the same false green as a skipped test
+  counted as a pass. `NES_SCAN_INCREMENTAL=1` opts out while iterating.
+
+The frontend is off by default there too: ImGui reports 16 findings of its own
+and `--exclude` can keep them out of the count but not out of the log. Our own
+frontend sources analyse clean — `-DNES_BUILD_FRONTEND=ON` is supported.
+
 ### Never build the tests as Release or RelWithDebInfo
 
 Both define `NDEBUG`, which silently removes every `assert`. Asserts are one of
-this project's two correctness nets (ROM oracles are the other), so an
-`NDEBUG` build covers *less* while reporting the same passes. The default
+this project's three correctness nets (the ROM oracles and the static analyzer
+are the others), so an `NDEBUG` build covers *less* while reporting the same
+passes — and it costs twice, because a live `assert` is also a path constraint
+the analyzer reasons with, which is why scan-build ships a
+`--force-analyze-debug-code` flag for projects that lost theirs. The default
 `Checked` type exists precisely for this: `-O3 -g` with asserts live. `Debug`
 is ~5x slower for no added coverage — the suite is emulation-bound. See the
 rationale and measurements at the top of [CMakeLists.txt](CMakeLists.txt).

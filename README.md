@@ -85,6 +85,10 @@ pipeline at the second, so A12 rose 257 dots apart instead of the 256 the ROM
 hard-codes. Five of the six MMC3 IRQ ROMs pass; `6-MMC3_alt` is the divergence
 above.
 
+Everything above answers "does it behave correctly when run". Clang's static
+analyzer answers the other half - what happens on the branches no test takes -
+and reports zero findings; see [Static analysis](#static-analysis).
+
 Still unexercised by anything here: sustained play over minutes rather than a
 few thousand frames, and every mapper beyond 0, 2, 3 and 4.
 
@@ -362,9 +366,54 @@ Two details worth knowing if you change this:
   argument assumes a dirty baseline; this suite has none, so detection is free
   and the next leak becomes a build failure rather than something nobody sees.
 
-Instrumentation costs about **5x**: the 356 tests CI executes take 3.7s
+Instrumentation costs about **5x**: the 359 tests CI executes take 3.7s
 normally and 19.6s under ASan+UBSan on 32 cores. That is why it is a separate
 CI job - the fast suite keeps reporting in seconds.
+
+### Static analysis
+
+```sh
+tests/run_scan_build.sh          # or: ninja -C build analyze
+```
+
+Clang's analyzer over a separate `build-scan/` tree, run in CI as the **Clang
+static analyzer** job. It reports **zero** findings, so the job gates on
+`--status-bugs` with no baseline to maintain, and uploads the HTML reports as
+an artifact when it does fail.
+
+It is worth having next to a suite that already passes 875 tests because it
+answers a different question. The ROM oracles and the asserts both require the
+code to *run*: a bug on a branch no test enters is invisible to them however
+green they are. The analyzer walks those branches instead of executing them.
+
+It is **not** a static bounds checker, which is worth saying out loud in a
+codebase that is mostly indexing fixed-size arrays. Measured: `buf[n * 8]` with
+an unconstrained `n` is not reported at all, and an index the analyzer *can*
+pin down gets reported as a garbage return value rather than as the
+out-of-bounds access. `alpha.security.ArrayBound` was tried and left off - it
+changed neither result, so there was no evidence it was doing anything here.
+Bounds are ASan's job at runtime, which is why both jobs exist.
+
+Two consequences that are easy to miss:
+
+* **It fetches nothing.** Nothing is executed, so no test ROM is needed - the
+  one check here that a network failure or a moved download cannot turn red.
+* **The tree is wiped on every run.** scan-build sees only what the build
+  actually compiles, so analysing an up-to-date tree analyses *nothing* and
+  still prints "No bugs found" - the same false green as a skipped test scored
+  as a pass. `NES_SCAN_INCREMENTAL=1` opts out while iterating on a fix.
+
+Cost is about **3x** a normal build: 10.0s wall / 119s CPU becomes 31.0s /
+399s on 32 cores.
+
+The frontend is excluded by default, and `CMakeLists.txt` makes that the
+default whenever it detects an analyzer tree. ImGui produces 16 findings of its
+own - null dereferences, a division by zero, dead stores - and scan-build's
+`--exclude` keeps them out of the bug count but not out of the build log, so
+compiling it at all would bury ours. This is the same call as building ImGui
+with `-w`. Our own frontend sources analyse clean and
+`-DNES_BUILD_FRONTEND=ON` is supported; `frontend/debugger_state.cpp` is
+covered either way, because the test binary compiles it directly.
 
 ## License
 This project is licensed under the GNU General Public License v2.0. See the [LICENSE](LICENSE) file for details.
