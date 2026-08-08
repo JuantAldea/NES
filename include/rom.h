@@ -5,12 +5,17 @@
 
 #include "device.h"
 
-// iNES (.nes) cartridge loader for NROM (mapper 0), UNROM (mapper 2) and
-// CNROM (mapper 3).
+// iNES (.nes) cartridge loader for NROM (0), UNROM (2), CNROM (3) and MMC3 (4).
 //
-// CNROM is NROM plus a switchable CHR window: a write anywhere in
-// $8000-$FFFF latches which 8KB CHR-ROM bank the PPU sees. PRG behaves
-// exactly as NROM's does, so the two share everything but chr_read().
+// The first three are one latch each. CNROM is NROM plus a switchable CHR
+// window: a write anywhere in $8000-$FFFF latches which 8KB CHR-ROM bank the
+// PPU sees, and PRG behaves exactly as NROM's does. UNROM is the mirror image -
+// a switchable 16KB PRG window with $C000-$FFFF wired down so the vectors
+// cannot be banked away.
+//
+// MMC3 is the first with real state: a register file, mode bits, mirroring
+// changed at runtime, and a counter that watches the PPU's address bus. See the
+// MMC3 section below.
 //
 // iNES header layout (16 bytes):
 //   0-3  magic "NES\x1A"
@@ -82,9 +87,16 @@ public:
     // $8000 bit 7: swaps the 2KB and 1KB CHR windows between $0000 and $1000.
     bool mmc3_chr_a12_inverted() const { return (mmc3_bank_select & 0x80) != 0; }
 
-    // $A001: bit 7 enables the PRG-RAM chip, bit 6 write-protects it. Held here
-    // because the mapper owns them, but PrgRAM is a separate Bus device, so the
-    // Bus is what has to consult these.
+    // $A001: bit 7 enables the PRG-RAM chip, bit 6 write-protects it.
+    //
+    // KNOWN GAP: these are stored and NOTHING READS THEM. Bus::decode routes
+    // $6000-$7FFF straight to PrgRAM, so the RAM is always enabled and always
+    // writable whatever a game asks for. The mapper owns the bits but PrgRAM is
+    // a separate Bus device, and joining the two is the piece that was left
+    // undone - it is the one part of MMC3 here that crosses a device boundary.
+    //
+    // No test ROM covers it and no game is known to need it, which is exactly
+    // why it went unnoticed: everything green, nothing enforcing it.
     bool prg_ram_enabled = true;
     bool prg_ram_write_protected = false;
 

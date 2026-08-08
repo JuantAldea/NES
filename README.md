@@ -75,8 +75,11 @@ Sharp boards and that is what real games depend on.
 change in *how* it fails still surfaces.
 
 `4-scanline_timing` is a real gap rather than a divergence: it clears its first
-two subtests and fails the third on fine A12 timing. It is pinned the same way,
-so the day it starts passing, the test says so.
+two subtests and fails the third on fine A12 timing. The suspected cause is
+specific - the two garbage nametable reads in each sprite pattern fetch are not
+driven onto the PPU address bus, and the filter measures its low period from
+exactly that point. It is pinned the same way as the divergence above, so the
+day it starts passing, the test says so.
 
 Still unexercised by anything here: sustained play over minutes rather than a
 few thousand frames, and every mapper beyond 0, 2, 3 and 4.
@@ -151,6 +154,14 @@ few thousand frames, and every mapper beyond 0, 2, 3 and 4.
         not modelled on any of these boards - cartridges store the bank number
         at the address they write to, so the AND real hardware performs is a
         no-op for correct software.
+    *   **`$A001` is decoded but not obeyed.** The PRG-RAM enable and
+        write-protect bits are stored, and nothing consults them: `Bus::decode`
+        routes `$6000-$7FFF` straight to the RAM, so it is always readable and
+        writable. The mapper owns the bits but `PrgRAM` is a separate Bus
+        device, and connecting the two is the piece that was left undone. No
+        ROM here covers it and no game is known to depend on it, which is why
+        it survived unnoticed - it is recorded here rather than in nobody's
+        head.
 *   **Bus:**
     *   A single address decode shared by reads and writes, so the two cannot
         disagree. Controller 1 at `$4016` is open bus for now.
