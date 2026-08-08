@@ -54,9 +54,10 @@ gtest_discover_tests(tests)
 # run at once. The suite is dominated by 512 per-opcode tests (256 opcodes x
 # bus trace + final state), which parallelise perfectly.
 #
-# Measured on 32 cores: 129s serial -> 12.8s, with ~480 MB across all children.
-# That 12.8s is now the length of the single slowest test, so more cores will
-# not help further.
+# Measured on 32 cores: 38.1s serial -> 4.16s, with ~480 MB across all children.
+# That 4.16s is the length of the single slowest test, so more cores will not
+# help further. (The 129s -> 12.8s pair recorded here previously was ~3x these;
+# re-measure rather than trust it if the numbers matter to you.)
 #
 #   ninja check     (or `make check`)
 #
@@ -74,3 +75,27 @@ add_custom_target(check
     USES_TERMINAL
     COMMENT "Running the test suite on ${NES_TEST_JOBS} cores"
 )
+
+# `check` answers "did it pass". It cannot answer "how many actually ran", and
+# in this repo that is the number that matters - see "Skipped is not passed" in
+# CLAUDE.md. gtest_discover_tests gives every case its own process, so gtest's
+# end-of-run summary is never printed, and that summary is the only place the
+# SKIPPED count appears; ctest scores a skip as a pass.
+#
+#   ninja check-counts
+#
+# runs the binary itself so that summary survives, sharded via gtest's own
+# GTEST_TOTAL_SHARDS to get the parallelism back. Measured on 32 cores: 35.3s
+# in one process -> 4.3s across 32 shards, same 872 results.
+#
+# UNIX-only because run_tests.sh is /bin/sh, as every other script here is.
+# `check` stays the portable one, and is still the gate.
+if(UNIX)
+    add_custom_target(check-counts
+        COMMAND ${CMAKE_COMMAND} -E env NES_TEST_BIN=$<TARGET_FILE:tests>
+                ${CMAKE_CURRENT_SOURCE_DIR}/run_tests.sh -j${NES_TEST_JOBS}
+        DEPENDS tests
+        USES_TERMINAL
+        COMMENT "Running the test suite on ${NES_TEST_JOBS} shards, with the executed/skipped breakdown"
+    )
+endif()

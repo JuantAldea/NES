@@ -15,6 +15,19 @@ ctest --test-dir build -j"$(nproc)" --output-on-failure
 
 Single suite: `./build/tests/tests --gtest_filter='testCPU.*'`
 
+Reporting a result to anyone — commit message, README, the user — needs the
+*executed* count, which `ctest` cannot give (see below):
+
+```sh
+tests/run_tests.sh                # or `ninja -C build check-counts`
+# 872 executed, 0 skipped, 0 failed  (32 shards)
+```
+
+It shards the binary across cores rather than running one process (35.3s ->
+4.3s on 32), takes `-jN` and passes everything else through, so
+`tests/run_tests.sh --gtest_filter='testCPU.*'` works. `NES_TEST_BIN=` points
+it at another tree, e.g. `build-asan`.
+
 Sanitizers (a separate tree, never the default one):
 
 ```sh
@@ -65,8 +78,15 @@ workflow has a step whose entire job is to say so on every run. When reporting
 results — in a commit message, the README, or to the user — give the *executed*
 count, and say what was skipped and why.
 
+`ctest` structurally cannot tell you that count: `gtest_discover_tests` gives
+each case its own process, so gtest's end-of-run summary — the only place the
+SKIPPED total appears — is never printed. `tests/run_tests.sh` runs the binary
+itself to keep that summary, and prints executed/skipped/failed with the skips
+broken down by suite. Use it rather than eyeballing `ctest` output.
+
 The 512 SingleStepTests cases need 1.1 GB of vectors that CI does not fetch, so
 they only run locally. `tests/test_files/local/` ROMs never run in CI either.
+Hiding both reproduces what CI sees: **356 executed, 516 skipped**.
 
 ## Deliberate divergences are asserted, not hidden
 
