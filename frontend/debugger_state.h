@@ -76,4 +76,34 @@ bool step_instruction(Bus& console, FrontendState& state);
 // state.status on failure.
 bool load_cartridge(Bus& console, FrontendState& state, const std::string& path);
 
+// One controller port, frozen for the pad diagram to draw.
+//
+// A struct rather than the panel reaching into Controllers itself, because of
+// what the obvious alternative would be. The natural way to display a pad is to
+// read $4016 - and that is a hardware port with two side effects: it shifts the
+// register one place on every access, and reloads it continuously while the
+// strobe is high. A panel drawn that way would eat the bits the running game
+// was about to read, so inputs would drop only while the panel was open. That
+// is the same shape as the palette bug this file was split out after.
+struct ControllerSnapshot {
+    // Buttons physically down, in Controllers::Button order (bit 0 = A). The
+    // latch the frontend writes, not the shift register, so it stays truthful
+    // mid-read: hardware samples the buttons at the latch, not at each read.
+    uint8_t held = 0;
+
+    // What the next eight reads of the port would report, LSB first. It
+    // diverges from `held` the moment a game starts clocking bits out, which is
+    // the reason to show both.
+    uint8_t shift = 0;
+
+    // Strobe high: the register is reloaded continuously, so every read returns
+    // A. A game that leaves it set is the classic reason only A appears to
+    // work, and it is invisible without a panel like this.
+    bool strobe = false;
+};
+
+// Reads one port without disturbing it. `port` is 0 or 1; anything else returns
+// an empty snapshot rather than indexing out of bounds.
+ControllerSnapshot peek_controller(Bus& console, int port);
+
 }  // namespace nes_gui

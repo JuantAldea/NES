@@ -263,6 +263,11 @@ int main(int argc, char** argv)
         place(546, 492, 726, 120);
         nes_gui::draw_palette_panel(console);
 
+        // The last free slot in the 1280x820 default layout: the palette ends
+        // at y=612 and the window is 820 tall.
+        place(546, 620, 726, 192);
+        nes_gui::draw_controller_panel(console);
+
         ImGui::Render();
         SDL_SetRenderDrawColor(renderer, 20, 20, 24, 255);
         SDL_RenderClear(renderer);

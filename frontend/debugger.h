@@ -29,5 +29,6 @@ void draw_cpu_panel(Bus& console);
 void draw_ppu_panel(Bus& console);
 void draw_memory_panel(Bus& console);
 void draw_palette_panel(Bus& console);
+void draw_controller_panel(Bus& console);
 
 }  // namespace nes_gui

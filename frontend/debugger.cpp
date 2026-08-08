@@ -1,5 +1,6 @@
 #include "debugger.h"
 
+#include <cfloat>
 #include <cstdio>
 
 #include "../include/bus.h"
@@ -33,6 +34,109 @@ void hex_byte(const uint8_t value, const ImVec4* colour)
         ImGui::TextColored(*colour, "%02X", value);
     } else {
         ImGui::Text("%02X", value);
+    }
+}
+
+// --- the pad diagram -------------------------------------------------------
+//
+// Unlit and lit, for the three groups of button. Real hardware colours the
+// D-pad and the two shoulder-less action buttons differently, and keeping that
+// distinction means a glance tells you WHICH group is lit without reading a
+// label. Lit is a wash rather than a colour change so the shape stays legible.
+constexpr ImU32 pad_body = IM_COL32(46, 46, 52, 255);
+constexpr ImU32 pad_edge = IM_COL32(96, 96, 108, 255);
+constexpr ImU32 dpad_off = IM_COL32(64, 64, 72, 255);
+constexpr ImU32 dpad_on = IM_COL32(126, 226, 126, 255);
+constexpr ImU32 pill_off = IM_COL32(64, 64, 72, 255);
+constexpr ImU32 pill_on = IM_COL32(240, 206, 110, 255);
+constexpr ImU32 face_off = IM_COL32(122, 44, 44, 255);
+constexpr ImU32 face_on = IM_COL32(255, 96, 96, 255);
+constexpr ImU32 pad_label = IM_COL32(150, 150, 158, 255);
+
+// The pad's extent, in the same `c` units as everything below. Shared because
+// the panel has to reserve exactly what draw_pad covers: ImGui lays out from a
+// cursor that a raw AddRectFilled does not advance, so a Dummy that disagreed
+// would either clip the pad or leave a gap under it.
+constexpr float pad_cells_w = 19.4f;
+constexpr float pad_cells_h = 8.4f;
+
+// Centred under a point, because the labels sit beneath round pills and circles
+// whose centres are the only x worth aligning to.
+//
+// Takes an explicit size rather than using the UI font: at 13px, "SELECT" is
+// wider than the pill it names, so the first draft rendered "SELECTSTART" as
+// one word. Sized off `c` like the rest of the geometry so it stays right when
+// the font does change.
+void pad_text(ImDrawList* draw, const float centre_x, const float y, const float size, const char* text)
+{
+    ImFont* font = ImGui::GetFont();
+    const ImVec2 extent = font->CalcTextSizeA(size, FLT_MAX, 0.0f, text);
+    draw->AddText(font, size, ImVec2(centre_x - extent.x * 0.5f, y), pad_label, text);
+}
+
+// Draws one controller at `origin`, lighting whatever `held` says is down.
+//
+// Geometry is in units of `c`, taken from the font size rather than fixed
+// pixels: the panel is resizable and this is the only thing here that would
+// otherwise stay 13px tall on a HiDPI display while everything around it grew.
+void draw_pad(ImDrawList* draw, const ImVec2 origin, const float c, const uint8_t held)
+{
+    const auto lit = [held](const Controllers::Button b, const ImU32 on, const ImU32 off) {
+        return (held & b) != 0 ? on : off;
+    };
+    const auto rect = [&](const float x0, const float y0, const float x1, const float y1, const ImU32 colour) {
+        draw->AddRectFilled(ImVec2(origin.x + x0, origin.y + y0), ImVec2(origin.x + x1, origin.y + y1), colour);
+    };
+
+    const float w = pad_cells_w * c;
+    const float h = pad_cells_h * c;
+    draw->AddRectFilled(origin, ImVec2(origin.x + w, origin.y + h), pad_body, 6.0f);
+    draw->AddRect(origin, ImVec2(origin.x + w, origin.y + h), pad_edge, 6.0f);
+
+    // D-pad: four arms around a hub that is never lit, because there is no
+    // centre switch to light - pressing two arms is how a diagonal is reported.
+    const float cx = 4.4f * c;
+    const float cy = 4.4f * c;
+    const float t = 1.15f * c;  // arm thickness, and the hub's side
+    const float a = 1.15f * c;  // arm length beyond the hub
+
+    rect(cx - t / 2, cy - t / 2 - a, cx + t / 2, cy - t / 2, lit(Controllers::Up, dpad_on, dpad_off));
+    rect(cx - t / 2, cy + t / 2, cx + t / 2, cy + t / 2 + a, lit(Controllers::Down, dpad_on, dpad_off));
+    rect(cx - t / 2 - a, cy - t / 2, cx - t / 2, cy + t / 2, lit(Controllers::Left, dpad_on, dpad_off));
+    rect(cx + t / 2, cy - t / 2, cx + t / 2 + a, cy + t / 2, lit(Controllers::Right, dpad_on, dpad_off));
+    rect(cx - t / 2, cy - t / 2, cx + t / 2, cy + t / 2, dpad_off);
+
+    // Select and Start: the flat rounded pills between the two halves.
+    const float pill_w = 2.1f * c;
+    const float pill_h = 0.75f * c;
+    const float pill_y = 5.0f * c;
+    const struct {
+        float x;
+        Controllers::Button button;
+        const char* label;
+    } pills[] = {{7.9f * c, Controllers::Select, "SELECT"}, {11.4f * c, Controllers::Start, "START"}};
+
+    for (const auto& pill : pills) {
+        draw->AddRectFilled(ImVec2(origin.x + pill.x, origin.y + pill_y),
+                            ImVec2(origin.x + pill.x + pill_w, origin.y + pill_y + pill_h),
+                            lit(pill.button, pill_on, pill_off), pill_h * 0.5f);
+        pad_text(draw, origin.x + pill.x + pill_w * 0.5f, origin.y + pill_y + pill_h + 0.25f * c, 0.72f * c,
+                 pill.label);
+    }
+
+    // B then A, left to right, which is the order they sit on the shell.
+    const float face_y = 4.6f * c;
+    const float face_r = 0.95f * c;
+    const struct {
+        float x;
+        Controllers::Button button;
+        const char* label;
+    } faces[] = {{15.1f * c, Controllers::B, "B"}, {17.4f * c, Controllers::A, "A"}};
+
+    for (const auto& face : faces) {
+        draw->AddCircleFilled(ImVec2(origin.x + face.x, origin.y + face_y), face_r,
+                              lit(face.button, face_on, face_off));
+        pad_text(draw, origin.x + face.x, origin.y + face_y + face_r + 0.25f * c, 0.85f * c, face.label);
     }
 }
 
@@ -280,6 +384,39 @@ void draw_palette_panel(Bus& console)
         // separate palettes are visible as groups rather than one long strip.
         if (i % 16 != 15) {
             ImGui::SameLine(0.0f, (i % 4 == 3) ? 14.0f : 4.0f);
+        }
+    }
+
+    ImGui::End();
+}
+
+void draw_controller_panel(Bus& console)
+{
+    ImGui::Begin("Controllers");
+
+    // Both ports, side by side, even though only port 1 is ever driven today -
+    // main.cpp's poll_controller writes port 0 and nothing writes port 1. A
+    // permanently dark second pad is the honest picture of that, and it is the
+    // panel that will show the wiring working if it is ever added.
+    for (int port = 0; port < 2; ++port) {
+        const ControllerSnapshot pad = peek_controller(console, port);
+
+        ImGui::BeginGroup();
+        ImGui::Text("Port %d", port + 1);
+
+        const float c = ImGui::GetFontSize();
+        const ImVec2 origin = ImGui::GetCursorScreenPos();
+        draw_pad(ImGui::GetWindowDrawList(), origin, c, pad.held);
+        ImGui::Dummy(ImVec2(pad_cells_w * c, pad_cells_h * c));
+
+        // The numbers behind the picture. `shift` is the half that cannot be
+        // seen any other way: it is what the next eight reads of the port will
+        // return, so watching it empty out is watching the game read the pad.
+        ImGui::TextDisabled("held $%02X   shift $%02X   strobe %d", pad.held, pad.shift, pad.strobe ? 1 : 0);
+        ImGui::EndGroup();
+
+        if (port == 0) {
+            ImGui::SameLine(0.0f, 24.0f);
         }
     }
 

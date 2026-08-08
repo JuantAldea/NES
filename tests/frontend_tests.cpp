@@ -206,6 +206,72 @@ GTEST_TEST(frontendStep, a_self_jump_with_no_interrupt_left_is_still_a_trap)
     EXPECT_TRUE(state.trapped);
 }
 
+// --- the controller pad panel ----------------------------------------------
+
+GTEST_TEST(frontendController, reports_the_buttons_that_are_held)
+{
+    Bus console;
+    console.controllers.set_port(0, Controllers::A | Controllers::Right);
+    console.controllers.set_port(1, Controllers::Start);
+
+    EXPECT_EQ(Controllers::A | Controllers::Right, nes_gui::peek_controller(console, 0).held);
+    EXPECT_EQ(Controllers::Start, nes_gui::peek_controller(console, 1).held) << "the ports must not be confused";
+}
+
+// THE test for this panel, and the reason peek_controller exists at all.
+//
+// $4016 is a hardware port: reading it shifts the register one place. A panel
+// that displayed the pad by reading it would consume the bits the running game
+// was about to read, so the game would drop inputs only while the panel was
+// open - an emulation bug that is really a tooling one. Same class as the
+// palette bug in this file's header.
+GTEST_TEST(frontendController, peeking_does_not_shift_the_register_under_the_game)
+{
+    // The sequence a game uses: strobe high to latch, low, then eight reads.
+    const auto read_pad = [](Bus& console, const bool peek_between) {
+        console.write(0x4016, 1);
+        console.write(0x4016, 0);
+
+        uint8_t bits = 0;
+        for (int i = 0; i < 8; ++i) {
+            if (peek_between) {
+                (void)nes_gui::peek_controller(console, 0);
+            }
+            bits |= static_cast<uint8_t>((console.read(0x4016) & 1) << i);
+        }
+        return bits;
+    };
+
+    Bus undisturbed;
+    undisturbed.controllers.set_port(0, Controllers::A | Controllers::Right);
+    const uint8_t expected = read_pad(undisturbed, false);
+
+    Bus observed;
+    observed.controllers.set_port(0, Controllers::A | Controllers::Right);
+    const uint8_t actual = read_pad(observed, true);
+
+    EXPECT_EQ(Controllers::A | Controllers::Right, expected) << "the read sequence itself is wrong; fix that first";
+    EXPECT_EQ(expected, actual) << "the panel ate bits the game was about to read";
+}
+
+// The half of the snapshot that is not the picture: `shift` must track what the
+// port will report next, or the panel would show a pad that is already spent as
+// though it were still full.
+GTEST_TEST(frontendController, the_snapshot_follows_the_register_as_it_clocks_out)
+{
+    Bus console;
+    console.controllers.set_port(0, Controllers::A);
+
+    console.write(0x4016, 1);
+    EXPECT_TRUE(nes_gui::peek_controller(console, 0).strobe) << "strobe high must be visible - it pins reads to A";
+    console.write(0x4016, 0);
+
+    EXPECT_EQ(Controllers::A, nes_gui::peek_controller(console, 0).shift) << "latched, nothing read yet";
+    (void)console.read(0x4016);
+    EXPECT_EQ(0x80, nes_gui::peek_controller(console, 0).shift) << "one bit out, a 1 shifted in at the top";
+    EXPECT_EQ(Controllers::A, nes_gui::peek_controller(console, 0).held) << "the latch is unchanged by reading";
+}
+
 // --- load_cartridge --------------------------------------------------------
 
 // Bus's constructor resets the CPU before any cartridge is mapped, and reset()

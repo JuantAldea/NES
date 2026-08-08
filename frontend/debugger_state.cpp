@@ -93,4 +93,20 @@ bool load_cartridge(Bus& console, FrontendState& state, const std::string& path)
     return true;
 }
 
+ControllerSnapshot peek_controller(Bus& console, const int port)
+{
+    ControllerSnapshot snapshot;
+    if (port < 0 || port > 1) {
+        return snapshot;
+    }
+
+    // Three member reads and no port access. Controllers::read would have given
+    // the same first bit and destroyed the rest - see shift_register()'s comment
+    // in include/controller.h.
+    snapshot.held = console.controllers.buttons[port];
+    snapshot.shift = console.controllers.shift_register(port);
+    snapshot.strobe = console.controllers.strobe_active();
+    return snapshot;
+}
+
 }  // namespace nes_gui

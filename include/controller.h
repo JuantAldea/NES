@@ -96,6 +96,15 @@ public:
 
     bool strobe_active() const { return strobe; }
 
+    // The shift register as it stands, WITHOUT shifting it.
+    //
+    // There is no way to obtain this by reading: read() shifts one place on
+    // every access and reloads continuously while the strobe is high, so an
+    // observer using the port would eat the bits the running game is about to
+    // read. That is the whole reason this accessor exists - see the pad panel
+    // in frontend/debugger.cpp, and peek_controller() next door to it.
+    uint8_t shift_register(const int port) const { return shift[port]; }
+
 private:
     void reload()
     {
