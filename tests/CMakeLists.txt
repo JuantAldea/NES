@@ -85,8 +85,11 @@ add_custom_target(check
 #   ninja check-counts
 #
 # runs the binary itself so that summary survives, sharded via gtest's own
-# GTEST_TOTAL_SHARDS to get the parallelism back. Measured on 32 cores: 35.3s
-# in one process -> 4.3s across 32 shards, same 872 results.
+# GTEST_TOTAL_SHARDS to get the parallelism back. Measured on 32 cores: 35.8s
+# in one process -> 5.0s across 32 shards, same 875 results. (Was 35.3s -> 4.3s
+# over 872; the largest single contributor to the difference is
+# 4-scanline_timing, which went from stopping at its third subtest to running
+# all thirteen - 309 frames instead of 75, 0.14s to 0.54s.)
 #
 # UNIX-only because run_tests.sh is /bin/sh, as every other script here is.
 # `check` stays the portable one, and is still the gate.

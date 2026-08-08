@@ -153,6 +153,12 @@ bool ROM::load(const std::string& path)
     for (uint8_t& r : mmc3_bank) {
         r = 0;
     }
+    // Enabled and writable at power-on. Hardware does not specify this - $A001
+    // comes up in whatever state the register happens to hold - but the choice
+    // is not free now that Bus::decode obeys it: "disabled" would black out
+    // $6000-$7FFF for every non-MMC3 board, which has no such register, and for
+    // the MMC3 games that never write $A001 at all. Note this also decides what
+    // blargg's $6000 result protocol sees before a ROM's init code runs.
     prg_ram_enabled = true;
     prg_ram_write_protected = false;
 

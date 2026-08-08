@@ -29,6 +29,10 @@ bool Bus::load_cartridge(const std::string& path) { return rom.load(path); }
 // letting read() and write() each grow a special case, is what preserves the
 // original guarantee everywhere it still holds.
 //
+// $6000-$7FFF is the second place the direction matters, for a different
+// reason: the mapper can make the PRG-RAM readable but not writable. See the
+// $A001 block below.
+//
 // NES CPU memory map (as relevant here):
 //   $0000-$1FFF  2KB internal RAM, mirrored every $0800
 //   $2000-$3FFF  8 PPU registers, mirrored every 8 bytes
@@ -66,6 +70,25 @@ Bus::DecodedAddress Bus::decode(const uint16_t addr, const Access access)
         // Cartridge expansion area; no device backs it.
         return {nullptr, addr};
     } else if (addr < 0x8000) {
+        // MMC3's $A001 gates this window, and the mapper is the only thing that
+        // knows: PrgRAM is a plain memory device with no idea a mapper exists.
+        // Boards without those bits leave both flags at their power-on values
+        // (enabled, writable) for the lifetime of the cartridge, so this costs
+        // them two predictable loads and no behaviour.
+        //
+        //   bit 7 clear - the chip is not selected. Nothing drives the data
+        //                 bus, so a read is open bus and a write goes nowhere,
+        //                 which is precisely what a null device gives.
+        //   bit 6 set   - /WE is held inactive. The chip still answers reads;
+        //                 only the write is swallowed. This is the direction-
+        //                 dependent case, and the reason Access has to be
+        //                 consulted here at all.
+        if (!rom.prg_ram_enabled) {
+            return {nullptr, addr};
+        }
+        if (access == Access::Write && rom.prg_ram_write_protected) {
+            return {nullptr, addr};
+        }
         return {&prg_ram, static_cast<uint16_t>(addr - 0x6000)};
     }
 
