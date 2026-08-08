@@ -60,7 +60,7 @@ not after.
 ## Skipped is not passed
 
 `GTEST_SKIP` exits 0, so `ctest` counts a skipped test as a passing one.
-"100% tests passed out of 854" is a misleading headline in this repo and the CI
+"100% tests passed out of 872" is a misleading headline in this repo and the CI
 workflow has a step whose entire job is to say so on every run. When reporting
 results — in a commit message, the README, or to the user — give the *executed*
 count, and say what was skipped and why.

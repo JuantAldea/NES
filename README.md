@@ -123,12 +123,11 @@ few thousand frames, and every mapper beyond 0, 2, 3 and 4.
         selection, and a 256x240 framebuffer of 6-bit palette indices. The dot
         each increment and `t`->`v` copy happens on is pinned by tests, not
         just the bits they move.
-    *   Sprite 0 hit is implemented and **only** sprite 0 hit - evaluated in
-        its real window, starting from `OAMADDR`, with `OAMADDR` held at 0
-        across the sprite-fetch dots as hardware does. Passes all eleven of
-        blargg's `sprite_hit` ROMs, which measure the BACKGROUND pipeline as
-        much as the sprite: pixel-exact alignment, the left-8 clip, and
-        dot-exact flag timing.
+    *   Sprite 0 hit is evaluated in its real window, starting from `OAMADDR`,
+        with `OAMADDR` held at 0 across the sprite-fetch dots as hardware does.
+        Passes all eleven of blargg's `sprite_hit` ROMs, which measure the
+        BACKGROUND pipeline as much as the sprite: pixel-exact alignment, the
+        left-8 clip, and dot-exact flag timing.
     *   Passes blargg's `ppu_read_buffer` in full - the broadest single check
         here, covering CIRAM through `$2007` with both increment modes, PPU I/O
         mirroring, CHR-ROM reads, CNROM banking, sprite 0 hit, and OAM loaded
@@ -164,7 +163,11 @@ few thousand frames, and every mapper beyond 0, 2, 3 and 4.
         head.
 *   **Bus:**
     *   A single address decode shared by reads and writes, so the two cannot
-        disagree. Controller 1 at `$4016` is open bus for now.
+        drift apart. It takes the direction as a parameter for exactly one
+        address: `$4017` is the APU frame counter on a write and controller
+        port 2 on a read, which on hardware really are two different devices.
+        `$4016` is one device in both directions, because the write is the
+        strobe for *both* ports and one strobe line owns them.
 *   **APU (Audio Processing Unit):**
     *   The frame counter is implemented, including the 4- and 5-step
         sequences and the frame interrupt - it is the machine's only maskable
@@ -253,18 +256,29 @@ These are **not committed** - they are unlicensed ROM dumps and, in one case,
 
 ```sh
 tests/test_files/fetch_nestest.sh             #  ~900 KB  nestest ROM + log
-tests/test_files/fetch_blargg_ppu.sh          #  ~400 KB  ppu_vbl_nmi ROMs
+tests/test_files/fetch_instr_test.sh          #  ~708 KB  instr_test-v5, all 256 opcodes
 tests/test_files/fetch_cpu_interrupts.sh      #  ~200 KB  cpu_interrupts_v2 ROMs
-tests/test_files/fetch_ppu_address_space.sh   #  ~100 KB  OAM and open-bus ROMs
+tests/test_files/fetch_cpu_behaviour.sh       #  ~224 KB  reset and dummy-access ROMs
+tests/test_files/fetch_cpu_exec_space.sh      #   ~92 KB  CPU executing through I/O space
+tests/test_files/fetch_blargg_ppu.sh          #  ~400 KB  ppu_vbl_nmi ROMs
 tests/test_files/fetch_blargg_ppu_2005.sh     #   ~64 KB  palette/VRAM/OAM ROMs
-tests/test_files/fetch_sprite_hit.sh          #  ~224 KB  sprite 0 hit ROMs
+tests/test_files/fetch_ppu_address_space.sh   #  ~100 KB  OAM and open-bus ROMs
 tests/test_files/fetch_ppu_read_buffer.sh     #   ~40 KB  $2007 read buffer pack
+tests/test_files/fetch_sprite_hit.sh          #  ~224 KB  sprite 0 hit ROMs
+tests/test_files/fetch_sprite_overflow.sh     #  ~104 KB  sprite overflow ROMs
+tests/test_files/fetch_mmc3.sh                #  ~268 KB  MMC3 scanline IRQ ROMs
+tests/test_files/fetch_read_joy3.sh           #   ~48 KB  controller ROM
+tests/test_files/fetch_visual_roms.sh         #  ~100 KB  homebrew visual checks
 tests/test_files/fetch_single_step_tests.sh   #   1.1 GB  SingleStepTests vectors
 ```
 
 Each verifies a pinned SHA256 (the vectors are validated structurally instead,
 since upstream regenerates them wholesale) and skips anything already present,
 so re-running is cheap.
+
+That is all fifteen, and the list has to stay complete to be useful: everything
+except the last one hard-fails when its ROMs are absent, so a partial list reads
+like a working setup and then fails in several places at once.
 
 **A green run does not mean the suite verified everything**, and the headline
 count actively hides this. The two per-opcode suites call `GTEST_SKIP` when the
@@ -344,7 +358,7 @@ Two details worth knowing if you change this:
   argument assumes a dirty baseline; this suite has none, so detection is free
   and the next leak becomes a build failure rather than something nobody sees.
 
-Instrumentation costs about **5x**: the ~342 tests CI executes take 3.7s
+Instrumentation costs about **5x**: the 356 tests CI executes take 3.7s
 normally and 19.6s under ASan+UBSan on 32 cores. That is why it is a separate
 CI job - the fast suite keeps reporting in seconds.
 
