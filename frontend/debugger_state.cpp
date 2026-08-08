@@ -32,7 +32,28 @@ bool step_instruction(Bus& console, FrontendState& state)
     // Every one of the test ROMs ends on a branch to itself, and so does a
     // runaway program that fell into one. Catching it is the difference between
     // "the emulator stopped" and a spinning UI.
-    if (console.cpu.registers.PC == previous_pc) {
+    //
+    // But a self-jump is only a hang if nothing can leave it, and that
+    // distinction is not academic: Super Mario Bros' reset routine ENDS on one.
+    // Measured on tests/test_files/local/smb.nes - the last three bytes of init
+    // are `4C 57 80`, `jmp $8057` at $8057, reached at frame 3 with PPUCTRL
+    // $90, and the whole game runs out of the NMI handler from there. Treating
+    // that as a trap stopped the debugger on the last instruction before the
+    // game starts, i.e. it could not run a commercial game at all. That is
+    // most of them: an idle loop woken by NMI is the standard main-loop shape.
+    //
+    // So it is a trap only when no interrupt can break it - NMI off in PPUCTRL,
+    // and I set against every IRQ source. Reading both non-destructively
+    // matters as much here as in the panels: MMI_on_V_Blank is the decoded
+    // flag, not a $2002 read that would clear vblank underneath the run.
+    //
+    // The asymmetry is deliberate. A missed trap costs a free-run that spins
+    // until Pause, which the UI survives; a false trap costs the tool the only
+    // thing it is for. When in doubt, keep running.
+    const bool nmi_can_break_it = console.ppu.MMI_on_V_Blank;
+    const bool irq_can_break_it = (console.cpu.registers.P & static_cast<uint8_t>(CPU::FLAGS::I)) == 0;
+
+    if (console.cpu.registers.PC == previous_pc && !nmi_can_break_it && !irq_can_break_it) {
         state.trapped = true;
         state.trap_pc = previous_pc;
         state.running = false;

@@ -157,6 +157,55 @@ GTEST_TEST(frontendStep, a_backward_branch_that_is_not_self_targeted_is_not_a_tr
     EXPECT_EQ(0x0300, console.cpu.registers.PC) << "the branch was taken";
 }
 
+// An idle loop waited on by an interrupt is not a hang, and this is the shape
+// nearly every commercial game's main loop takes: init ends on `jmp *`, and the
+// NMI handler does the work. Reporting that as a trap stopped the free-run on
+// the last instruction before the game started - found by running SMB in the
+// debugger, where it halted at $8057 on frame 3 with a blank screen.
+GTEST_TEST(frontendStep, a_self_jump_is_not_a_trap_while_nmi_can_break_it)
+{
+    Bus console;
+    nes_gui::FrontendState state;
+    state.running = true;
+
+    console.ppu.MMI_on_V_Blank = true;  // PPUCTRL bit 7, as SMB leaves it ($90)
+    load_program(console, 0x0300, {0x4C, 0x00, 0x03});
+
+    EXPECT_TRUE(nes_gui::step_instruction(console, state)) << "an NMI-woken idle loop is not a hang";
+    EXPECT_FALSE(state.trapped);
+    EXPECT_TRUE(state.running) << "the free-run must survive the game's main loop";
+}
+
+GTEST_TEST(frontendStep, a_self_jump_is_not_a_trap_while_irqs_are_enabled)
+{
+    Bus console;
+    nes_gui::FrontendState state;
+    state.running = true;
+
+    console.ppu.MMI_on_V_Blank = false;
+    console.cpu.set_flag(CPU::FLAGS::I, false);  // an IRQ source can still reach it
+    load_program(console, 0x0300, {0x4C, 0x00, 0x03});
+
+    EXPECT_TRUE(nes_gui::step_instruction(console, state));
+    EXPECT_FALSE(state.trapped);
+}
+
+// The other half of the rule: with both interrupts shut out, the loop really is
+// unbreakable, and must still be caught. This is the Blargg end-of-ROM idiom.
+GTEST_TEST(frontendStep, a_self_jump_with_no_interrupt_left_is_still_a_trap)
+{
+    Bus console;
+    nes_gui::FrontendState state;
+    state.running = true;
+
+    console.ppu.MMI_on_V_Blank = false;
+    console.cpu.set_flag(CPU::FLAGS::I, true);
+    load_program(console, 0x0300, {0x4C, 0x00, 0x03});
+
+    EXPECT_FALSE(nes_gui::step_instruction(console, state));
+    EXPECT_TRUE(state.trapped);
+}
+
 // --- load_cartridge --------------------------------------------------------
 
 GTEST_TEST(frontendLoad, reports_a_missing_file_rather_than_failing_silently)

@@ -31,6 +31,7 @@
 #include <cstring>
 #include <string>
 
+#include "../frontend/debugger_state.h"
 #include "../include/bus.h"
 #include "gtest/gtest.h"
 
@@ -109,6 +110,41 @@ GTEST_TEST(commercialRom, boots_to_a_drawn_title_screen)
     // single-colour screen is the failure this catches.
     EXPECT_GT(distinct_colours(console.ppu), 5) << "the title screen never drew";
     EXPECT_NE(0, console.ppu.registers.PPUMASK & 0x18) << "rendering was never enabled";
+}
+
+// The same boot, but driven the way the debugger's Run button drives it.
+//
+// That is a DIFFERENT loop from the one every other test here uses:
+// Bus::run_frame clocks to the next frame, while the frontend free-runs through
+// nes_gui::step_instruction and stops the moment it decides the CPU has hung.
+// Nothing exercised that decision against a real game, and it was wrong - SMB's
+// init ends on `jmp $8057` and the entire game runs out of the NMI handler, so
+// the debugger halted on the last instruction before the title screen. Measured
+// at the halt: frame 3, PPUCTRL $90, PPUMASK $06, screen blank.
+//
+// A green suite plus a tool that cannot run a game is exactly the gap this file
+// was added to close, so the assertion is that the picture arrives, not merely
+// that nothing tripped.
+GTEST_TEST(commercialRom, boots_under_the_debuggers_own_step_loop)
+{
+    Bus console;
+    SKIP_IF_ABSENT(console);
+
+    nes_gui::FrontendState state;
+    state.running = true;
+
+    // Measured: rendering is on by frame 12 and the title screen has drawn well
+    // before frame 120, which is ~360k instructions. The cap is a guard against
+    // spinning, not a threshold.
+    for (int i = 0; i < 600000 && state.running; ++i) {
+        nes_gui::step_instruction(console, state);
+    }
+
+    EXPECT_FALSE(state.trapped) << "halted at PC " << state.trap_pc
+                                << " - an idle loop an NMI will break is not a hang";
+    EXPECT_TRUE(state.running) << "the free-run stopped before the game started";
+    EXPECT_NE(0, console.ppu.registers.PPUMASK & 0x18) << "rendering was never enabled";
+    EXPECT_GT(distinct_colours(console.ppu), 5) << "the title screen never drew under the step loop";
 }
 
 // The whole machine at once: the controller reaching the game, the game
