@@ -78,7 +78,15 @@ bool load_cartridge(Bus& console, FrontendState& state, const std::string& path)
 
     // The reset vector lives in the cartridge, so it can only be fetched once
     // the cartridge is mapped.
-    console.cpu.reset();
+    //
+    // power_on(), not reset(), for the reason local_rom_tests.cpp spells out at
+    // its own call site: Bus's constructor already reset this CPU before any
+    // cartridge was mapped, and reset() "subtracts 3 from S, nothing more"
+    // rather than reloading it. A second reset therefore leaves S at $FA
+    // instead of $FD, and because this function also serves the drag-and-drop
+    // path, S walked down 3 more on every ROM dropped onto the window - $FD,
+    // $FA, $F7. Inserting a cartridge is a power-on, so say so.
+    console.cpu.power_on();
     state.trapped = false;
     state.running = false;
     state.status = "Loaded " + path;

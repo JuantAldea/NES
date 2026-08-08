@@ -208,6 +208,25 @@ GTEST_TEST(frontendStep, a_self_jump_with_no_interrupt_left_is_still_a_trap)
 
 // --- load_cartridge --------------------------------------------------------
 
+// Bus's constructor resets the CPU before any cartridge is mapped, and reset()
+// subtracts 3 from S rather than reloading it, so a second reset in the load
+// path left S at $FA. It compounded: this function is also the drag-and-drop
+// handler, so dropping three ROMs on the window walked S to $F7 and the panel
+// reported it as fact. SMB hides this by doing `ldx #$FF / txs` itself.
+GTEST_TEST(frontendLoad, loading_a_cartridge_powers_on_rather_than_resetting_again)
+{
+    Bus console;
+    nes_gui::FrontendState state;
+
+    const std::string path = std::string(NES_TEST_FILES_DIR) + "/sprite_hit/01.basics.nes";
+    ASSERT_TRUE(nes_gui::load_cartridge(console, state, path))
+        << "sprite_hit ROMs absent - run tests/test_files/fetch_sprite_hit.sh";
+    EXPECT_EQ(0xFD, console.cpu.registers.SP) << "a freshly inserted cartridge is a power-on";
+
+    ASSERT_TRUE(nes_gui::load_cartridge(console, state, path));
+    EXPECT_EQ(0xFD, console.cpu.registers.SP) << "S must not walk down on every ROM loaded";
+}
+
 GTEST_TEST(frontendLoad, reports_a_missing_file_rather_than_failing_silently)
 {
     Bus console;
