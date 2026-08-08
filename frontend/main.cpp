@@ -213,8 +213,32 @@ int main(int argc, char** argv)
             static_cast<double>(now - previous_counter) / static_cast<double>(SDL_GetPerformanceFrequency());
         previous_counter = now;
 
-        // Before the emulation below, so the frame about to run sees the keys
-        // held now rather than the ones held a frame ago.
+        // The ImGui frame opens HERE, above the emulation, and the order of
+        // these three lines against poll_controller is the whole point.
+        //
+        // poll_controller consults io.WantCaptureKeyboard, and that flag is
+        // written by ImGui::NewFrame - it is not live state. Polling before
+        // NewFrame therefore read a value computed during the PREVIOUS
+        // iteration, i.e. from an ActiveId two widget passes old, so clicking
+        // into or out of the ROM text field misrouted a frame of input in each
+        // direction: one frame of keys reaching the game after the field took
+        // focus, one frame dropped after it lost focus. Sixteen milliseconds,
+        // invisible in play, and still the wrong answer to "who has the
+        // keyboard".
+        //
+        // One frame of lag is the floor here and this reaches it: the click is
+        // consumed by the widget pass at the bottom of the loop, so nothing
+        // earlier than the next NewFrame can know about it. Moving the poll
+        // below NewFrame instead of moving NewFrame above the poll would have
+        // cost more than it fixed - see the note on poll_controller's position
+        // below.
+        ImGui_ImplSDLRenderer2_NewFrame();
+        ImGui_ImplSDL2_NewFrame();
+        ImGui::NewFrame();
+
+        // Still before the emulation, so the frame about to run sees the keys
+        // held now rather than the ones held a frame ago. That ordering is why
+        // NewFrame moved up rather than this moving down.
         poll_controller(console);
 
         if (state.running) {
@@ -240,10 +264,6 @@ int main(int argc, char** argv)
         }
 
         upload_framebuffer(screen, console.ppu, scratch);
-
-        ImGui_ImplSDLRenderer2_NewFrame();
-        ImGui_ImplSDL2_NewFrame();
-        ImGui::NewFrame();
 
         place(8, 8, 530, 545);
         draw_screen_panel(screen, state);
