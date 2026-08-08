@@ -11,15 +11,14 @@
 //
 // The pipeline is a per-dot state machine and the reference is a
 // per-pixel formula. They agree only if the state machine is right.
+#include <cctype>
 #include <cstdint>
+#include <filesystem>
 #include <string>
+#include <vector>
 
 #include "../include/bus.h"
 #include "../include/frame_dump.h"
-#include <cctype>
-#include <filesystem>
-#include <vector>
-
 #include "gtest/gtest.h"
 
 namespace tests
@@ -180,8 +179,7 @@ uint8_t reference_pixel(PPU& ppu, const Config& config, int x, int y)
 
     // Bit 7 of each plane is the LEFTMOST pixel.
     const int bit = 7 - pixel_column;
-    const uint8_t value =
-        static_cast<uint8_t>(((low >> bit) & 0x01) | (((high >> bit) & 0x01) << 1));
+    const uint8_t value = static_cast<uint8_t>(((low >> bit) & 0x01) | (((high >> bit) & 0x01) << 1));
 
     const uint8_t colour =
         value == 0 ? backdrop : ppu.ppu_bus_read(static_cast<uint16_t>(0x3F00 + palette * 4 + value));
@@ -223,10 +221,8 @@ void dump_frames_for_inspection(PPU& ppu, const Config& config, const std::strin
     const std::string actual_path = (dir / ("nes_render_" + label + "_actual.ppm")).string();
     const std::string expected_path = (dir / ("nes_render_" + label + "_expected.ppm")).string();
 
-    const bool wrote_actual =
-        nes::write_ppm(actual_path, ppu.framebuffer, kWidth, kHeight, PPU::nes_palette, 64);
-    const bool wrote_expected =
-        nes::write_ppm(expected_path, expected.data(), kWidth, kHeight, PPU::nes_palette, 64);
+    const bool wrote_actual = nes::write_ppm(actual_path, ppu.framebuffer, kWidth, kHeight, PPU::nes_palette, 64);
+    const bool wrote_expected = nes::write_ppm(expected_path, expected.data(), kWidth, kHeight, PPU::nes_palette, 64);
 
     if (wrote_actual && wrote_expected) {
         ADD_FAILURE() << "wrote the two frames for inspection:\n"
@@ -251,9 +247,9 @@ void expect_frame_matches_reference(PPU& ppu, const Config& config, const std::s
                 ++mismatches;
                 if (mismatches == 1) {
                     ADD_FAILURE() << "first mismatch at (" << x << ", " << y << "): expected $" << std::hex
-                                  << (unsigned)expected << ", got $" << (unsigned)actual << std::dec
-                                  << "  [scroll " << (unsigned)config.scroll_x << "," << (unsigned)config.scroll_y
-                                  << " ctrl $" << std::hex << (unsigned)config.ppuctrl << std::dec << "]";
+                                  << (unsigned)expected << ", got $" << (unsigned)actual << std::dec << "  [scroll "
+                                  << (unsigned)config.scroll_x << "," << (unsigned)config.scroll_y << " ctrl $"
+                                  << std::hex << (unsigned)config.ppuctrl << std::dec << "]";
                 }
             }
         }
@@ -481,7 +477,6 @@ GTEST_TEST(testPPURender, the_palette_table_has_64_entries_of_24_bit_colour)
     EXPECT_EQ(0xFFFEFFu, PPU::nes_palette[0x30]);
     EXPECT_EQ(0xFFFEFFu, PPU::nes_palette[0x20]);
 }
-
 
 // --- the dot-1 nametable fetch -------------------------------------------
 //

@@ -77,8 +77,8 @@ public:
     // The two mode bits invert which half of the address space the switchable
     // windows occupy, which is why they are kept rather than folded in at write
     // time: a later mode change has to re-point the existing register values.
-    uint8_t mmc3_bank_select = 0;   // the last value written to $8000
-    uint8_t mmc3_bank[8] = {0};     // R0-R7
+    uint8_t mmc3_bank_select = 0;  // the last value written to $8000
+    uint8_t mmc3_bank[8] = {0};    // R0-R7
 
     // $8000 bit 6: 0 -> $8000-$9FFF switchable, $C000-$DFFF fixed to second-last
     //              1 -> $C000-$DFFF switchable, $8000-$9FFF fixed to second-last
@@ -89,14 +89,19 @@ public:
 
     // $A001: bit 7 enables the PRG-RAM chip, bit 6 write-protects it.
     //
-    // KNOWN GAP: these are stored and NOTHING READS THEM. Bus::decode routes
-    // $6000-$7FFF straight to PrgRAM, so the RAM is always enabled and always
-    // writable whatever a game asks for. The mapper owns the bits but PrgRAM is
-    // a separate Bus device, and joining the two is the piece that was left
-    // undone - it is the one part of MMC3 here that crosses a device boundary.
+    // Read by Bus::decode, which is the only place they can be honoured: the
+    // mapper owns the bits, but the RAM behind $6000-$7FFF is a separate Bus
+    // device (PrgRAM) that knows nothing about mappers. Disabled decodes to no
+    // device at all, so reads are open bus and writes are dropped; write-
+    // protected decodes to no device on writes only.
     //
-    // No test ROM covers it and no game is known to need it, which is exactly
-    // why it went unnoticed: everything green, nothing enforcing it.
+    // These were stored and consulted by nothing for as long as MMC3 existed
+    // here, and the reason is worth keeping: no test ROM in the suite covers
+    // them, so the omission was invisible - green everywhere, enforced nowhere.
+    // What covers them now is mmc3_tests.cpp, written from the register
+    // description rather than from an oracle, which is the weaker of the two
+    // kinds of evidence this project runs on. Treat a game that misbehaves
+    // around save RAM as evidence about THESE lines first.
     bool prg_ram_enabled = true;
     bool prg_ram_write_protected = false;
 
@@ -115,8 +120,8 @@ public:
     // "The ROMs mainly test behavior by manually clocking the MMC3's IRQ
     // counter by writing to $2006 to change the current VRAM address." A design
     // that hooked only the rendering fetches would pass none of them.
-    uint8_t mmc3_irq_latch = 0;    // $C000, the value reloaded into the counter
-    uint8_t mmc3_irq_counter = 0;  // the live count
+    uint8_t mmc3_irq_latch = 0;            // $C000, the value reloaded into the counter
+    uint8_t mmc3_irq_counter = 0;          // the live count
     bool mmc3_irq_reload_pending = false;  // set by $C001, consumed by the next edge
     bool mmc3_irq_enabled = false;         // $E001 enables, $E000 disables
     bool mmc3_irq_asserted = false;        // are we currently pulling /IRQ low?

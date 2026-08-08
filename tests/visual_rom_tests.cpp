@@ -21,9 +21,8 @@
 #include <cstring>
 #include <string>
 
-#include "gtest/gtest.h"
-
 #include "../include/bus.h"
+#include "gtest/gtest.h"
 
 namespace tests
 {
@@ -32,10 +31,7 @@ namespace visual_rom
 namespace
 {
 
-std::string rom_path(const std::string& name)
-{
-    return std::string(NES_TEST_FILES_DIR) + "/visual/" + name;
-}
+std::string rom_path(const std::string& name) { return std::string(NES_TEST_FILES_DIR) + "/visual/" + name; }
 
 struct SpriteLoad {
     int max_on_a_line = 0;

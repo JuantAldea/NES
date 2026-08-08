@@ -233,36 +233,36 @@ private:
     //            and only then written modified. That dummy write is real and
     //            observable: aimed at $2007 it corrupts VRAM.
     enum class Schedule : uint8_t {
-        implied,        // 2:    dummy read at PC
-        immediate,      // 2:    operand read at PC++
-        zero_page_read,      // 3
-        zero_page_write,     // 3
-        zero_page_rmw,       // 5
+        implied,                  // 2:    dummy read at PC
+        immediate,                // 2:    operand read at PC++
+        zero_page_read,           // 3
+        zero_page_write,          // 3
+        zero_page_rmw,            // 5
         zero_page_indexed_read,   // 4:  dummy read at the un-indexed zero-page address
         zero_page_indexed_write,  // 4
         zero_page_indexed_rmw,    // 6
-        absolute_read,       // 4
-        absolute_write,      // 4
-        absolute_rmw,        // 6
-        absolute_indexed_read,   // 4, or 5 when the index carried
-        absolute_indexed_write,  // 5
-        absolute_indexed_rmw,    // 7
-        indexed_indirect_read,   // 6   (zp,X)
-        indexed_indirect_write,  // 6
-        indexed_indirect_rmw,    // 8
-        indirect_indexed_read,   // 5, or 6 when the index carried   (zp),Y
-        indirect_indexed_write,  // 6
-        indirect_indexed_rmw,    // 8
-        branch,         // 2 not taken, 3 taken, 4 taken onto another page
-        jump_absolute,  // 3
-        jump_indirect,  // 5
-        jump_subroutine,  // 6
-        return_subroutine,   // 6
-        return_interrupt,    // 6
-        software_interrupt,  // 7   BRK
-        push,           // 3
-        pull,           // 4
-        interrupt,      // 7   NMI/IRQ
+        absolute_read,            // 4
+        absolute_write,           // 4
+        absolute_rmw,             // 6
+        absolute_indexed_read,    // 4, or 5 when the index carried
+        absolute_indexed_write,   // 5
+        absolute_indexed_rmw,     // 7
+        indexed_indirect_read,    // 6   (zp,X)
+        indexed_indirect_write,   // 6
+        indexed_indirect_rmw,     // 8
+        indirect_indexed_read,    // 5, or 6 when the index carried   (zp),Y
+        indirect_indexed_write,   // 6
+        indirect_indexed_rmw,     // 8
+        branch,                   // 2 not taken, 3 taken, 4 taken onto another page
+        jump_absolute,            // 3
+        jump_indirect,            // 5
+        jump_subroutine,          // 6
+        return_subroutine,        // 6
+        return_interrupt,         // 6
+        software_interrupt,       // 7   BRK
+        push,                     // 3
+        pull,                     // 4
+        interrupt,                // 7   NMI/IRQ
 
         // NOT a halt. On real NMOS hardware KIL/JAM stops the sequencer until
         // RESET; this runs a fixed-length access pattern and then lets the CPU
@@ -277,27 +277,25 @@ private:
     // addressing mode's family by adding 0, 1 or 2 to the read form, so the
     // three must stay adjacent and in that order. Inserting an enumerator in
     // the middle would otherwise silently mis-schedule a whole family.
-    static_assert(static_cast<int>(Schedule::zero_page_write) == static_cast<int>(Schedule::zero_page_read) + 1 &&
-                      static_cast<int>(Schedule::zero_page_rmw) == static_cast<int>(Schedule::zero_page_read) + 2 &&
-                      static_cast<int>(Schedule::zero_page_indexed_write) ==
-                          static_cast<int>(Schedule::zero_page_indexed_read) + 1 &&
-                      static_cast<int>(Schedule::zero_page_indexed_rmw) ==
-                          static_cast<int>(Schedule::zero_page_indexed_read) + 2 &&
-                      static_cast<int>(Schedule::absolute_write) == static_cast<int>(Schedule::absolute_read) + 1 &&
-                      static_cast<int>(Schedule::absolute_rmw) == static_cast<int>(Schedule::absolute_read) + 2 &&
-                      static_cast<int>(Schedule::absolute_indexed_write) ==
-                          static_cast<int>(Schedule::absolute_indexed_read) + 1 &&
-                      static_cast<int>(Schedule::absolute_indexed_rmw) ==
-                          static_cast<int>(Schedule::absolute_indexed_read) + 2 &&
-                      static_cast<int>(Schedule::indexed_indirect_write) ==
-                          static_cast<int>(Schedule::indexed_indirect_read) + 1 &&
-                      static_cast<int>(Schedule::indexed_indirect_rmw) ==
-                          static_cast<int>(Schedule::indexed_indirect_read) + 2 &&
-                      static_cast<int>(Schedule::indirect_indexed_write) ==
-                          static_cast<int>(Schedule::indirect_indexed_read) + 1 &&
-                      static_cast<int>(Schedule::indirect_indexed_rmw) ==
-                          static_cast<int>(Schedule::indirect_indexed_read) + 2,
-                  "Schedule read/write/rmw forms must stay adjacent in that order");
+    static_assert(
+        static_cast<int>(Schedule::zero_page_write) == static_cast<int>(Schedule::zero_page_read) + 1 &&
+            static_cast<int>(Schedule::zero_page_rmw) == static_cast<int>(Schedule::zero_page_read) + 2 &&
+            static_cast<int>(Schedule::zero_page_indexed_write) ==
+                static_cast<int>(Schedule::zero_page_indexed_read) + 1 &&
+            static_cast<int>(Schedule::zero_page_indexed_rmw) ==
+                static_cast<int>(Schedule::zero_page_indexed_read) + 2 &&
+            static_cast<int>(Schedule::absolute_write) == static_cast<int>(Schedule::absolute_read) + 1 &&
+            static_cast<int>(Schedule::absolute_rmw) == static_cast<int>(Schedule::absolute_read) + 2 &&
+            static_cast<int>(Schedule::absolute_indexed_write) ==
+                static_cast<int>(Schedule::absolute_indexed_read) + 1 &&
+            static_cast<int>(Schedule::absolute_indexed_rmw) == static_cast<int>(Schedule::absolute_indexed_read) + 2 &&
+            static_cast<int>(Schedule::indexed_indirect_write) ==
+                static_cast<int>(Schedule::indexed_indirect_read) + 1 &&
+            static_cast<int>(Schedule::indexed_indirect_rmw) == static_cast<int>(Schedule::indexed_indirect_read) + 2 &&
+            static_cast<int>(Schedule::indirect_indexed_write) ==
+                static_cast<int>(Schedule::indirect_indexed_read) + 1 &&
+            static_cast<int>(Schedule::indirect_indexed_rmw) == static_cast<int>(Schedule::indirect_indexed_read) + 2,
+        "Schedule read/write/rmw forms must stay adjacent in that order");
 
     static Schedule schedule_for(const uint8_t opcode);
 
@@ -327,11 +325,11 @@ private:
 
     // Scratch shared by the schedules. None of it survives an instruction.
     Schedule schedule = Schedule::implied;
-    uint8_t cycle = 0;            // 1-based index of the cycle about to run
-    uint8_t base_low = 0;         // low byte of the base address, as fetched
-    uint8_t base_high = 0;        // high byte of the base address, as fetched
+    uint8_t cycle = 0;      // 1-based index of the cycle about to run
+    uint8_t base_low = 0;   // low byte of the base address, as fetched
+    uint8_t base_high = 0;  // high byte of the base address, as fetched
     uint8_t zero_page_pointer = 0;
-    uint8_t latched_value = 0;    // operand read by the schedule / result to write
+    uint8_t latched_value = 0;  // operand read by the schedule / result to write
     uint16_t indirect_pointer = 0;
     uint16_t branch_target = 0;
 

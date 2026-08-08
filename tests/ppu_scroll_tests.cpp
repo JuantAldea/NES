@@ -268,8 +268,7 @@ GTEST_TEST(testPPUScroll, y_increment_counts_fine_y_first)
     ppu.registers.PPUADDR = 0x0000;
     for (int expected = 1; expected <= 7; ++expected) {
         ppu.increment_y();
-        EXPECT_EQ(static_cast<uint16_t>(expected << 12), ppu.registers.PPUADDR)
-            << "fine Y should be " << expected;
+        EXPECT_EQ(static_cast<uint16_t>(expected << 12), ppu.registers.PPUADDR) << "fine Y should be " << expected;
     }
 }
 
@@ -532,7 +531,6 @@ GTEST_TEST(testPPUScroll, ppudata_read_during_rendering_increments_the_scroll_to
     EXPECT_EQ(0x1084, ppu.registers.PPUADDR);
 }
 
-
 // --- WHEN the copies and the Y increment happen, not just what they do ------
 //
 // The tests above pin the bit masks: which bits of t reach v. They say nothing
@@ -623,8 +621,7 @@ GTEST_TEST(testPPUScroll, the_y_increment_happens_on_dot_256_exactly)
     // Scanline 50 is not on a tile boundary, so fine Y is a plain +1 with no
     // carry into coarse Y.
     step_dot(ppu, 50, 256);
-    EXPECT_EQ(static_cast<uint16_t>((before & 0x7000) + 0x1000),
-              static_cast<uint16_t>(ppu.registers.PPUADDR & 0x7000))
+    EXPECT_EQ(static_cast<uint16_t>((before & 0x7000) + 0x1000), static_cast<uint16_t>(ppu.registers.PPUADDR & 0x7000))
         << "dot 256 is where fine Y advances";
 }
 

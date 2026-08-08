@@ -23,9 +23,8 @@
 #include <cstdint>
 #include <string>
 
-#include "gtest/gtest.h"
-
 #include "../include/bus.h"
+#include "gtest/gtest.h"
 #include "nametable_screen.h"
 
 namespace tests
@@ -46,10 +45,9 @@ struct NamedButton {
 // "Select" must be tested before "Start"? No - but "A" and "B" are substrings
 // of nothing here, and the prompts are exact words, so a plain search is safe.
 constexpr NamedButton kButtons[] = {
-    {"Up", Controllers::Up},         {"Down", Controllers::Down},
-    {"Left", Controllers::Left},     {"Right", Controllers::Right},
-    {"Select", Controllers::Select}, {"Start", Controllers::Start},
-    {"A", Controllers::A},           {"B", Controllers::B},
+    {"Up", Controllers::Up},       {"Down", Controllers::Down},     {"Left", Controllers::Left},
+    {"Right", Controllers::Right}, {"Select", Controllers::Select}, {"Start", Controllers::Start},
+    {"A", Controllers::A},         {"B", Controllers::B},
 };
 
 // Measured: the ROM reaches its verdict at frame 156 when every button is
@@ -84,8 +82,7 @@ GTEST_TEST(controllerRom, test_buttons_reports_passed_when_every_button_is_deliv
 {
     Bus console;
     const std::string path = std::string(NES_TEST_FILES_DIR) + "/read_joy3/test_buttons.nes";
-    ASSERT_TRUE(console.load_cartridge(path))
-        << "read_joy3 absent - run tests/test_files/fetch_read_joy3.sh";
+    ASSERT_TRUE(console.load_cartridge(path)) << "read_joy3 absent - run tests/test_files/fetch_read_joy3.sh";
 
     console.cpu.reset();
 
@@ -127,8 +124,8 @@ GTEST_TEST(controllerRom, test_buttons_reports_passed_when_every_button_is_deliv
         run_one_frame(console);
     }
 
-    FAIL() << "no verdict within " << kMaxFrames << " frames; stuck on prompt '" << prompt << "' after "
-           << presses << " presses.\n"
+    FAIL() << "no verdict within " << kMaxFrames << " frames; stuck on prompt '" << prompt << "' after " << presses
+           << " presses.\n"
               "  A stall here means the ROM asked for a button and never saw it: suspect $4016,\n"
               "  the shift register, or the strobe - not the PPU, since the prompt was read.";
 }

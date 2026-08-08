@@ -6,11 +6,10 @@
 #include <string>
 #include <vector>
 
-#include "gtest/gtest.h"
-
 #include "../include/bus.h"
 #include "../include/ram.h"
 #include "../include/rom.h"
+#include "gtest/gtest.h"
 
 namespace tests
 {
@@ -172,8 +171,13 @@ struct SyntheticRom {
 
     // prg_fill/chr_fill let a test prove which region of the file a byte came
     // from, which is what makes the trainer-offset check meaningful.
-    void write(uint8_t prg_banks, uint8_t chr_banks, uint8_t flags6, uint8_t flags7, uint8_t prg_fill = 0xAA,
-               uint8_t chr_fill = 0xBB, bool include_banks = true)
+    void write(uint8_t prg_banks,
+               uint8_t chr_banks,
+               uint8_t flags6,
+               uint8_t flags7,
+               uint8_t prg_fill = 0xAA,
+               uint8_t chr_fill = 0xBB,
+               bool include_banks = true)
     {
         std::ofstream out(path, std::ios::binary | std::ios::trunc);
         const uint8_t header[16] = {'N', 'E', 'S', 0x1A, prg_banks, chr_banks, flags6, flags7, 0, 0, 0, 0, 0, 0, 0, 0};

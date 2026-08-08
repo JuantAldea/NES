@@ -1,8 +1,7 @@
 #pragma once
 #include <cstdint>
 class Bus;
-struct Device
-{
+struct Device {
     Device() = delete;
     Device(Bus* b) : bus{b} {};
 

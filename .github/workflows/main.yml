@@ -61,7 +61,7 @@ jobs:
       - name: Test
         run: ctest --test-dir build -j"$(nproc)" --output-on-failure
 
-      # "100% tests passed out of 872" is a MISLEADING headline here, and this
+      # "100% tests passed out of 875" is a MISLEADING headline here, and this
       # step exists to say so on every run.
       #
       # GTEST_SKIP makes a test exit 0, so ctest counts a skipped test as a
@@ -105,7 +105,7 @@ jobs:
 
       # Same fixtures as the `test` job, and same omission of
       # fetch_single_step_tests.sh - see the comment there. Those 512 tests
-      # skip, so this job executes 356 of them.
+      # skip, so this job executes 359 of them.
       - name: Fetch test fixtures
         run: |
           tests/test_files/fetch_nestest.sh
@@ -152,6 +152,58 @@ jobs:
           ASAN_OPTIONS: detect_leaks=1:detect_stack_use_after_return=1
           UBSAN_OPTIONS: print_stacktrace=1:report_error_type=1
         run: ctest --test-dir build -j"$(nproc)" --output-on-failure
+
+  analyze:
+    name: Clang static analyzer (scan-build)
+    runs-on: ubuntu-latest
+
+    # The sanitizers above and the ROM oracles both need the code to RUN before
+    # they can say anything. That is a real limit: a bug on a path no test
+    # takes is invisible to a suite of 875 passing tests. The analyzer walks
+    # paths symbolically instead of executing them, so it covers the arms of
+    # every branch the tests happen not to enter.
+    #
+    # NOTE WHAT IS MISSING FROM THIS JOB: there is no fixture fetching, because
+    # nothing is executed. That makes it the only job here that cannot be
+    # turned red by a network problem or a moved ROM, and the only one that
+    # still says something useful when the download hosts are down.
+    steps:
+      - uses: actions/checkout@v5
+
+      # scan-build ships with Clang; on Debian and Ubuntu it lives in
+      # clang-tools rather than in clang itself. g++ is still installed because
+      # scan-build interposes on the EXISTING compiler - it wraps g++ for the
+      # real compilation and runs clang alongside it purely to analyse. Keeping
+      # g++ as the compiler is deliberate: it means this job's compile warnings
+      # are the same ones the `test` job produces, so a new line in this log is
+      # an analyzer finding rather than a difference of dialect. Building with
+      # clang instead surfaced four extra warnings that are a separate
+      # question - -Wmismatched-tags, -Wunused-const-variable, -Wgnu-case-range
+      # - and would have buried the thing this job exists to report.
+      - name: Install build tools
+        run: |
+          sudo rm -f /var/lib/man-db/auto-update
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ninja-build cmake g++ clang clang-tools
+
+      # The script owns the invocation - both scan-build calls, the exclusion
+      # of _deps, and --status-bugs, which is what turns a finding into a
+      # non-zero exit instead of a line nobody reads. See its header for the
+      # measurements and for the check that it can actually go red.
+      - name: Analyze
+        run: tests/run_scan_build.sh
+
+      # The one-line warning in the log names a file and a line; the HTML
+      # report is the path that reaches it, which is the part worth having when
+      # the finding is a six-branch route through the PPU. Only on failure -
+      # a clean run produces no reports to upload.
+      - name: Upload analyzer reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scan-build-report
+          path: build-scan/report
+          if-no-files-found: ignore
 
   frontend:
     name: Build the SDL2/ImGui frontend

@@ -15,9 +15,8 @@
 #include <string>
 #include <vector>
 
-#include "gtest/gtest.h"
-
 #include "../include/bus.h"
+#include "gtest/gtest.h"
 
 namespace tests
 {
@@ -220,8 +219,7 @@ GTEST_TEST(testPPUMemory, the_sprite_palette_backdrop_entries_alias_the_backgrou
 
     for (const auto& pair : aliases) {
         console.ppu.ppu_bus_write(pair[0], 0x27);
-        EXPECT_EQ(0x27, console.ppu.ppu_bus_read(pair[1]))
-            << "$" << std::hex << pair[0] << " must alias $" << pair[1];
+        EXPECT_EQ(0x27, console.ppu.ppu_bus_read(pair[1])) << "$" << std::hex << pair[0] << " must alias $" << pair[1];
 
         // ...and in the other direction.
         console.ppu.ppu_bus_write(pair[1], 0x0C);
@@ -239,8 +237,7 @@ GTEST_TEST(testPPUMemory, other_sprite_palette_entries_do_not_alias)
         const uint16_t high = static_cast<uint16_t>(low + 0x10);
         console.ppu.ppu_bus_write(low, 0x11);
         console.ppu.ppu_bus_write(high, 0x22);
-        EXPECT_EQ(0x11, console.ppu.ppu_bus_read(low))
-            << "$" << std::hex << high << " must NOT alias $" << low;
+        EXPECT_EQ(0x11, console.ppu.ppu_bus_read(low)) << "$" << std::hex << high << " must NOT alias $" << low;
     }
 }
 
@@ -377,8 +374,7 @@ GTEST_TEST(testPPUMemory, palette_reads_are_immediate_and_refill_the_latch_from_
     // The latch now holds the byte from underneath, so a read from ordinary
     // VRAM immediately afterwards hands that back rather than the palette byte.
     set_ppu_addr(console.ppu, 0x2400);
-    EXPECT_EQ(0x9D, console.ppu.read(PPU::PPUDATA))
-        << "a palette read refills the latch from the nametable beneath it";
+    EXPECT_EQ(0x9D, console.ppu.read(PPU::PPUDATA)) << "a palette read refills the latch from the nametable beneath it";
 }
 
 // --- OAM ---------------------------------------------------------------------

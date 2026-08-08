@@ -32,9 +32,8 @@
 #include <string>
 #include <vector>
 
-#include "gtest/gtest.h"
-
 #include "../include/bus.h"
+#include "gtest/gtest.h"
 
 namespace tests
 {
@@ -177,8 +176,8 @@ TEST_P(BlarggPpuVblNmi, reports_pass)
                    << " frames without ever writing the $DE $B0 $61 signature.\n"
                       "  The ROM did not get far enough to initialise. Suspect the CPU,\n"
                       "  the cartridge mapping, or the $6000-$7FFF PRG-RAM window -- not\n"
-                      "  the PPU. CPU ran " << result.cpu_cycles << " cycles, ending at PC=$" << std::hex
-                   << result.final_pc << std::dec << ".";
+                      "  the PPU. CPU ran "
+                   << result.cpu_cycles << " cycles, ending at PC=$" << std::hex << result.final_pc << std::dec << ".";
         }
 
         FAIL() << name << ": timed out after " << result.frames_run << " frames still reporting status $" << std::hex
@@ -200,13 +199,21 @@ TEST_P(BlarggPpuVblNmi, reports_pass)
     }
 
     EXPECT_EQ(0, result.status) << name << " failed with code " << static_cast<int>(result.status) << ":\n  "
-                               << result.message;
+                                << result.message;
 }
 
-INSTANTIATE_TEST_SUITE_P(PpuVblNmi, BlarggPpuVblNmi,
-                         ::testing::Values("01-vbl_basics", "02-vbl_set_time", "03-vbl_clear_time", "04-nmi_control",
-                                           "05-nmi_timing", "06-suppression", "07-nmi_on_timing", "08-nmi_off_timing",
-                                           "09-even_odd_frames", "10-even_odd_timing"),
+INSTANTIATE_TEST_SUITE_P(PpuVblNmi,
+                         BlarggPpuVblNmi,
+                         ::testing::Values("01-vbl_basics",
+                                           "02-vbl_set_time",
+                                           "03-vbl_clear_time",
+                                           "04-nmi_control",
+                                           "05-nmi_timing",
+                                           "06-suppression",
+                                           "07-nmi_on_timing",
+                                           "08-nmi_off_timing",
+                                           "09-even_odd_frames",
+                                           "10-even_odd_timing"),
                          [](const ::testing::TestParamInfo<std::string>& info) {
                              // gtest requires alphanumeric/underscore test names.
                              std::string sanitized = info.param;

@@ -2,10 +2,9 @@
 
 #include <cstdio>
 
-#include "imgui.h"
-
 #include "../include/bus.h"
 #include "../include/frame_dump.h"
+#include "imgui.h"
 
 namespace nes_gui
 {

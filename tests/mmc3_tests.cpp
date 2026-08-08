@@ -15,9 +15,8 @@
 #include <string>
 #include <vector>
 
-#include "gtest/gtest.h"
-
 #include "../include/bus.h"
+#include "gtest/gtest.h"
 
 namespace tests
 {
@@ -26,15 +25,11 @@ namespace mmc3
 namespace
 {
 
-constexpr size_t kPrg16k = 16 * 1024;
-constexpr size_t kChr8k = 8 * 1024;
-
 // An MMC3 image whose every 8KB PRG bank is filled with its own index, and
 // every 1KB CHR bank likewise. `prg16` is in 16KB header units, so bank count
 // in MMC3's own 8KB units is twice that.
 struct BankedRom {
-    BankedRom(const std::string& name, uint8_t prg16, uint8_t chr8)
-        : path(std::string(NES_TEST_FILES_DIR) + "/" + name)
+    BankedRom(const std::string& name, uint8_t prg16, uint8_t chr8) : path(std::string(NES_TEST_FILES_DIR) + "/" + name)
     {
         std::ofstream out(path, std::ios::binary | std::ios::trunc);
         // mapper 4 -> flags6 high nibble 4
@@ -106,8 +101,8 @@ GTEST_TEST(mmc3, prg_mode_bit_swaps_the_switchable_window)
     ASSERT_TRUE(console.load_cartridge(rom.path));
     const uint8_t second_last = 14;
 
-    select(console, 6, 3);   // R6 = bank 3
-    select(console, 7, 5);   // R7 = bank 5
+    select(console, 6, 3);  // R6 = bank 3
+    select(console, 7, 5);  // R7 = bank 5
 
     console.write(0x8000, 6);  // mode 0: $8000 switchable
     EXPECT_EQ(3, console.read(0x8000)) << "mode 0: $8000-$9FFF follows R6";
@@ -145,7 +140,7 @@ GTEST_TEST(mmc3, the_two_kilobyte_chr_registers_ignore_their_bottom_bit)
     PPU& ppu = console.ppu;
     ASSERT_TRUE(console.load_cartridge(rom.path));
 
-    console.write(0x8000, 0);  // R0, no inversion
+    console.write(0x8000, 0);     // R0, no inversion
     console.write(0x8001, 0x05);  // odd value: the bottom bit must be dropped
 
     EXPECT_EQ(4, ppu.ppu_bus_read(0x0000)) << "R0=5 addresses the 2KB pair starting at bank 4";
@@ -213,6 +208,57 @@ GTEST_TEST(mmc3, a001_records_the_prg_ram_protect_bits)
     EXPECT_FALSE(console.rom.prg_ram_enabled);
 }
 
+// Recording the bits is not obeying them, and for a long time this mapper did
+// only the first. The two failures below are what a game would actually see:
+// a save that survives a crash because the RAM was protected, and a $6000-$7FFF
+// window that reads back open bus because the chip was deselected.
+GTEST_TEST(mmc3, a001_write_protect_stops_writes_but_not_reads)
+{
+    BankedRom rom("mmc3_prgram_wp.nes", 2, 1);
+    Bus console;
+    ASSERT_TRUE(console.load_cartridge(rom.path));
+
+    console.write(0xA001, 0x80);  // enabled, writable
+    console.write(0x6000, 0x5A);
+    console.write(0x7FFF, 0x5B);
+    ASSERT_EQ(0x5A, console.read(0x6000)) << "the writable case has to work, or the test below proves nothing";
+    ASSERT_EQ(0x5B, console.read(0x7FFF));
+
+    console.write(0xA001, 0xC0);  // enabled, write-protected
+    console.write(0x6000, 0xA5);
+    console.write(0x7FFF, 0xA6);
+    EXPECT_EQ(0x5A, console.read(0x6000)) << "/WE inactive: the write is swallowed and the old byte survives";
+    EXPECT_EQ(0x5B, console.read(0x7FFF)) << "protection covers the whole window, not just its first address";
+
+    console.write(0xA001, 0x80);  // writable again
+    console.write(0x6000, 0xA5);
+    EXPECT_EQ(0xA5, console.read(0x6000)) << "clearing bit 6 has to let writes through again";
+}
+
+GTEST_TEST(mmc3, a001_disable_leaves_the_window_open_bus)
+{
+    BankedRom rom("mmc3_prgram_off.nes", 2, 1);
+    Bus console;
+    ASSERT_TRUE(console.load_cartridge(rom.path));
+
+    console.write(0xA001, 0x80);
+    console.write(0x6000, 0x42);
+    ASSERT_EQ(0x42, console.read(0x6000));
+
+    // With the chip deselected nothing drives the data bus, so the read returns
+    // whatever was last on it. The write immediately before is what put $37
+    // there, which makes the expected value a real prediction rather than a
+    // restatement of whatever the code happens to do.
+    console.write(0xA001, 0x00);
+    console.write(0x6001, 0x37);
+    EXPECT_EQ(0x37, console.read(0x6000)) << "disabled: open bus, holding the last value driven onto it";
+
+    // And the write above must not have reached the chip either.
+    console.write(0xA001, 0x80);
+    EXPECT_EQ(0x42, console.read(0x6000)) << "re-enabling reveals the original byte: the write went nowhere";
+    EXPECT_EQ(0x00, console.read(0x6001)) << "$6001 was never written; the disabled write was dropped, not queued";
+}
+
 // The board decodes only bit 13 and the write's parity, so $8000 and $9FFE are
 // the same register. A decode that compared the whole address would pass every
 // test above and fail here.
@@ -239,15 +285,17 @@ GTEST_TEST(mmc3, the_register_pair_is_decoded_from_bit_13_and_parity_only)
 // that makes the counter mean "scanline" rather than "tile fetch" - had no test
 // at all.
 //
-// The ROMs could not catch it. 4-scanline_timing runs with PPUCTRL=$00, both
-// pattern tables at $0000, so A12 never rises during its rendering and there is
-// no short low period to reject. Measured directly: zero rising edges on a
-// visible scanline.
+// No ROM could catch it AT THE TIME, because the only one that drives A12 from
+// real rendering - 4-scanline_timing - was itself failing and pinned. It now
+// passes, and re-running the same mutation confirms it now catches it too: with
+// $2000=$10 the background fetches drop A12 for four dots between tiles, so a
+// threshold of 1 clocks the counter 32 times a line instead of once.
 //
-// So the filter is driven here instead, through mmc3_observe_a12 with explicit
-// cycle numbers. NESdev: the counter is "triggered on a rising edge after the
-// line has remained low for three falling edges of M2" - three CPU cycles, nine
-// PPU dots.
+// These stay anyway, and are the better failure. The ROM reports "Failed #2"
+// after 309 frames; these say which side of the threshold moved, in 0 ms.
+// NESdev: the counter is "triggered on a rising edge after the line has
+// remained low for three falling edges of M2" - three CPU cycles, nine PPU
+// dots.
 
 namespace
 {
@@ -328,6 +376,94 @@ GTEST_TEST(mmc3A12Filter, staying_low_does_not_restart_the_timer)
 
     EXPECT_NE(before, r.mmc3_irq_counter)
         << "the low period is measured from the first fall; later low accesses must not restart it";
+}
+
+// --- the DOT the counter is clocked on ------------------------------------
+//
+// 4-scanline_timing already pins this, but it costs 309 frames to say so and it
+// says it as "Failed #3". These two numbers are the whole content of that ROM,
+// and getting them wrong is a one-dot slip that nothing else in the suite
+// notices: every other MMC3 test cares only about how MANY edges arrive.
+
+namespace
+{
+
+// The dot of the FIRST counter clock after rendering is switched on during
+// vblank - which is exactly the event 4-scanline_timing times. Returns the dot
+// within the pre-render line; the scanline is asserted by the caller.
+struct FirstClock {
+    int scanline = -1;
+    int dot = -1;
+};
+
+FirstClock first_clock_after_enabling_rendering(Bus& console, const uint8_t ppuctrl)
+{
+    PPU& ppu = console.ppu;
+
+    while (ppu.in_reset_write_lockout()) {
+        ppu.clock();
+    }
+
+    // Settle in vblank before enabling anything, so the low period leading into
+    // the first fetch is unambiguously long and the filter cannot be what
+    // decides the answer.
+    for (uint64_t guard = 0; guard < 2ull * 341 * 262; ++guard) {
+        if (ppu.scanline == 245 && ppu.cycle == 0) {
+            break;
+        }
+        ppu.clock();
+    }
+
+    ppu.write(0x2000, ppuctrl);
+    ppu.write(0x2001, 0x18);  // show background and sprites
+
+    // A latch of $FF rather than 0: the counter starts at 0, so any clock at
+    // all changes it, and no IRQ is enabled to complicate the run.
+    console.write(0xC000, 0xFF);
+    console.write(0xC001, 0x00);  // reload on the next edge
+
+    for (uint64_t guard = 0; guard < 2ull * 341 * 262; ++guard) {
+        const int scanline = ppu.scanline;
+        const int dot = ppu.cycle;
+        ppu.clock();
+        if (console.rom.mmc3_irq_counter != 0) {
+            return {scanline, dot};
+        }
+    }
+    ADD_FAILURE() << "the counter was never clocked with PPUCTRL=$" << std::hex << static_cast<int>(ppuctrl);
+    return {};
+}
+
+}  // namespace
+
+// $2000=$08 puts sprites at $1000 and the background at $0000, so the sprite
+// fetch is the only thing on the line that raises A12; $2000=$10 is the reverse
+// and the first background pattern fetch raises it. blargg's 4-scanline_timing
+// hard-codes the gap between those two moments as 256 dots
+// (scanline_0_10 = scanline_0_08 - 256), which is what makes each of these
+// absolute numbers checkable rather than merely self-consistent.
+GTEST_TEST(mmc3A12Filter, rendering_clocks_the_counter_on_the_first_dot_of_the_pattern_fetch)
+{
+    {
+        BankedRom rom("mmc3_dot_sprite.nes", 2, 1);
+        Bus console;
+        ASSERT_TRUE(console.load_cartridge(rom.path));
+
+        const FirstClock c = first_clock_after_enabling_rendering(console, 0x08);
+        EXPECT_EQ(PPU::pre_render_scanline, c.scanline);
+        EXPECT_EQ(261, c.dot) << "sprite fetch: eight dots per sprite from 257, and the pattern-low address goes on\n"
+                                 "  the bus at the FIRST of its two dots - 257 + 4, not 257 + 5.";
+    }
+    {
+        BankedRom rom("mmc3_dot_bg.nes", 2, 1);
+        Bus console;
+        ASSERT_TRUE(console.load_cartridge(rom.path));
+
+        const FirstClock c = first_clock_after_enabling_rendering(console, 0x10);
+        EXPECT_EQ(PPU::pre_render_scanline, c.scanline);
+        EXPECT_EQ(5, c.dot) << "background fetch: tile 0 occupies dots 1-8 and its pattern-low address goes on the\n"
+                               "  bus at dot 5. 261 - 5 = 256, the constant 4-scanline_timing is built on.";
+    }
 }
 
 }  // namespace mmc3

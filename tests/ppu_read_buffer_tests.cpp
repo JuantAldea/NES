@@ -15,9 +15,8 @@
 #include <cstdint>
 #include <string>
 
-#include "gtest/gtest.h"
-
 #include "blargg_rom_harness.h"
+#include "gtest/gtest.h"
 
 namespace tests
 {
@@ -33,10 +32,7 @@ namespace ppu_read_buffer
 // which is the 1266 frames.
 constexpr uint64_t kMaxFrames = 2532;
 
-std::string rom_path()
-{
-    return std::string(NES_TEST_FILES_DIR) + "/ppu_read_buffer/test_ppu_read_buffer.nes";
-}
+std::string rom_path() { return std::string(NES_TEST_FILES_DIR) + "/ppu_read_buffer/test_ppu_read_buffer.nes"; }
 
 // The pack covers far more than its name suggests: CIRAM through $2007 with
 // both increment modes, PPU I/O mirroring, CHR-ROM reads through $2007, CNROM
@@ -46,17 +42,16 @@ GTEST_TEST(ppuReadBuffer, passes)
 {
     const blargg::RomResult result = blargg::run_rom(rom_path(), kMaxFrames);
 
-    ASSERT_TRUE(result.saw_signature)
-        << "ppu_read_buffer never wrote the $DE $B0 $61 signature within " << kMaxFrames
-        << " frames. It is mapper 3 (CNROM), so suspect the cartridge before the PPU - "
-           "run tests/test_files/fetch_ppu_read_buffer.sh if the ROM is simply absent.\n"
-        << "  CPU cycles run: " << result.cpu_cycles << ", final PC: " << std::hex << result.final_pc;
+    ASSERT_TRUE(result.saw_signature) << "ppu_read_buffer never wrote the $DE $B0 $61 signature within " << kMaxFrames
+                                      << " frames. It is mapper 3 (CNROM), so suspect the cartridge before the PPU - "
+                                         "run tests/test_files/fetch_ppu_read_buffer.sh if the ROM is simply absent.\n"
+                                      << "  CPU cycles run: " << result.cpu_cycles << ", final PC: " << std::hex
+                                      << result.final_pc;
 
     ASSERT_TRUE(result.completed) << "the ROM started but never reported a result within " << kMaxFrames
                                   << " frames; last status was 0x" << std::hex << static_cast<int>(result.last_status);
 
-    EXPECT_EQ(0, result.status) << "ppu_read_buffer reported failure " << static_cast<int>(result.status)
-                                << ":\n"
+    EXPECT_EQ(0, result.status) << "ppu_read_buffer reported failure " << static_cast<int>(result.status) << ":\n"
                                 << result.message;
 }
 

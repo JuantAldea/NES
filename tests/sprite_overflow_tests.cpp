@@ -27,9 +27,8 @@
 #include <cstdint>
 #include <string>
 
-#include "gtest/gtest.h"
-
 #include "../include/bus.h"
+#include "gtest/gtest.h"
 #include "nametable_screen.h"
 
 namespace tests
@@ -90,8 +89,7 @@ std::string run_to_verdict(const std::string& name)
 {
     Bus console;
     if (!console.load_cartridge(rom_path(name))) {
-        ADD_FAILURE() << "could not load " << rom_path(name)
-                      << " - run tests/test_files/fetch_sprite_overflow.sh";
+        ADD_FAILURE() << "could not load " << rom_path(name) << " - run tests/test_files/fetch_sprite_overflow.sh";
         return {};
     }
 
@@ -152,9 +150,9 @@ TEST_P(SpriteOverflowRoms, reports_passed)
         << visible(screen);
 }
 
-INSTANTIATE_TEST_SUITE_P(SpriteOverflow, SpriteOverflowRoms,
-                         ::testing::Values("1.Basics", "2.Details", "3.Timing", "4.Obscure",
-                                           "5.Emulator"),
+INSTANTIATE_TEST_SUITE_P(SpriteOverflow,
+                         SpriteOverflowRoms,
+                         ::testing::Values("1.Basics", "2.Details", "3.Timing", "4.Obscure", "5.Emulator"),
                          [](const ::testing::TestParamInfo<std::string>& info) {
                              std::string name = info.param;
                              // "1.Basics" is not a legal test name.

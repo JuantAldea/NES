@@ -767,7 +767,9 @@ TEST_P(SingleStepBusTrace, matches_hardware_bus_trace)
                             << opcode_hex << (failures > kMaxReported ? " (only the first 2 shown)" : "");
 }
 
-INSTANTIATE_TEST_SUITE_P(AllOpcodes, SingleStepBusTrace, ::testing::ValuesIn(all_opcodes()),
+INSTANTIATE_TEST_SUITE_P(AllOpcodes,
+                         SingleStepBusTrace,
+                         ::testing::ValuesIn(all_opcodes()),
                          [](const ::testing::TestParamInfo<std::string>& info) { return "op_" + info.param; });
 
 // Every opcode implemented or restructured by this core that has vectors
@@ -782,7 +784,9 @@ INSTANTIATE_TEST_SUITE_P(AllOpcodes, SingleStepBusTrace, ::testing::ValuesIn(all
 //
 // A hand-maintained list of what to verify will always drift behind the code it
 // verifies. Running all 256 costs about a minute and removes the failure mode.
-INSTANTIATE_TEST_SUITE_P(AllOpcodes, SingleStepVectors, ::testing::ValuesIn(all_opcodes()),
+INSTANTIATE_TEST_SUITE_P(AllOpcodes,
+                         SingleStepVectors,
+                         ::testing::ValuesIn(all_opcodes()),
                          [](const ::testing::TestParamInfo<std::string>& info) { return "op_" + info.param; });
 
 // ---------------------------------------------------------------------------
@@ -1293,16 +1297,15 @@ TEST(CpuInterrupts, an_interrupt_sequence_does_not_poll)
                                        << " (NMI raised on cycle " << inject_at << ")";
 
         EXPECT_EQ(cpu.registers.PC, hijacked ? 0x9000 : 0x8000)
-            << "NMI raised on BRK cycle " << inject_at << " should"
-            << (hijacked ? " " : " not ") << "have redirected the vector fetch to $FFFA";
+            << "NMI raised on BRK cycle " << inject_at << " should" << (hijacked ? " " : " not ")
+            << "have redirected the vector fetch to $FFFA";
 
         // What B records is which instruction STARTED the sequence, not where
         // it ended up: a hijacked BRK still reaches the NMI handler with B set,
         // which is exactly the $36 Blargg's 2-nmi_and_brk prints for its five
         // hijacked rows. SP was $FD, so BRK pushed PCH at $01FD, PCL at $01FC
         // and P at $01FB.
-        EXPECT_EQ(mem.memory[0x01FB] & static_cast<uint8_t>(CPU::FLAGS::B),
-                  static_cast<uint8_t>(CPU::FLAGS::B))
+        EXPECT_EQ(mem.memory[0x01FB] & static_cast<uint8_t>(CPU::FLAGS::B), static_cast<uint8_t>(CPU::FLAGS::B))
             << "a hijacked BRK still pushes P with B set (NMI raised on cycle " << inject_at << ")";
 
         // And the frame is still BRK's: the return address is the byte after
@@ -1320,8 +1323,7 @@ TEST(CpuInterrupts, an_interrupt_sequence_does_not_poll)
         if (hijacked) {
             // The hijack consumed the edge. The second NOP of the NMI handler
             // runs; nothing takes a second NMI.
-            EXPECT_EQ(run_one_instruction(cpu), 2u)
-                << "the hijack consumed the /NMI edge, so no second NMI is due";
+            EXPECT_EQ(run_one_instruction(cpu), 2u) << "the hijack consumed the /NMI edge, so no second NMI is due";
             EXPECT_EQ(cpu.registers.PC, 0x9002) << "the NMI handler should still be running";
         } else {
             // Too late to hijack, so the edge is still pending and is taken at
@@ -1464,7 +1466,7 @@ TEST(CpuInterrupts, an_edge_on_the_final_cycle_is_deferred_one_instruction)
     cpu.cycles_left = 0;
 
     ASSERT_FALSE(cpu.clock(false)) << "a 2-cycle NOP should not complete on cycle 1";
-    cpu.raise_NMI();               // arrives on the final cycle
+    cpu.raise_NMI();                // arrives on the final cycle
     ASSERT_TRUE(cpu.clock(false));  // completes it
     ASSERT_EQ(cpu.registers.PC, 0x1001);
 
@@ -1603,8 +1605,7 @@ TEST(CpuInterrupts, a_page_crossing_taken_branch_polls_on_its_penultimate_cycle)
     ASSERT_TRUE(cpu.clock(false));
     ASSERT_EQ(cpu.registers.PC, 0x1101) << "BCS $7F from $1082 should land at $1101";
 
-    EXPECT_EQ(run_one_instruction(cpu), 7u)
-        << "the cycle-3 sample sees the IRQ, so it is due at the branch's boundary";
+    EXPECT_EQ(run_one_instruction(cpu), 7u) << "the cycle-3 sample sees the IRQ, so it is due at the branch's boundary";
     EXPECT_EQ(cpu.registers.PC, 0x9000);
 }
 

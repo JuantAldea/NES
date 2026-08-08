@@ -31,9 +31,8 @@
 #include <cstring>
 #include <string>
 
-#include "gtest/gtest.h"
-
 #include "../include/bus.h"
+#include "gtest/gtest.h"
 
 namespace tests
 {
@@ -87,12 +86,12 @@ void start_a_game(Bus& console)
     }
 }
 
-#define SKIP_IF_ABSENT(console)                                                                     \
-    if (!load_or_skip(console)) {                                                                   \
-        GTEST_SKIP() << "no ROM at " << smb_path()                                                  \
-                     << "\n  This test needs a dump of a cartridge you own; nothing here fetches"   \
-                        "\n  one. See tests/test_files/local/README.md."                            \
-                        "\n  NOTE: ctest counts this skip as a pass. It is not one.";               \
+#define SKIP_IF_ABSENT(console)                                                                   \
+    if (!load_or_skip(console)) {                                                                 \
+        GTEST_SKIP() << "no ROM at " << smb_path()                                                \
+                     << "\n  This test needs a dump of a cartridge you own; nothing here fetches" \
+                        "\n  one. See tests/test_files/local/README.md."                          \
+                        "\n  NOTE: ctest counts this skip as a pass. It is not one.";             \
     }
 
 }  // namespace

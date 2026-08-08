@@ -16,9 +16,8 @@
 //      and so retain the bits of the previous byte on the bus."
 #include <cstdint>
 
-#include "gtest/gtest.h"
-
 #include "../include/bus.h"
+#include "gtest/gtest.h"
 
 namespace tests
 {
@@ -70,8 +69,8 @@ GTEST_TEST(controllers, report_the_buttons_in_the_documented_order)
 GTEST_TEST(controllers, every_button_round_trips)
 {
     Bus console;
-    const uint8_t all = Controllers::A | Controllers::B | Controllers::Select | Controllers::Start |
-                        Controllers::Up | Controllers::Down | Controllers::Left | Controllers::Right;
+    const uint8_t all = Controllers::A | Controllers::B | Controllers::Select | Controllers::Start | Controllers::Up |
+                        Controllers::Down | Controllers::Left | Controllers::Right;
 
     for (int i = 0; i < 8; ++i) {
         const uint8_t one = static_cast<uint8_t>(1 << i);

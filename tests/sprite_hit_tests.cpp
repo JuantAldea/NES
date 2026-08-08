@@ -21,9 +21,8 @@
 #include <cstdint>
 #include <string>
 
-#include "gtest/gtest.h"
-
 #include "../include/bus.h"
+#include "gtest/gtest.h"
 #include "nametable_screen.h"
 
 namespace tests
@@ -82,8 +81,7 @@ std::string run_to_verdict(const std::string& name)
 {
     Bus console;
     if (!console.load_cartridge(rom_path(name))) {
-        ADD_FAILURE() << "could not load " << rom_path(name)
-                      << " - run tests/test_files/fetch_sprite_hit.sh";
+        ADD_FAILURE() << "could not load " << rom_path(name) << " - run tests/test_files/fetch_sprite_hit.sh";
         return {};
     }
 
@@ -144,10 +142,18 @@ TEST_P(SpriteHitRoms, reports_passed)
         << visible(screen);
 }
 
-INSTANTIATE_TEST_SUITE_P(SpriteHit, SpriteHitRoms,
-                         ::testing::Values("01.basics", "02.alignment", "03.corners", "04.flip",
-                                           "05.left_clip", "06.right_edge", "07.screen_bottom",
-                                           "08.double_height", "09.timing_basics", "10.timing_order",
+INSTANTIATE_TEST_SUITE_P(SpriteHit,
+                         SpriteHitRoms,
+                         ::testing::Values("01.basics",
+                                           "02.alignment",
+                                           "03.corners",
+                                           "04.flip",
+                                           "05.left_clip",
+                                           "06.right_edge",
+                                           "07.screen_bottom",
+                                           "08.double_height",
+                                           "09.timing_basics",
+                                           "10.timing_order",
                                            "11.edge_timing"),
                          [](const ::testing::TestParamInfo<std::string>& info) {
                              std::string name = info.param;

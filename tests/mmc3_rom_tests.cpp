@@ -15,9 +15,8 @@
 #include <cstdio>
 #include <string>
 
-#include "gtest/gtest.h"
-
 #include "../include/bus.h"
+#include "gtest/gtest.h"
 #include "nametable_screen.h"
 
 namespace tests
@@ -38,18 +37,20 @@ constexpr uint8_t kStatusRunning = 0x80;
 // printed:
 //
 //   1-clocking 27   2-details 28   3-A12_clocking 26
-//   4-scanline_timing 75   5-MMC3 26   6-MMC3_alt 31
+//   4-scanline_timing 309   5-MMC3 26   6-MMC3_alt 31
 //
 // 4-scanline_timing is the outlier because it waits on real rendering rather
-// than poking $2006, so its subtests cost whole frames each. 300 is that worst
-// case with 4x headroom: a genuine hang fails with a diagnosis instead of
-// stalling the suite, while a change that merely makes a ROM slower does not
-// turn into a mystery failure.
+// than poking $2006: each of its thirteen subtests spends a whole frame
+// synchronising to vblank before it can time anything.
 //
-// The pre-counter figures are NOT a useful basis for this cap. Before the
-// counter existed each ROM stopped at its FIRST failing subtest - 29 to 47
-// frames - and a passing run has to get through everything after that one.
-constexpr int kMaxFrames = 300;
+// 309 is a COMPLETION figure and the cap is 2x it. The 75 recorded here
+// previously was not comparable - back then the ROM stopped at its first
+// failing subtest, so it was a floor, and the cap needed 4x to cover the
+// subtests that had never run. Now that all thirteen do, headroom only has to
+// absorb a change that makes the emulator slower per frame, not one that
+// unlocks more work. A hang therefore costs ~1s (measured: 1.6ms/frame) and
+// fails with a diagnosis instead of stalling the suite.
+constexpr int kMaxFrames = 600;
 
 struct Result {
     bool completed = false;
@@ -104,14 +105,26 @@ Result run_rom(const std::string& name)
 
 }  // namespace
 
-// The four that pass outright.
+// The five that pass outright.
 //
-// 1-clocking      the counter decrements on an A12 toggle driven from $2006
-// 2-details       reload edge cases, including a latch of 255
-// 3-A12_clocking  the filter: which A12 rises count and which are too close
-// 5-MMC3          the Sharp revision's reload-to-zero behaviour
+// 1-clocking         the counter decrements on an A12 toggle driven from $2006
+// 2-details          reload edge cases, including a latch of 255
+// 3-A12_clocking     the filter: which A12 rises count and which are too close
+// 4-scanline_timing  the DOT the counter is clocked on, under real rendering
+// 5-MMC3             the Sharp revision's reload-to-zero behaviour
 //
-// 4-scanline_timing is NOT here, and is not a hardware divergence. See below.
+// 4-scanline_timing was pinned as a known failure here for a long time, on the
+// theory that the two garbage nametable reads of each sprite fetch group had to
+// be driven onto the PPU address bus before the A12 filter could measure from
+// the right point. THAT THEORY WAS WRONG, and it is recorded because it cost
+// the time: the reads are still not modelled and the ROM passes anyway.
+//
+// The actual cause was one dot. The ROM's own constants give it away - it
+// asserts the scanline-0 IRQ arrives 256 dots later with $2000=$08 than with
+// $2000=$10, i.e. that the sprite pattern fetch raises A12 exactly 256 dots
+// after the background one does. fetch_background_byte read on the first dot of
+// each two-dot access and fetch_sprite_pattern on the second, making the gap
+// 257. Aligning the two phases is the whole fix; see fetch_sprite_pattern.
 class Mmc3IrqRoms : public ::testing::TestWithParam<std::string>
 {
 };
@@ -123,11 +136,12 @@ TEST_P(Mmc3IrqRoms, reports_pass)
 
     ASSERT_TRUE(result.completed) << name << ": no verdict within " << kMaxFrames << " frames";
     EXPECT_EQ(0, result.status) << name << " failed with code " << static_cast<int>(result.status) << ":\n  "
-                               << result.message;
+                                << result.message;
 }
 
-INSTANTIATE_TEST_SUITE_P(Mmc3Irq, Mmc3IrqRoms,
-                         ::testing::Values("1-clocking", "2-details", "3-A12_clocking", "5-MMC3"),
+INSTANTIATE_TEST_SUITE_P(Mmc3Irq,
+                         Mmc3IrqRoms,
+                         ::testing::Values("1-clocking", "2-details", "3-A12_clocking", "4-scanline_timing", "5-MMC3"),
                          [](const ::testing::TestParamInfo<std::string>& info) {
                              std::string s = info.param;
                              for (char& c : s) {
@@ -137,47 +151,6 @@ INSTANTIATE_TEST_SUITE_P(Mmc3Irq, Mmc3IrqRoms,
                              }
                              return s;
                          });
-
-// 4-scanline_timing: UNFINISHED WORK, PINNED SO IT CANNOT BE FORGOTTEN.
-//
-// Read this differently from the 6-MMC3_alt pin below. That one records a fork
-// in the silicon that no implementation can close. THIS one is simply not
-// done - the emulator is wrong, the ROM is right, and the pin exists only so
-// the suite stays green enough to detect OTHER regressions while the gap is
-// still open. It is a bookmark, not a verdict.
-//
-// It gets through subtests 1 and 2 - the counter IS clocked by real rendering
-// fetches, which is what the eight-sprite-fetch change in
-// PPU::fetch_sprite_pattern bought - and fails #3:
-//
-//   "Scanline 0 IRQ should occur sooner when $2000=$08"
-//
-// $2000=$08 puts the sprite pattern table at $1000 and the background at
-// $0000, so the only A12 rise on a line is the sprite fetch at dots 257-320,
-// and the IRQ should land earlier in the line than in the configuration the
-// previous subtest used. Ours lands late. The suspected cause, NOT yet
-// confirmed by measurement: this PPU models only the two pattern reads of each
-// sprite fetch group (steps 5 and 7) and treats the two garbage nametable
-// reads at steps 1 and 3 as having "nothing to model". They are $2xxx reads,
-// so they pull A12 low at a specific dot, and the A12 filter's timing is
-// measured from exactly that point. Whoever picks this up should start by
-// putting those garbage fetches on the bus and re-measuring, rather than by
-// adjusting mmc3_a12_filter_dots, which is pinned independently by
-// 3-A12_clocking and should not be moved to chase this.
-GTEST_TEST(mmc3Irq, scanline_timing_is_not_yet_correct)
-{
-    const Result result = run_rom("4-scanline_timing");
-
-    ASSERT_TRUE(result.completed) << "4-scanline_timing: no verdict within " << kMaxFrames << " frames";
-
-    EXPECT_EQ(3, result.status) << "4-scanline_timing's status changed.\n"
-                                   "  If it is now 0, THE GAP IS CLOSED: delete this test and move\n"
-                                   "  \"4-scanline_timing\" into the Mmc3Irq value list above.\n"
-                                   "  If it is some other non-zero code, an EARLIER subtest has broken -\n"
-                                   "  subtests 1 and 2 pass today and are a real regression if they stop.\n"
-                                   "  Reported: "
-                                << result.message;
-}
 
 // 6-MMC3_alt is asserted separately BECAUSE IT FAILS, and the failure is pinned
 // rather than hidden - the same treatment instr_test_roms.cpp gives the

@@ -11,10 +11,9 @@
 #include <string>
 #include <vector>
 
-#include "gtest/gtest.h"
-
 #include "../include/bus.h"
 #include "../include/frame_dump.h"
+#include "gtest/gtest.h"
 
 namespace tests
 {

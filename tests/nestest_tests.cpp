@@ -20,11 +20,9 @@
 #include <string>
 #include <vector>
 
-#include "gtest/gtest.h"
-
 #include "../include/bus.h"
 #include "../include/cpu.h"
-
+#include "gtest/gtest.h"
 
 namespace tests
 {

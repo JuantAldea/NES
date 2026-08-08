@@ -1,7 +1,8 @@
+#include "../include/ppu.h"
+
 #include <algorithm>
 #include <cstring>
 
-#include "../include/ppu.h"
 #include "../include/bus.h"
 /*
 1uint8_t& PPU::get_register(const RegisterMMap reg)
@@ -206,48 +207,48 @@ void PPU::clock()
     //+ 1 spare cycle
 
     switch (scanline) {
-        case 0 ... 239:
-            process_visible_scanline();
-            break;
-        case post_render_scanline:
-            // idle
-            break;
-        case vblank_start_scanline:
-            // The vblank flag is set on the second dot of scanline 241.
-            if (cycle == 1) {
-                // ...unless the CPU read $2002 on this very dot. The read's
-                // clear and the PPU's set race, and the clear wins: the flag
-                // is not set at all, and stays clear for the whole of this
-                // vblank. This is 02-vbl_set_time's row 04 ("- -") and
-                // 06-suppression's ("flag never set, no NMI").
-                if (!suppress_vblank_flag_set) {
-                    set_vblank();
-                }
-                suppress_vblank_flag_set = false;
+    case 0 ... 239:
+        process_visible_scanline();
+        break;
+    case post_render_scanline:
+        // idle
+        break;
+    case vblank_start_scanline:
+        // The vblank flag is set on the second dot of scanline 241.
+        if (cycle == 1) {
+            // ...unless the CPU read $2002 on this very dot. The read's
+            // clear and the PPU's set race, and the clear wins: the flag
+            // is not set at all, and stays clear for the whole of this
+            // vblank. This is 02-vbl_set_time's row 04 ("- -") and
+            // 06-suppression's ("flag never set, no NMI").
+            if (!suppress_vblank_flag_set) {
+                set_vblank();
             }
-            break;
-        case 242 ... 260:
-            // TODO is it idle as well?
-            break;
-        case pre_render_scanline:
-            if (cycle == 0) {
-                oam_refresh_bug();
-            }
-            if (cycle == 1) {
-               clear_vblank();
-               clear_sprite0_hit();
-               clear_sprite_overflow();
-            }
-            // The pre-render line runs the same fetch pipeline as a visible
-            // one - that is how the first two tiles of scanline 0 are already
-            // in the shift registers when it starts - but it outputs no
-            // pixels. It is also the only line that copies t's vertical half
-            // into v.
-            process_visible_scanline();
-            break;
-        default:
-            std::cerr << "Scanline out of range: " << scanline << std::endl;
-            break;
+            suppress_vblank_flag_set = false;
+        }
+        break;
+    case 242 ... 260:
+        // TODO is it idle as well?
+        break;
+    case pre_render_scanline:
+        if (cycle == 0) {
+            oam_refresh_bug();
+        }
+        if (cycle == 1) {
+            clear_vblank();
+            clear_sprite0_hit();
+            clear_sprite_overflow();
+        }
+        // The pre-render line runs the same fetch pipeline as a visible
+        // one - that is how the first two tiles of scanline 0 are already
+        // in the shift registers when it starts - but it outputs no
+        // pixels. It is also the only line that copies t's vertical half
+        // into v.
+        process_visible_scanline();
+        break;
+    default:
+        std::cerr << "Scanline out of range: " << scanline << std::endl;
+        break;
     }
 
     advance_dot();
@@ -804,6 +805,29 @@ void PPU::load_sprite_units()
 // garbage nametable, two of garbage attribute, then pattern low and pattern
 // high - because it IS the same fetch machinery, pointed at OAM instead of the
 // nametable.
+//
+// So the accesses sit on the SAME phase as fetch_background_byte's: the address
+// goes on the bus at the FIRST dot of each two-dot pair. For the first sprite
+// that puts pattern low at 257 + 4 = 261 and pattern high at 263, matching
+// background tile 0's 5 and 7.
+//
+// That agreement is not cosmetic. These two functions are the only places the
+// MMC3 counter can see A12 during rendering, and 4-scanline_timing measures the
+// distance between them to the dot: it hard-codes the scanline-0 IRQ as 256
+// dots later with $2000=$08 (sprites at $1000, background at $0000, so the
+// sprite fetch is the only thing that raises A12) than with $2000=$10 (the
+// reverse, so the first background pattern fetch raises it). 5 + 256 = 261, and
+// the ROM fails on a discrepancy of one. This WAS 262 - the pair's second dot -
+// and that single dot was the whole of the failure it reported for a long time.
+//
+// The two GARBAGE fetches of each group, at dots 257-258 and 259-260, are still
+// not driven onto the bus. Bounded omission rather than oversight: they read
+// $2xxx, so all they can do is hold A12 low for four dots, and four is below
+// mmc3_a12_filter_dots, so no edge they create is ever counted. The one case
+// where that reasoning fails is 8x16 sprites whose tiles alternate between the
+// two pattern tables - there the garbage reads stretch a low period from 8 dots
+// to 12, across the 9-dot threshold, and the counter would clock where ours
+// does not. No oracle here reaches that, so it is recorded rather than written.
 void PPU::fetch_sprite_pattern()
 {
     const int index = (cycle - 257) / 8;
@@ -843,9 +867,9 @@ void PPU::fetch_sprite_pattern()
         // sprite_count and would ignore them anyway. Reading and dropping keeps
         // the bus activity - the part that is observable - without putting
         // anything into the rendering state that could change a pixel.
-        if (step == 5) {
+        if (step == 4) {
             (void)ppu_bus_read(dummy_address);
-        } else if (step == 7) {
+        } else if (step == 6) {
             (void)ppu_bus_read(static_cast<uint16_t>(dummy_address + 8));
         }
         return;
@@ -876,8 +900,7 @@ void PPU::fetch_sprite_pattern()
         // the TOP tile, whose bottom half is the tile after it.
         const uint16_t table = (tile & 0x01) ? 0x1000 : 0x0000;
         const uint16_t top_tile = static_cast<uint16_t>(tile & 0xFE);
-        address =
-            static_cast<uint16_t>(table + ((top_tile + (pattern_row >= 8 ? 1 : 0)) << 4) + (pattern_row & 0x07));
+        address = static_cast<uint16_t>(table + ((top_tile + (pattern_row >= 8 ? 1 : 0)) << 4) + (pattern_row & 0x07));
     } else {
         address = static_cast<uint16_t>(sprite_pattern_8x8_table_addr + (tile << 4) + pattern_row);
     }
@@ -894,20 +917,23 @@ void PPU::fetch_sprite_pattern()
     case 3:
         sprite_x_counter[index] = secondary_oam[index * 4 + 3];
         break;
-    case 5: {
+    case 4: {
         const uint8_t low = ppu_bus_read(address);
         sprite_pattern_shift_low[index] = flip_horizontally ? reverse_bits(low) : low;
         break;
     }
-    case 7: {
+    case 6: {
         // The two bitplanes of a tile are eight bytes apart, not interleaved.
         const uint8_t high = ppu_bus_read(static_cast<uint16_t>(address + 8));
         sprite_pattern_shift_high[index] = flip_horizontally ? reverse_bits(high) : high;
         break;
     }
     default:
-        // The first dot of each pair, and the two garbage nametable dots:
-        // hardware puts an address on the bus and there is nothing to model.
+        // The second dot of each pair, where hardware holds the same address on
+        // the bus and latches the byte. Steps 2 and 3 above are the attribute
+        // and X bytes, which come out of secondary OAM rather than off the
+        // address bus, so their dot within the group is unobservable and is
+        // only placed in the garbage-attribute window for tidiness.
         break;
     }
 }
@@ -1323,8 +1349,7 @@ void PPU::write(const uint16_t addr, const uint8_t data)
             temp_addr = static_cast<uint16_t>((temp_addr & ~0x001F) | (data >> 3));
             fine_x = data & 0x07;
         } else {
-            temp_addr = static_cast<uint16_t>((temp_addr & ~0x73E0) | ((data & 0x07) << 12) |
-                                              ((data & 0xF8) << 2));
+            temp_addr = static_cast<uint16_t>((temp_addr & ~0x73E0) | ((data & 0x07) << 12) | ((data & 0xF8) << 2));
         }
         high_byte_input = !high_byte_input;
         break;

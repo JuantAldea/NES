@@ -30,7 +30,13 @@
 # disagreement.
 #
 # Those frame numbers are time-to-FIRST-failure and so a floor, not a budget: a
-# ROM that gets further runs longer. Re-measure once any of them pass.
+# ROM that gets further runs longer.
+#
+# OUTCOME, so this header is not read as the current state: five of the six pass
+# now, and the re-measured completion frames live in tests/mmc3_rom_tests.cpp
+# (4-scanline_timing needs 309 of them). 6-MMC3_alt is the one that stays
+# failing, deliberately - Sharp was chosen, and that file pins the exact way it
+# fails. Everything above is the BEFORE picture and is kept as such.
 #
 # Not committed: redistributable-but-unlicensed dumps, SHA256-pinned.
 #

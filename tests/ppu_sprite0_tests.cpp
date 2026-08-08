@@ -299,8 +299,7 @@ GTEST_TEST(testSprite0Hit, horizontal_flip_moves_the_opaque_column)
     {
         Bus console;
         set_up_a_horizontal_edge(console.ppu, 0x40);  // horizontal flip
-        EXPECT_TRUE(hit_during_one_frame(console.ppu))
-            << "flipped, it is at x=107, over opaque background";
+        EXPECT_TRUE(hit_during_one_frame(console.ppu)) << "flipped, it is at x=107, over opaque background";
     }
 }
 
@@ -434,7 +433,6 @@ GTEST_TEST(testSprite0Hit, an_8x16_sprite_covers_sixteen_scanlines)
     EXPECT_EQ(1u, sprites_on_line(ppu, 80)) << "sixteen lines, 65-80";
     EXPECT_EQ(0u, sprites_on_line(ppu, 81)) << "and no more";
 }
-
 
 // --- OAMADDR decides which sprite is "sprite 0" ---------------------------
 //
@@ -654,8 +652,7 @@ GTEST_TEST(testSprite0Hit, a_line_whose_evaluation_window_was_skipped_cannot_hit
     // resumes - which is what stops the check above passing for the wrong
     // reason.
     clock_until(ppu, 106, 0);
-    EXPECT_NE(0x00, ppu.registers.PPUSTATUS & 0x40)
-        << "lines evaluated after rendering came back must hit normally";
+    EXPECT_NE(0x00, ppu.registers.PPUSTATUS & 0x40) << "lines evaluated after rendering came back must hit normally";
 }
 
 }  // namespace sprite0

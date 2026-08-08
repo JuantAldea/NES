@@ -21,7 +21,7 @@ still no audio.
 | PPU background | Loopy `v`/`t`/`x`/`w`, dot-exact tile pipeline, framebuffer of palette indices |
 | Sprites | Secondary OAM, per-dot evaluation, 8-per-line, the overflow search bug, priority, 8x16, flip. Passes blargg's 5 `sprite_overflow` and 11 `sprite_hit` ROMs |
 | Cartridge | iNES, NROM (0), UNROM (2), CNROM (3) and MMC3 (4), CHR-ROM and CHR-RAM |
-| MMC3 IRQ | A12-filtered scanline counter driving `/IRQ`. Passes 4 of blargg's 6 `mmc3_test_2` ROMs; see below |
+| MMC3 IRQ | A12-filtered scanline counter driving `/IRQ`, clocked on the right dot. Passes 5 of blargg's 6 `mmc3_test_2` ROMs; the sixth tests the other chip revision, see below |
 | APU | Frame counter and `/IRQ`. No audio. |
 | Display | SDL2 + Dear ImGui: the screen and the debugger in one window |
 | Controllers | Both ports at `$4016`/`$4017`, keyboard-driven. Passes blargg's `read_joy3` `test_buttons` |
@@ -57,7 +57,7 @@ Two things about test counts that are easy to misread:
   Klaus. `cpu_exec_space` runs the CPU *through* I/O space, which is what pins
   CPU open bus.
 
-Two deliberate divergences, both asserted rather than hidden.
+One deliberate divergence per oracle pair, asserted rather than hidden.
 
 `03-immediate` reports
 `AB ATX #n`. Opcode `$AB` computes `A = X = (A | magic) & immediate`, where
@@ -74,12 +74,20 @@ Sharp boards and that is what real games depend on.
 `tests/mmc3_rom_tests.cpp` pins `6-MMC3_alt`'s exact status and message, so a
 change in *how* it fails still surfaces.
 
-`4-scanline_timing` is a real gap rather than a divergence: it clears its first
-two subtests and fails the third on fine A12 timing. The suspected cause is
-specific - the two garbage nametable reads in each sprite pattern fetch are not
-driven onto the PPU address bus, and the filter measures its low period from
-exactly that point. It is pinned the same way as the divergence above, so the
-day it starts passing, the test says so.
+`4-scanline_timing` used to be listed here as a third case - a real gap rather
+than a divergence, pinned at "fails subtest 3". **It now passes**, and how it
+was closed is worth recording because the theory in this README was wrong for
+months. The suspected cause was the garbage nametable reads in each sprite
+pattern fetch not reaching the PPU address bus. They still do not, and the ROM
+passes anyway. The actual cause was one dot: the background pipeline put its
+address on the bus at the first dot of each two-dot access and the sprite
+pipeline at the second, so A12 rose 257 dots apart instead of the 256 the ROM
+hard-codes. Five of the six MMC3 IRQ ROMs pass; `6-MMC3_alt` is the divergence
+above.
+
+Everything above answers "does it behave correctly when run". Clang's static
+analyzer answers the other half - what happens on the branches no test takes -
+and reports zero findings; see [Static analysis](#static-analysis).
 
 Still unexercised by anything here: sustained play over minutes rather than a
 few thousand frames, and every mapper beyond 0, 2, 3 and 4.
@@ -153,14 +161,14 @@ few thousand frames, and every mapper beyond 0, 2, 3 and 4.
         not modelled on any of these boards - cartridges store the bank number
         at the address they write to, so the AND real hardware performs is a
         no-op for correct software.
-    *   **`$A001` is decoded but not obeyed.** The PRG-RAM enable and
-        write-protect bits are stored, and nothing consults them: `Bus::decode`
-        routes `$6000-$7FFF` straight to the RAM, so it is always readable and
-        writable. The mapper owns the bits but `PrgRAM` is a separate Bus
-        device, and connecting the two is the piece that was left undone. No
-        ROM here covers it and no game is known to depend on it, which is why
-        it survived unnoticed - it is recorded here rather than in nobody's
-        head.
+    *   `$A001`'s PRG-RAM enable and write-protect bits are obeyed, not just
+        stored. `Bus::decode` consults them for `$6000-$7FFF`: disabled decodes
+        to no device, so reads are open bus and writes vanish; write-protected
+        does that for writes only. The mapper owns the bits and `PrgRAM` is a
+        separate Bus device, so the decode is the one place the two can meet.
+        **No ROM here covers this** - the tests are written from the register
+        description, which is weaker evidence than the rest of this list rests
+        on.
 *   **Bus:**
     *   A single address decode shared by reads and writes, so the two cannot
         drift apart. It takes the direction as a parameter for exactly one
@@ -284,7 +292,7 @@ like a working setup and then fails in several places at once.
 count actively hides this. The two per-opcode suites call `GTEST_SKIP` when the
 1.1 GB of vectors is absent, and a skipped test exits 0, so `ctest` counts it as
 a pass. With no vectors fetched the suite still reports "100% tests passed out
-of 872" while having executed 356 of them.
+of 875" while having executed 359 of them.
 
 The ROM suites behave the other way round: a missing ROM is a loud failure
 naming the fetch script to run, not a skip. So the failure modes are:
@@ -307,7 +315,7 @@ ninja -C build check     # or: make -C build check
 that writes a fixture writes a uniquely named one - and the suite is dominated
 by 512 per-opcode cases that parallelise perfectly.
 
-On 32 cores the full 872-test suite takes about **4 seconds**. Two things got
+On 32 cores the full 875-test suite takes about **5 seconds**. Two things got
 it there, and the second mattered more than the first:
 
 * Parallelism took it from 129s to 16s. Past that point the total was simply
@@ -328,7 +336,7 @@ ctest --test-dir build --output-on-failure
 ctest --test-dir build -j8 --output-on-failure   # or pick your own level
 ```
 
-The 872 tests are dominated by the two per-opcode suites - 256 opcodes checked
+The 875 tests are dominated by the two per-opcode suites - 256 opcodes checked
 for their bus trace and 256 for their final state, 10,000 cases apiece.
 
 ### Sanitizers
@@ -358,9 +366,54 @@ Two details worth knowing if you change this:
   argument assumes a dirty baseline; this suite has none, so detection is free
   and the next leak becomes a build failure rather than something nobody sees.
 
-Instrumentation costs about **5x**: the 356 tests CI executes take 3.7s
+Instrumentation costs about **5x**: the 359 tests CI executes take 3.7s
 normally and 19.6s under ASan+UBSan on 32 cores. That is why it is a separate
 CI job - the fast suite keeps reporting in seconds.
+
+### Static analysis
+
+```sh
+tests/run_scan_build.sh          # or: ninja -C build analyze
+```
+
+Clang's analyzer over a separate `build-scan/` tree, run in CI as the **Clang
+static analyzer** job. It reports **zero** findings, so the job gates on
+`--status-bugs` with no baseline to maintain, and uploads the HTML reports as
+an artifact when it does fail.
+
+It is worth having next to a suite that already passes 875 tests because it
+answers a different question. The ROM oracles and the asserts both require the
+code to *run*: a bug on a branch no test enters is invisible to them however
+green they are. The analyzer walks those branches instead of executing them.
+
+It is **not** a static bounds checker, which is worth saying out loud in a
+codebase that is mostly indexing fixed-size arrays. Measured: `buf[n * 8]` with
+an unconstrained `n` is not reported at all, and an index the analyzer *can*
+pin down gets reported as a garbage return value rather than as the
+out-of-bounds access. `alpha.security.ArrayBound` was tried and left off - it
+changed neither result, so there was no evidence it was doing anything here.
+Bounds are ASan's job at runtime, which is why both jobs exist.
+
+Two consequences that are easy to miss:
+
+* **It fetches nothing.** Nothing is executed, so no test ROM is needed - the
+  one check here that a network failure or a moved download cannot turn red.
+* **The tree is wiped on every run.** scan-build sees only what the build
+  actually compiles, so analysing an up-to-date tree analyses *nothing* and
+  still prints "No bugs found" - the same false green as a skipped test scored
+  as a pass. `NES_SCAN_INCREMENTAL=1` opts out while iterating on a fix.
+
+Cost is about **3x** a normal build: 10.0s wall / 119s CPU becomes 31.0s /
+399s on 32 cores.
+
+The frontend is excluded by default, and `CMakeLists.txt` makes that the
+default whenever it detects an analyzer tree. ImGui produces 16 findings of its
+own - null dereferences, a division by zero, dead stores - and scan-build's
+`--exclude` keeps them out of the bug count but not out of the build log, so
+compiling it at all would bury ours. This is the same call as building ImGui
+with `-w`. Our own frontend sources analyse clean and
+`-DNES_BUILD_FRONTEND=ON` is supported; `frontend/debugger_state.cpp` is
+covered either way, because the test binary compiles it directly.
 
 ## License
 This project is licensed under the GNU General Public License v2.0. See the [LICENSE](LICENSE) file for details.

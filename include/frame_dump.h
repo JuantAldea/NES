@@ -36,8 +36,12 @@ inline uint32_t palette_index_to_rgb(const uint8_t index, const uint32_t* palett
 // Writes `indices` as a PPM. Returns false if the file could not be written,
 // which the caller is expected to report rather than ignore - a dump that
 // silently did not happen is worse than no dump, because it is looked for.
-inline bool write_ppm(const std::string& path, const uint8_t* indices, const int width, const int height,
-                      const uint32_t* palette, const size_t palette_size)
+inline bool write_ppm(const std::string& path,
+                      const uint8_t* indices,
+                      const int width,
+                      const int height,
+                      const uint32_t* palette,
+                      const size_t palette_size)
 {
     std::FILE* file = std::fopen(path.c_str(), "wb");
     if (file == nullptr) {
