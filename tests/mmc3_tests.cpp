@@ -15,9 +15,8 @@
 #include <string>
 #include <vector>
 
-#include "gtest/gtest.h"
-
 #include "../include/bus.h"
+#include "gtest/gtest.h"
 
 namespace tests
 {
@@ -33,8 +32,7 @@ constexpr size_t kChr8k = 8 * 1024;
 // every 1KB CHR bank likewise. `prg16` is in 16KB header units, so bank count
 // in MMC3's own 8KB units is twice that.
 struct BankedRom {
-    BankedRom(const std::string& name, uint8_t prg16, uint8_t chr8)
-        : path(std::string(NES_TEST_FILES_DIR) + "/" + name)
+    BankedRom(const std::string& name, uint8_t prg16, uint8_t chr8) : path(std::string(NES_TEST_FILES_DIR) + "/" + name)
     {
         std::ofstream out(path, std::ios::binary | std::ios::trunc);
         // mapper 4 -> flags6 high nibble 4
@@ -106,8 +104,8 @@ GTEST_TEST(mmc3, prg_mode_bit_swaps_the_switchable_window)
     ASSERT_TRUE(console.load_cartridge(rom.path));
     const uint8_t second_last = 14;
 
-    select(console, 6, 3);   // R6 = bank 3
-    select(console, 7, 5);   // R7 = bank 5
+    select(console, 6, 3);  // R6 = bank 3
+    select(console, 7, 5);  // R7 = bank 5
 
     console.write(0x8000, 6);  // mode 0: $8000 switchable
     EXPECT_EQ(3, console.read(0x8000)) << "mode 0: $8000-$9FFF follows R6";
@@ -145,7 +143,7 @@ GTEST_TEST(mmc3, the_two_kilobyte_chr_registers_ignore_their_bottom_bit)
     PPU& ppu = console.ppu;
     ASSERT_TRUE(console.load_cartridge(rom.path));
 
-    console.write(0x8000, 0);  // R0, no inversion
+    console.write(0x8000, 0);     // R0, no inversion
     console.write(0x8001, 0x05);  // odd value: the bottom bit must be dropped
 
     EXPECT_EQ(4, ppu.ppu_bus_read(0x0000)) << "R0=5 addresses the 2KB pair starting at bank 4";

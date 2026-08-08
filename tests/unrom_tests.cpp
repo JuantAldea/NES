@@ -16,9 +16,8 @@
 #include <string>
 #include <vector>
 
-#include "gtest/gtest.h"
-
 #include "../include/bus.h"
+#include "gtest/gtest.h"
 
 namespace tests
 {
@@ -31,8 +30,7 @@ constexpr size_t kBankSize = 16 * 1024;
 
 // A UNROM image whose bank N is filled entirely with the byte N.
 struct BankedRom {
-    explicit BankedRom(const std::string& name, uint8_t banks)
-        : path(std::string(NES_TEST_FILES_DIR) + "/" + name)
+    explicit BankedRom(const std::string& name, uint8_t banks) : path(std::string(NES_TEST_FILES_DIR) + "/" + name)
     {
         std::ofstream out(path, std::ios::binary | std::ios::trunc);
         // flags6 bit 4 low nibble of mapper, flags7 high: mapper 2 -> flags6 $20.

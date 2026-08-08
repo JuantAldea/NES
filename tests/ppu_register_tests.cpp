@@ -602,7 +602,8 @@ GTEST_TEST(testBusRunFrame, a_frame_is_not_a_fixed_number_of_cycles_once_renderi
     // on where the frame counter started, so the assertion is on the pair.
     EXPECT_NE(even_frame, odd_frame) << "with rendering enabled, alternate frames differ by the skipped dot";
     EXPECT_EQ(nominal, std::max(even_frame, odd_frame));
-    EXPECT_EQ(nominal - 4, std::min(even_frame, odd_frame)) << "the short frame is four master cycles - one dot - shorter";
+    EXPECT_EQ(nominal - 4, std::min(even_frame, odd_frame))
+        << "the short frame is four master cycles - one dot - shorter";
 }
 
 GTEST_TEST(testBusRunFrame, with_rendering_off_every_frame_is_the_nominal_length)

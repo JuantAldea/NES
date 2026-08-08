@@ -1,7 +1,6 @@
 #pragma once
 
-enum class Addressing
-{
+enum class Addressing {
     absolute = 0,
     absolute_X,
     absolute_Y,

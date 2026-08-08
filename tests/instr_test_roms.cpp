@@ -13,9 +13,8 @@
 #include <cstdint>
 #include <string>
 
-#include "gtest/gtest.h"
-
 #include "../include/bus.h"
+#include "gtest/gtest.h"
 #include "nametable_screen.h"
 
 namespace tests
@@ -103,10 +102,23 @@ TEST_P(InstrTestRoms, reports_pass)
                                 << result.message;
 }
 
-INSTANTIATE_TEST_SUITE_P(InstrTest, InstrTestRoms,
-                         ::testing::Values("01-basics", "02-implied", "04-zero_page", "05-zp_xy", "06-absolute",
-                                           "07-abs_xy", "08-ind_x", "09-ind_y", "10-branches", "11-stack",
-                                           "12-jmp_jsr", "13-rts", "14-rti", "15-brk", "16-special"),
+INSTANTIATE_TEST_SUITE_P(InstrTest,
+                         InstrTestRoms,
+                         ::testing::Values("01-basics",
+                                           "02-implied",
+                                           "04-zero_page",
+                                           "05-zp_xy",
+                                           "06-absolute",
+                                           "07-abs_xy",
+                                           "08-ind_x",
+                                           "09-ind_y",
+                                           "10-branches",
+                                           "11-stack",
+                                           "12-jmp_jsr",
+                                           "13-rts",
+                                           "14-rti",
+                                           "15-brk",
+                                           "16-special"),
                          [](const ::testing::TestParamInfo<std::string>& info) {
                              std::string s = info.param;
                              for (char& c : s) {
@@ -147,8 +159,9 @@ GTEST_TEST(instrTest, immediate_fails_only_on_the_unstable_ATX_opcode)
 
     ASSERT_TRUE(result.completed) << "03-immediate: no verdict within " << kMaxFrames << " frames";
 
-    EXPECT_EQ(1, result.status) << "03-immediate's status changed. If it now passes, ATX was probably changed to $FF -\n"
-                                   "  check SingleStepTests op_ab, and update this test and fetch_instr_test.sh.";
+    EXPECT_EQ(1, result.status)
+        << "03-immediate's status changed. If it now passes, ATX was probably changed to $FF -\n"
+           "  check SingleStepTests op_ab, and update this test and fetch_instr_test.sh.";
 
     EXPECT_NE(std::string::npos, result.message.find("AB ATX"))
         << "03-immediate still fails, but no longer on ATX. THIS IS A REAL REGRESSION in some\n"

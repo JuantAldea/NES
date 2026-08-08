@@ -77,8 +77,8 @@ public:
     // The two mode bits invert which half of the address space the switchable
     // windows occupy, which is why they are kept rather than folded in at write
     // time: a later mode change has to re-point the existing register values.
-    uint8_t mmc3_bank_select = 0;   // the last value written to $8000
-    uint8_t mmc3_bank[8] = {0};     // R0-R7
+    uint8_t mmc3_bank_select = 0;  // the last value written to $8000
+    uint8_t mmc3_bank[8] = {0};    // R0-R7
 
     // $8000 bit 6: 0 -> $8000-$9FFF switchable, $C000-$DFFF fixed to second-last
     //              1 -> $C000-$DFFF switchable, $8000-$9FFF fixed to second-last
@@ -115,8 +115,8 @@ public:
     // "The ROMs mainly test behavior by manually clocking the MMC3's IRQ
     // counter by writing to $2006 to change the current VRAM address." A design
     // that hooked only the rendering fetches would pass none of them.
-    uint8_t mmc3_irq_latch = 0;    // $C000, the value reloaded into the counter
-    uint8_t mmc3_irq_counter = 0;  // the live count
+    uint8_t mmc3_irq_latch = 0;            // $C000, the value reloaded into the counter
+    uint8_t mmc3_irq_counter = 0;          // the live count
     bool mmc3_irq_reload_pending = false;  // set by $C001, consumed by the next edge
     bool mmc3_irq_enabled = false;         // $E001 enables, $E000 disables
     bool mmc3_irq_asserted = false;        // are we currently pulling /IRQ low?

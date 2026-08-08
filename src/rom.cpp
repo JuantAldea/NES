@@ -1,7 +1,7 @@
+#include "../include/rom.h"
+
 #include <fstream>
 #include <iostream>
-
-#include "../include/rom.h"
 
 // For bus->cpu.set_IRQ_line: the MMC3's counter drives a real wire into the
 // CPU, so the mapper needs the Bus definition rather than just a forward
@@ -104,7 +104,8 @@ bool ROM::load(const std::string& path)
     // The bank register is masked with the bank count, so a count that is not
     // a power of two would make the masking ambiguous. Real CNROM boards carry
     // 1, 2 or 4 banks (8KB, 16KB, 32KB of CHR).
-    if (parsed_mapper_id == 3 && (chr_rom_banks == 0 || chr_rom_banks > 4 || (chr_rom_banks & (chr_rom_banks - 1)) != 0)) {
+    if (parsed_mapper_id == 3 &&
+        (chr_rom_banks == 0 || chr_rom_banks > 4 || (chr_rom_banks & (chr_rom_banks - 1)) != 0)) {
         std::cerr << "ROM: CNROM requires 1, 2 or 4 CHR-ROM banks, header advertises " << chr_rom_banks << "\n";
         return false;
     }

@@ -28,9 +28,8 @@
 // are pinned by unit tests in this directory rather than by a ROM.
 #include <string>
 
-#include "gtest/gtest.h"
-
 #include "blargg_rom_harness.h"
+#include "gtest/gtest.h"
 
 namespace tests
 {
@@ -91,10 +90,11 @@ TEST_P(PpuAddressSpaceRoms, reports_pass)
     }
 
     EXPECT_EQ(0, result.status) << name << " failed with code " << static_cast<int>(result.status) << ":\n  "
-                               << result.message;
+                                << result.message;
 }
 
-INSTANTIATE_TEST_SUITE_P(PpuAddressSpace, PpuAddressSpaceRoms,
+INSTANTIATE_TEST_SUITE_P(PpuAddressSpace,
+                         PpuAddressSpaceRoms,
                          ::testing::Values("oam_read", "oam_stress", "ppu_open_bus"),
                          [](const ::testing::TestParamInfo<std::string>& info) { return info.param; });
 

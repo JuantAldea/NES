@@ -160,7 +160,8 @@ GTEST_TEST(testDMA, dma_takes_513_or_514_cpu_cycles)
 
         const uint64_t cpu_cycle_at_request = console.cpu.total_cycles;
         const uint64_t bus_cycles_before = console.total_cycles;
-        ASSERT_EQ(cpu_cycle_at_request % 2, odd_alignment ? 1u : 0u) << "test setup did not achieve the parity it wanted";
+        ASSERT_EQ(cpu_cycle_at_request % 2, odd_alignment ? 1u : 0u)
+            << "test setup did not achieve the parity it wanted";
 
         while (console.ppu.dma_in_progress()) {
             console.clock();
@@ -175,7 +176,6 @@ GTEST_TEST(testDMA, dma_takes_513_or_514_cpu_cycles)
         EXPECT_EQ(console.cpu.total_cycles, cpu_cycle_at_request) << "the CPU must be halted for the whole transfer";
     }
 }
-
 
 // The phase OAM DMA aligns to is a property of the bus, and the bus keeps
 // counting while the CPU is halted. CPU::total_cycles does not - so after one

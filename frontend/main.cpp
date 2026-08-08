@@ -19,13 +19,12 @@
 #include <cstdio>
 #include <vector>
 
-#include "imgui.h"
-#include "imgui_impl_sdl2.h"
-#include "imgui_impl_sdlrenderer2.h"
-
 #include "../include/bus.h"
 #include "../include/frame_dump.h"
 #include "debugger.h"
+#include "imgui.h"
+#include "imgui_impl_sdl2.h"
+#include "imgui_impl_sdlrenderer2.h"
 
 namespace
 {
@@ -80,14 +79,22 @@ void poll_controller(Bus& console)
     const Uint8* keys = SDL_GetKeyboardState(nullptr);
 
     uint8_t mask = 0;
-    if (keys[SDL_SCANCODE_X]) mask |= Controllers::A;
-    if (keys[SDL_SCANCODE_Z]) mask |= Controllers::B;
-    if (keys[SDL_SCANCODE_RSHIFT] || keys[SDL_SCANCODE_LSHIFT]) mask |= Controllers::Select;
-    if (keys[SDL_SCANCODE_RETURN]) mask |= Controllers::Start;
-    if (keys[SDL_SCANCODE_UP]) mask |= Controllers::Up;
-    if (keys[SDL_SCANCODE_DOWN]) mask |= Controllers::Down;
-    if (keys[SDL_SCANCODE_LEFT]) mask |= Controllers::Left;
-    if (keys[SDL_SCANCODE_RIGHT]) mask |= Controllers::Right;
+    if (keys[SDL_SCANCODE_X])
+        mask |= Controllers::A;
+    if (keys[SDL_SCANCODE_Z])
+        mask |= Controllers::B;
+    if (keys[SDL_SCANCODE_RSHIFT] || keys[SDL_SCANCODE_LSHIFT])
+        mask |= Controllers::Select;
+    if (keys[SDL_SCANCODE_RETURN])
+        mask |= Controllers::Start;
+    if (keys[SDL_SCANCODE_UP])
+        mask |= Controllers::Up;
+    if (keys[SDL_SCANCODE_DOWN])
+        mask |= Controllers::Down;
+    if (keys[SDL_SCANCODE_LEFT])
+        mask |= Controllers::Left;
+    if (keys[SDL_SCANCODE_RIGHT])
+        mask |= Controllers::Right;
 
     console.controllers.set_port(0, mask);
 }
@@ -141,8 +148,7 @@ int main(int argc, char** argv)
     // Vsync paces the *presentation*, not the emulation - the emulator is
     // clocked off SDL_GetPerformanceCounter below. On a 144 Hz display, driving
     // frames off vsync would run the machine at 144 Hz.
-    SDL_Renderer* renderer =
-        SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+    SDL_Renderer* renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
     if (renderer == nullptr) {
         SDL_Log("SDL_CreateRenderer failed: %s", SDL_GetError());
         SDL_DestroyWindow(window);

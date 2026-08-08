@@ -10,9 +10,8 @@
 #include <array>
 #include <cstdint>
 
-#include "gtest/gtest.h"
-
 #include "../include/bus.h"
+#include "gtest/gtest.h"
 
 namespace tests
 {
@@ -191,8 +190,7 @@ GTEST_TEST(testAPU, five_step_mode_never_asserts_the_frame_irq)
     console.write(APU::FRAMECOUNTER, 0x80);  // 5-step
 
     // Run past a full 5-step sequence, which is longer than the 4-step one.
-    EXPECT_EQ(cycles_until_frame_irq(console, APU::mode1_length + 5000), 0u)
-        << "5-step mode has no IRQ step at all";
+    EXPECT_EQ(cycles_until_frame_irq(console, APU::mode1_length + 5000), 0u) << "5-step mode has no IRQ step at all";
 }
 
 // The frame interrupt flag belongs to the START of the cycle it is set on: a
@@ -432,9 +430,8 @@ GTEST_TEST(testAPU, a_held_irq_line_is_taken_again_after_every_handler)
 
     // Each pass through the handler bumps $10. A one-shot latch would run it
     // once; a level line runs it over and over.
-    EXPECT_GT(mem.memory[0x0010], 2)
-        << "a held /IRQ line must be taken again after every handler; it ran the handler "
-        << static_cast<int>(mem.memory[0x0010]) << " time(s)";
+    EXPECT_GT(mem.memory[0x0010], 2) << "a held /IRQ line must be taken again after every handler; it ran the handler "
+                                     << static_cast<int>(mem.memory[0x0010]) << " time(s)";
 }
 
 }  // namespace apu

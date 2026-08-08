@@ -21,9 +21,8 @@
 #include <cstdint>
 #include <string>
 
-#include "gtest/gtest.h"
-
 #include "../include/bus.h"
+#include "gtest/gtest.h"
 #include "nametable_screen.h"
 
 namespace tests
@@ -111,7 +110,8 @@ TEST_P(CpuExecSpaceRoms, reports_pass)
                                 << result.message;
 }
 
-INSTANTIATE_TEST_SUITE_P(CpuExecSpace, CpuExecSpaceRoms,
+INSTANTIATE_TEST_SUITE_P(CpuExecSpace,
+                         CpuExecSpaceRoms,
                          ::testing::Values("test_cpu_exec_space_apu", "test_cpu_exec_space_ppuio"),
                          [](const ::testing::TestParamInfo<std::string>& info) {
                              std::string s = info.param;

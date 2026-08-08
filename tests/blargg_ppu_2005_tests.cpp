@@ -20,9 +20,8 @@
 #include <cstdint>
 #include <string>
 
-#include "gtest/gtest.h"
-
 #include "../include/bus.h"
+#include "gtest/gtest.h"
 #include "nametable_screen.h"
 
 namespace tests
@@ -45,18 +44,14 @@ std::string rom_path(const std::string& name)
 using nametable_screen::first_non_blank_row;
 using nametable_screen::run_one_frame;
 
-std::string read_screen_line(Bus& console)
-{
-    return first_non_blank_row(console);
-}
+std::string read_screen_line(Bus& console) { return first_non_blank_row(console); }
 
 // Runs until the ROM has drawn something, then returns it.
 std::string run_and_read_result(const std::string& name)
 {
     Bus console;
     if (!console.load_cartridge(rom_path(name))) {
-        ADD_FAILURE() << "could not load " << rom_path(name)
-                      << " - run tests/test_files/fetch_blargg_ppu_2005.sh";
+        ADD_FAILURE() << "could not load " << rom_path(name) << " - run tests/test_files/fetch_blargg_ppu_2005.sh";
         return {};
     }
 
@@ -116,7 +111,8 @@ TEST_P(Blargg2005PpuRoms, reports_pass)
         << "                4 address should not increment on read 5 third sprite byte masks low bits";
 }
 
-INSTANTIATE_TEST_SUITE_P(Blargg2005Ppu, Blargg2005PpuRoms,
+INSTANTIATE_TEST_SUITE_P(Blargg2005Ppu,
+                         Blargg2005PpuRoms,
                          ::testing::Values("palette_ram", "vram_access", "sprite_ram"),
                          [](const ::testing::TestParamInfo<std::string>& info) { return info.param; });
 

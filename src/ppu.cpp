@@ -1,7 +1,8 @@
+#include "../include/ppu.h"
+
 #include <algorithm>
 #include <cstring>
 
-#include "../include/ppu.h"
 #include "../include/bus.h"
 /*
 1uint8_t& PPU::get_register(const RegisterMMap reg)
@@ -206,48 +207,48 @@ void PPU::clock()
     //+ 1 spare cycle
 
     switch (scanline) {
-        case 0 ... 239:
-            process_visible_scanline();
-            break;
-        case post_render_scanline:
-            // idle
-            break;
-        case vblank_start_scanline:
-            // The vblank flag is set on the second dot of scanline 241.
-            if (cycle == 1) {
-                // ...unless the CPU read $2002 on this very dot. The read's
-                // clear and the PPU's set race, and the clear wins: the flag
-                // is not set at all, and stays clear for the whole of this
-                // vblank. This is 02-vbl_set_time's row 04 ("- -") and
-                // 06-suppression's ("flag never set, no NMI").
-                if (!suppress_vblank_flag_set) {
-                    set_vblank();
-                }
-                suppress_vblank_flag_set = false;
+    case 0 ... 239:
+        process_visible_scanline();
+        break;
+    case post_render_scanline:
+        // idle
+        break;
+    case vblank_start_scanline:
+        // The vblank flag is set on the second dot of scanline 241.
+        if (cycle == 1) {
+            // ...unless the CPU read $2002 on this very dot. The read's
+            // clear and the PPU's set race, and the clear wins: the flag
+            // is not set at all, and stays clear for the whole of this
+            // vblank. This is 02-vbl_set_time's row 04 ("- -") and
+            // 06-suppression's ("flag never set, no NMI").
+            if (!suppress_vblank_flag_set) {
+                set_vblank();
             }
-            break;
-        case 242 ... 260:
-            // TODO is it idle as well?
-            break;
-        case pre_render_scanline:
-            if (cycle == 0) {
-                oam_refresh_bug();
-            }
-            if (cycle == 1) {
-               clear_vblank();
-               clear_sprite0_hit();
-               clear_sprite_overflow();
-            }
-            // The pre-render line runs the same fetch pipeline as a visible
-            // one - that is how the first two tiles of scanline 0 are already
-            // in the shift registers when it starts - but it outputs no
-            // pixels. It is also the only line that copies t's vertical half
-            // into v.
-            process_visible_scanline();
-            break;
-        default:
-            std::cerr << "Scanline out of range: " << scanline << std::endl;
-            break;
+            suppress_vblank_flag_set = false;
+        }
+        break;
+    case 242 ... 260:
+        // TODO is it idle as well?
+        break;
+    case pre_render_scanline:
+        if (cycle == 0) {
+            oam_refresh_bug();
+        }
+        if (cycle == 1) {
+            clear_vblank();
+            clear_sprite0_hit();
+            clear_sprite_overflow();
+        }
+        // The pre-render line runs the same fetch pipeline as a visible
+        // one - that is how the first two tiles of scanline 0 are already
+        // in the shift registers when it starts - but it outputs no
+        // pixels. It is also the only line that copies t's vertical half
+        // into v.
+        process_visible_scanline();
+        break;
+    default:
+        std::cerr << "Scanline out of range: " << scanline << std::endl;
+        break;
     }
 
     advance_dot();
@@ -876,8 +877,7 @@ void PPU::fetch_sprite_pattern()
         // the TOP tile, whose bottom half is the tile after it.
         const uint16_t table = (tile & 0x01) ? 0x1000 : 0x0000;
         const uint16_t top_tile = static_cast<uint16_t>(tile & 0xFE);
-        address =
-            static_cast<uint16_t>(table + ((top_tile + (pattern_row >= 8 ? 1 : 0)) << 4) + (pattern_row & 0x07));
+        address = static_cast<uint16_t>(table + ((top_tile + (pattern_row >= 8 ? 1 : 0)) << 4) + (pattern_row & 0x07));
     } else {
         address = static_cast<uint16_t>(sprite_pattern_8x8_table_addr + (tile << 4) + pattern_row);
     }
@@ -1323,8 +1323,7 @@ void PPU::write(const uint16_t addr, const uint8_t data)
             temp_addr = static_cast<uint16_t>((temp_addr & ~0x001F) | (data >> 3));
             fine_x = data & 0x07;
         } else {
-            temp_addr = static_cast<uint16_t>((temp_addr & ~0x73E0) | ((data & 0x07) << 12) |
-                                              ((data & 0xF8) << 2));
+            temp_addr = static_cast<uint16_t>((temp_addr & ~0x73E0) | ((data & 0x07) << 12) | ((data & 0xF8) << 2));
         }
         high_byte_input = !high_byte_input;
         break;

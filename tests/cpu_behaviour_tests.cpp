@@ -16,9 +16,8 @@
 #include <cstring>
 #include <string>
 
-#include "gtest/gtest.h"
-
 #include "../include/bus.h"
+#include "gtest/gtest.h"
 #include "nametable_screen.h"
 
 namespace tests
@@ -213,14 +212,16 @@ TEST_P(CpuResetRoms, reports_pass)
     const std::string name = GetParam();
     const RomResult result = run_with_resets(name);
 
-    ASSERT_TRUE(result.completed) << name << ": no verdict within " << kMaxFrames << " frames after "
-                                  << result.resets << " reset(s).\n  last message: " << result.message;
+    ASSERT_TRUE(result.completed) << name << ": no verdict within " << kMaxFrames << " frames after " << result.resets
+                                  << " reset(s).\n  last message: " << result.message;
 
     EXPECT_EQ(0, result.status) << name << " failed with code " << static_cast<int>(result.status) << " after "
                                 << result.resets << " reset(s):\n  " << result.message;
 }
 
-INSTANTIATE_TEST_SUITE_P(CpuReset, CpuResetRoms, ::testing::Values("registers", "ram_after_reset"),
+INSTANTIATE_TEST_SUITE_P(CpuReset,
+                         CpuResetRoms,
+                         ::testing::Values("registers", "ram_after_reset"),
                          [](const ::testing::TestParamInfo<std::string>& info) { return info.param; });
 
 class CpuDummyWriteRoms : public ::testing::TestWithParam<std::string>
@@ -234,10 +235,11 @@ TEST_P(CpuDummyWriteRoms, reports_pass)
 
     ASSERT_TRUE(result.completed) << name << ": no verdict within " << kMaxFrames << " frames";
     EXPECT_EQ(0, result.status) << name << " failed with code " << static_cast<int>(result.status) << ":\n  "
-                               << result.message;
+                                << result.message;
 }
 
-INSTANTIATE_TEST_SUITE_P(CpuDummyWrites, CpuDummyWriteRoms,
+INSTANTIATE_TEST_SUITE_P(CpuDummyWrites,
+                         CpuDummyWriteRoms,
                          ::testing::Values("cpu_dummy_writes_oam", "cpu_dummy_writes_ppumem"),
                          [](const ::testing::TestParamInfo<std::string>& info) { return info.param; });
 
@@ -246,8 +248,7 @@ INSTANTIATE_TEST_SUITE_P(CpuDummyWrites, CpuDummyWriteRoms,
 GTEST_TEST(cpuDummyReads, reports_passed_on_screen)
 {
     Bus console;
-    ASSERT_TRUE(console.load_cartridge(rom_path("cpu_dummy_reads")))
-        << "run tests/test_files/fetch_cpu_behaviour.sh";
+    ASSERT_TRUE(console.load_cartridge(rom_path("cpu_dummy_reads"))) << "run tests/test_files/fetch_cpu_behaviour.sh";
     console.cpu.power_on();
 
     std::string screen;

@@ -21,11 +21,10 @@
 #include <cstdint>
 #include <string>
 
-#include "gtest/gtest.h"
-
 #include "../frontend/debugger_state.h"
 #include "../include/bus.h"
 #include "../include/frame_dump.h"
+#include "gtest/gtest.h"
 
 namespace tests
 {

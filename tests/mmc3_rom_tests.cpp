@@ -15,9 +15,8 @@
 #include <cstdio>
 #include <string>
 
-#include "gtest/gtest.h"
-
 #include "../include/bus.h"
+#include "gtest/gtest.h"
 #include "nametable_screen.h"
 
 namespace tests
@@ -123,10 +122,11 @@ TEST_P(Mmc3IrqRoms, reports_pass)
 
     ASSERT_TRUE(result.completed) << name << ": no verdict within " << kMaxFrames << " frames";
     EXPECT_EQ(0, result.status) << name << " failed with code " << static_cast<int>(result.status) << ":\n  "
-                               << result.message;
+                                << result.message;
 }
 
-INSTANTIATE_TEST_SUITE_P(Mmc3Irq, Mmc3IrqRoms,
+INSTANTIATE_TEST_SUITE_P(Mmc3Irq,
+                         Mmc3IrqRoms,
                          ::testing::Values("1-clocking", "2-details", "3-A12_clocking", "5-MMC3"),
                          [](const ::testing::TestParamInfo<std::string>& info) {
                              std::string s = info.param;

@@ -129,10 +129,7 @@ void render_a_frame(PPU& ppu)
     clock_until(ppu, PPU::post_render_scanline, 0);
 }
 
-uint8_t pixel_at(PPU& ppu, int x, int y)
-{
-    return ppu.framebuffer[y * PPU::screen_width + x];
-}
+uint8_t pixel_at(PPU& ppu, int x, int y) { return ppu.framebuffer[y * PPU::screen_width + x]; }
 
 }  // namespace
 
@@ -346,8 +343,7 @@ GTEST_TEST(testSprites, only_the_first_eight_sprites_on_a_line_are_drawn)
         EXPECT_EQ(kSpriteColour, pixel_at(ppu, i * 16, 101))
             << "sprite " << i << " is within the first eight and must be drawn";
     }
-    EXPECT_EQ(kBackdrop, pixel_at(ppu, 8 * 16, 101))
-        << "the ninth sprite on the line is dropped, not drawn";
+    EXPECT_EQ(kBackdrop, pixel_at(ppu, 8 * 16, 101)) << "the ninth sprite on the line is dropped, not drawn";
 }
 
 GTEST_TEST(testSprites, the_ninth_sprite_on_a_line_sets_the_overflow_flag)
@@ -451,8 +447,8 @@ GTEST_TEST(testSprites, horizontal_flip_mirrors_the_row)
     set_up(ppu);
     write_tile(ppu, 0x0000, 2, kLeftColumnOnly);
 
-    place_sprite(ppu, 0, 100, 2, 0x00, 64);          // unflipped
-    place_sprite(ppu, 1, 120, 2, 0x40, 64);          // horizontally flipped
+    place_sprite(ppu, 0, 100, 2, 0x00, 64);  // unflipped
+    place_sprite(ppu, 1, 120, 2, 0x40, 64);  // horizontally flipped
 
     render_a_frame(ppu);
 
@@ -470,8 +466,8 @@ GTEST_TEST(testSprites, vertical_flip_mirrors_the_row_within_an_8x8_sprite)
     set_up(ppu);
     write_tile(ppu, 0x0000, 2, kTopRowOnly);
 
-    place_sprite(ppu, 0, 100, 2, 0x00, 64);          // unflipped
-    place_sprite(ppu, 1, 120, 2, 0x80, 64);          // vertically flipped
+    place_sprite(ppu, 0, 100, 2, 0x00, 64);  // unflipped
+    place_sprite(ppu, 1, 120, 2, 0x80, 64);  // vertically flipped
 
     render_a_frame(ppu);
 
@@ -506,8 +502,8 @@ GTEST_TEST(testSprites, vertical_flip_swaps_the_halves_of_an_8x16_sprite)
     write_tile(ppu, 0x0000, 0, kSolid);
     write_tile(ppu, 0x0000, 1, kEmpty);
 
-    place_sprite(ppu, 0, 100, 0x00, 0x00, 64);       // unflipped
-    place_sprite(ppu, 1, 140, 0x00, 0x80, 64);       // vertically flipped
+    place_sprite(ppu, 0, 100, 0x00, 0x00, 64);  // unflipped
+    place_sprite(ppu, 1, 140, 0x00, 0x80, 64);  // vertically flipped
 
     render_a_frame(ppu);
 
@@ -543,13 +539,12 @@ GTEST_TEST(testSprites, a_back_priority_sprite_is_hidden_by_an_opaque_background
 {
     Bus console;
     PPU& ppu = console.ppu;
-    set_up(ppu, 1);  // solid background everywhere
+    set_up(ppu, 1);                          // solid background everywhere
     place_sprite(ppu, 0, 100, 1, 0x20, 64);  // attribute bit 5: behind background
 
     render_a_frame(ppu);
 
-    EXPECT_EQ(kBackgroundColour, pixel_at(ppu, 64, 101))
-        << "attribute bit 5 set: an opaque background pixel wins";
+    EXPECT_EQ(kBackgroundColour, pixel_at(ppu, 64, 101)) << "attribute bit 5 set: an opaque background pixel wins";
 }
 
 // The case that stops "behind background" being implemented as "never drawn".

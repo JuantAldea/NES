@@ -29,9 +29,8 @@
 // cannot both pass: see the comment on CPU::poll_interrupt_hijack.
 #include <string>
 
-#include "gtest/gtest.h"
-
 #include "blargg_rom_harness.h"
+#include "gtest/gtest.h"
 
 namespace tests
 {
@@ -100,21 +99,22 @@ TEST_P(CpuInterruptRoms, reports_pass)
     }
 
     EXPECT_EQ(0, result.status) << name << " failed with code " << static_cast<int>(result.status) << ":\n  "
-                               << result.message;
+                                << result.message;
 }
 
-INSTANTIATE_TEST_SUITE_P(CpuInterruptsV2, CpuInterruptRoms,
-                         ::testing::Values("1-cli_latency", "2-nmi_and_brk", "3-nmi_and_irq", "4-irq_and_dma",
-                                           "5-branch_delays_irq"),
-                         [](const ::testing::TestParamInfo<std::string>& info) {
-                             std::string sanitized = info.param;
-                             for (char& c : sanitized) {
-                                 if (!std::isalnum(static_cast<unsigned char>(c))) {
-                                     c = '_';
-                                 }
-                             }
-                             return sanitized;
-                         });
+INSTANTIATE_TEST_SUITE_P(
+    CpuInterruptsV2,
+    CpuInterruptRoms,
+    ::testing::Values("1-cli_latency", "2-nmi_and_brk", "3-nmi_and_irq", "4-irq_and_dma", "5-branch_delays_irq"),
+    [](const ::testing::TestParamInfo<std::string>& info) {
+        std::string sanitized = info.param;
+        for (char& c : sanitized) {
+            if (!std::isalnum(static_cast<unsigned char>(c))) {
+                c = '_';
+            }
+        }
+        return sanitized;
+    });
 
 // Guards the harness rather than the emulator: if the ROMs are missing or the
 // PRG-RAM window regresses, every parameterized test above fails identically
