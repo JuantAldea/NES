@@ -210,7 +210,9 @@ std::string test_label()
 // those need entirely different investigations.
 void dump_frames_for_inspection(PPU& ppu, const Config& config, const std::string& label)
 {
-    std::vector<uint8_t> expected(static_cast<size_t>(kWidth) * kHeight);
+    // uint16_t to match the framebuffer's index+emphasis encoding; the
+    // reference is emphasis-free, so the high bits stay zero.
+    std::vector<uint16_t> expected(static_cast<size_t>(kWidth) * kHeight);
     for (int y = 0; y < kHeight; ++y) {
         for (int x = 0; x < kWidth; ++x) {
             expected[static_cast<size_t>(y) * kWidth + x] = reference_pixel(ppu, config, x, y);
@@ -539,7 +541,7 @@ GTEST_TEST(testPPURender, a_nametable_switch_at_dot_0_takes_effect_at_pixel_16)
         ppu.clock();
     }
 
-    const uint8_t* line = &ppu.framebuffer[100 * PPU::screen_width];
+    const uint16_t* line = &ppu.framebuffer[100 * PPU::screen_width];
 
     // Pixels 0-15: the two tiles fetched during line 99's dots 321-336, before
     // the switch. Still screen A.

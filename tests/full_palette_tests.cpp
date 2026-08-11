@@ -60,6 +60,23 @@ int distinct_indices(const PPU& ppu)
     return n;
 }
 
+// Distinct index+emphasis pairs - the whole 9-bit pixel rather than its low
+// six bits. distinct_indices is blind to emphasis by construction, so without
+// this a renderer that captured no emphasis at all would still score 57.
+int distinct_pixels(const PPU& ppu)
+{
+    bool seen[512] = {false};
+    int n = 0;
+    for (int i = 0; i < PPU::screen_width * PPU::screen_height; ++i) {
+        const uint16_t p = static_cast<uint16_t>(ppu.framebuffer[i] & 0x1FF);
+        if (!seen[p]) {
+            seen[p] = true;
+            ++n;
+        }
+    }
+    return n;
+}
+
 // Frames measured as sufficient in fetch_full_palette.sh: the count is stable
 // at 60, 300 and 900, so 300 is well past settling without being slow. The ROM
 // spends its first frames synchronising the CPU to VBL.
@@ -163,6 +180,63 @@ GTEST_TEST(fullPalette, the_flowing_variant_animates_through_the_palette)
     Bus console;
     SKIP_IF_ABSENT(console, "flowing_palette.nes");
     EXPECT_GT(distinct_indices(console.ppu), 40) << "see the_whole_grid_is_drawn_through_the_forced_backdrop";
+}
+
+// --- emphasis ----------------------------------------------------------------
+
+// The whole point of the suite: it cycles every emphasis state over the grid
+// with `tya / and #$E0 / sta $2001`, so a correct capture yields far more
+// distinct 9-bit pixels than the 57 palette indices alone.
+//
+// MEASURED at 456, which is 57 x 8 EXACTLY - every one of the 57 indices
+// appears under every one of the 8 emphasis states. I predicted 228 on the
+// assumption that the ROM pairs each emphasis state with one group of rows;
+// that was wrong, and the measurement is why this comment says so rather than
+// the guess. It redraws the full grid under all eight, which is what "400+
+// colors" in blargg's header means.
+//
+// The product being exact is itself the strongest assertion available here: it
+// says no index-emphasis combination is missing and none is spurious. A drop
+// means emphasis stopped being captured; a rise means pixels carry emphasis the
+// ROM never set.
+//
+// This ALSO settles a question no source answered. The NESdev wiki does not say
+// whether emphasis applies to the forced-backdrop output, and the agent that
+// researched it flagged the point as inference rather than fact. The ROM
+// answers it: every pixel here comes out of the forced-backdrop path, so if
+// emphasis did not apply to it this count would collapse to 57.
+GTEST_TEST(fullPalette, every_emphasis_state_reaches_the_framebuffer)
+{
+    Bus console;
+    SKIP_IF_ABSENT(console, "full_palette.nes");
+
+    EXPECT_EQ(57 * 8, distinct_pixels(console.ppu))
+        << "distinct index+emphasis pairs. 57 would mean emphasis is not being captured at\n"
+           "  all; the framebuffer's high three bits would be stuck at zero.";
+}
+
+// Emphasis must be sampled per pixel, not once per frame. The ROM rewrites
+// $2001 mid-frame, so a single scanline's worth of emphasis painted over the
+// whole picture would still produce SOME variety - this checks that more than
+// one emphasis value survives within one frame, which a display-time read of
+// PPUMASK could not manage.
+GTEST_TEST(fullPalette, emphasis_varies_within_a_single_frame)
+{
+    Bus console;
+    SKIP_IF_ABSENT(console, "full_palette.nes");
+
+    bool seen[8] = {false};
+    int n = 0;
+    for (int i = 0; i < PPU::screen_width * PPU::screen_height; ++i) {
+        const uint8_t e = PPU::pixel_emphasis(console.ppu.framebuffer[i]);
+        if (!seen[e]) {
+            seen[e] = true;
+            ++n;
+        }
+    }
+
+    EXPECT_EQ(8, n) << "all eight emphasis states should appear in one frame; saw " << n
+                    << ". One means emphasis is being read at display time rather than captured.";
 }
 
 }  // namespace full_palette

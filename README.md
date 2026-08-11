@@ -18,7 +18,7 @@ still no audio.
 | 6502 CPU | Cycle-accurate, all 256 opcodes, verified per-cycle |
 | PPU frame timing | Dot-accurate: vblank, NMI, suppression, odd-frame skip |
 | PPU address space | Pattern tables, nametable and palette mirroring, `$2007` buffer, OAM, open-bus decay |
-| PPU background | Loopy `v`/`t`/`x`/`w`, dot-exact tile pipeline, framebuffer of palette indices |
+| PPU background | Loopy `v`/`t`/`x`/`w`, dot-exact tile pipeline, framebuffer of palette indices + emphasis |
 | Sprites | Secondary OAM, per-dot evaluation, 8-per-line, the overflow search bug, priority, 8x16, flip. Passes blargg's 5 `sprite_overflow` and 11 `sprite_hit` ROMs |
 | Cartridge | iNES, NROM (0), UNROM (2), CNROM (3) and MMC3 (4), CHR-ROM and CHR-RAM |
 | MMC3 IRQ | A12-filtered scanline counter driving `/IRQ`, clocked on the right dot. Passes 5 of blargg's 6 `mmc3_test_2` ROMs; the sixth tests the other chip revision, see below |
@@ -128,7 +128,8 @@ few thousand frames, and every mapper beyond 0, 2, 3 and 4.
         `oam_stress` and `ppu_open_bus`.
     *   The background renders: the loopy `v`/`t`/`x`/`w` scroll registers, the
         8-cycle nametable/attribute/pattern fetch, shift registers with fine-X
-        selection, and a 256x240 framebuffer of 6-bit palette indices. The dot
+        selection, and a 256x240 framebuffer of 6-bit palette indices plus
+        three emphasis bits. The dot
         each increment and `t`->`v` copy happens on is pinned by tests, not
         just the bits they move.
     *   Sprite 0 hit is evaluated in its real window, starting from `OAMADDR`,
@@ -148,9 +149,15 @@ few thousand frames, and every mapper beyond 0, 2, 3 and 4.
         few sprites it has, because the empty ones still drive A12 and that is
         what clocks an MMC3 counter. Proven by mutation: removing them fails
         `2-details`.
-    *   **Still absent:** PPUMASK colour emphasis, and the "forced backdrop"
-        case where rendering is disabled with `v` pointing into palette space.
-        Both are documented in `include/ppu.h`.
+    *   Colour emphasis and the "forced backdrop" case, both verified against
+        blargg's `full_palette` suite. During forced blank with `v` pointing
+        into `$3F00-$3FFF` the PPU draws the colour `v` addresses rather than
+        the backdrop, which is what makes `$3F04/$3F08/$3F0C` reachable at all
+        and what Micro Machines depends on. Emphasis is captured per pixel
+        rather than read at display time, because the ROM rewrites `$2001`
+        mid-frame; the framebuffer carries three emphasis bits above the index
+        for that reason. Attenuation compounds per channel, so all three bits
+        set darkens the whole picture.
 *   **Cartridge:**
     *   iNES parsing with NROM (0), UNROM (2), CNROM (3) and MMC3 (4), trainer
         support, and `$6000-$7FFF` PRG-RAM. CNROM's switchable CHR window is
@@ -303,7 +310,7 @@ like a working setup and then fails in several places at once.
 count actively hides this. The two per-opcode suites call `GTEST_SKIP` when the
 1.1 GB of vectors is absent, and a skipped test exits 0, so `ctest` counts it as
 a pass. With no vectors fetched the suite still reports "100% tests passed out
-of 888" while having executed 371 of them.
+of 896" while having executed 379 of them.
 
 The ROM suites behave the other way round: a missing ROM is a loud failure
 naming the fetch script to run, not a skip. So the failure modes are:
@@ -348,7 +355,7 @@ ctest --test-dir build --output-on-failure
 ctest --test-dir build -j8 --output-on-failure   # or pick your own level
 ```
 
-The 888 tests are dominated by the two per-opcode suites - 256 opcodes checked
+The 896 tests are dominated by the two per-opcode suites - 256 opcodes checked
 for their bus trace and 256 for their final state, 10,000 cases apiece.
 
 ### Sanitizers
@@ -393,7 +400,7 @@ static analyzer** job. It reports **zero** findings, so the job gates on
 `--status-bugs` with no baseline to maintain, and uploads the HTML reports as
 an artifact when it does fail.
 
-It is worth having next to a suite that already passes 888 tests because it
+It is worth having next to a suite that already passes 896 tests because it
 answers a different question. The ROM oracles and the asserts both require the
 code to *run*: a bug on a branch no test enters is invisible to them however
 green they are. The analyzer walks those branches instead of executing them.

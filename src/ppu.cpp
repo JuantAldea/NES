@@ -533,7 +533,19 @@ void PPU::render_pixel()
     // Greyscale (PPUMASK bit 0) forces the low four bits of the index, which
     // collapses every hue onto the grey column of the NES palette.
     const uint8_t colour = static_cast<uint8_t>(ppu_bus_read(palette_addr) & (greyscale ? 0x30 : 0x3F));
-    framebuffer[scanline * screen_width + x] = colour;
+
+    // Emphasis is captured per pixel rather than read once by the display.
+    // full_palette rewrites $2001 mid-frame - `tya / and #$E0 / sta $2001` - so
+    // it changes between scanlines of one picture, and a display path sampling
+    // the current PPUMASK would paint every row with the last value written.
+    //
+    // It rides alongside the index instead of being folded into it because the
+    // two are separate hardware stages: greyscale masks the palette LOOKUP,
+    // emphasis attenuates the signal that comes OUT. Merging them here would
+    // discard which is which. See the framebuffer declaration for the encoding.
+    const uint16_t emphasis =
+        static_cast<uint16_t>((emphasize_red ? 1 : 0) | (emphasize_green ? 2 : 0) | (emphasize_blue ? 4 : 0));
+    framebuffer[scanline * screen_width + x] = static_cast<uint16_t>(colour | (emphasis << 6));
 
     // The units advance at the END of the dot, so the pixel chosen above is the
     // one the counters described on entry. A sprite whose counter has reached

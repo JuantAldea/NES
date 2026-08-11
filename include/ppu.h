@@ -353,19 +353,38 @@ public:
     // The finished picture: one 6-bit palette index per pixel, already through
     // the greyscale mask, ready to be looked up in nes_palette.
     //
-    // KNOWN GAP, deliberate:
-    //  - PPUMASK colour emphasis (bits 5-7) is not applied. The framebuffer is
-    //    a palette index, and emphasis is a property of the video signal; it
-    //    belongs to the display path, not here.
+    // The finished picture. This carried a KNOWN GAPS list from the day the
+    // renderer was written until both entries were closed - PPUMASK colour
+    // emphasis, and the forced-backdrop case. Neither was open for want of
+    // understanding; both were open for want of an oracle, and both fell within
+    // one change of blargg's full_palette suite being wired up. That is the
+    // lesson worth keeping here: a gap nothing can turn red does not close.
     //
-    // The "forced backdrop" case used to be listed here too and is now
-    // implemented in render_pixel - see the citation there. It was closed by
-    // acquiring an oracle rather than by new insight: blargg's full_palette
-    // suite is BUILT on that behaviour, so wiring it up turned an untestable
-    // paragraph into a failing assertion, and the fix was four lines.
+    // Nine bits per pixel, not eight:
+    //
+    //   bits 0-5   the 6-bit palette index, already through the greyscale mask
+    //   bits 6-8   PPUMASK colour emphasis (bits 5-7) as they stood at this dot
+    //
+    // Emphasis lives here rather than being read from PPUMASK at display time,
+    // and that is not a preference. This header used to argue the opposite -
+    // that emphasis is a property of the video signal and so belongs to the
+    // display path - and that was half wrong. APPLYING it does belong there,
+    // and still happens there. CAPTURING it cannot: blargg's full_palette
+    // rewrites $2001 mid-frame, so emphasis varies per scanline, and a display
+    // path reading one current value would paint the whole frame with whatever
+    // the last write happened to leave.
+    //
+    // 64 colours x 8 emphasis states is the established representation rather
+    // than an invention here - it is what the .pal format's 1536-byte
+    // extension stores, as supported by FCEUX and Nintendulator.
     static constexpr int screen_width = 256;
     static constexpr int screen_height = 240;
-    uint8_t framebuffer[screen_width * screen_height] = {0};
+    uint16_t framebuffer[screen_width * screen_height] = {0};
+
+    // Splitting the two halves back out. Free functions rather than magic
+    // numbers at each of the six call sites that consume a frame.
+    static constexpr uint8_t pixel_index(const uint16_t pixel) { return static_cast<uint8_t>(pixel & 0x3F); }
+    static constexpr uint8_t pixel_emphasis(const uint16_t pixel) { return static_cast<uint8_t>((pixel >> 6) & 0x07); }
 
     // The 2C02's 64 colours as 0xRRGGBB. Indexed by the palette entry the
     // framebuffer holds; nothing in the PPU reads this, it is for the display.
