@@ -20,11 +20,11 @@ Reporting a result to anyone — commit message, README, the user — needs the
 
 ```sh
 tests/run_tests.sh                # or `ninja -C build check-counts`
-# 875 executed, 0 skipped, 0 failed  (32 shards)
+# 883 executed, 0 skipped, 0 failed  (32 shards)
 ```
 
-It shards the binary across cores rather than running one process (35.8s ->
-5.0s on 32), takes `-jN` and passes everything else through, so
+It shards the binary across every core rather than running one process, takes
+`-jN` and passes everything else through, so
 `tests/run_tests.sh --gtest_filter='testCPU.*'` works. `NES_TEST_BIN=` points
 it at another tree, e.g. `build-asan`.
 
@@ -99,7 +99,7 @@ not after.
 ## Skipped is not passed
 
 `GTEST_SKIP` exits 0, so `ctest` counts a skipped test as a passing one.
-"100% tests passed out of 875" is a misleading headline in this repo and the CI
+"100% tests passed out of 883" is a misleading headline in this repo and the CI
 workflow has a step whose entire job is to say so on every run. When reporting
 results — in a commit message, the README, or to the user — give the *executed*
 count, and say what was skipped and why.
@@ -112,7 +112,7 @@ broken down by suite. Use it rather than eyeballing `ctest` output.
 
 The 512 SingleStepTests cases need 1.1 GB of vectors that CI does not fetch, so
 they only run locally. `tests/test_files/local/` ROMs never run in CI either.
-Hiding both reproduces what CI sees: **359 executed, 516 skipped**.
+Hiding both reproduces what CI sees: **366 executed, 517 skipped**.
 
 ## Deliberate divergences are asserted, not hidden
 
@@ -123,8 +123,13 @@ and pin the other side's failure with a test. The pattern is opcode `$AB` in
 further regression in that ROM still surfaces. Deleting the disagreeing ROM
 would have hidden a real finding.
 
-The same situation is pending for MMC3: `5-MMC3` (Sharp) and `6-MMC3_alt` (NEC)
-test opposite behaviours and cannot both pass.
+MMC3 is the same situation, and is already resolved the same way in
+[mmc3_rom_tests.cpp](tests/mmc3_rom_tests.cpp): `5-MMC3` (Sharp revision B/C)
+and `6-MMC3_alt` (NEC revision A) test opposite reload-to-zero behaviours and
+cannot both pass. Sharp is implemented, `5-MMC3` is asserted to pass, and
+`6-MMC3_alt` is asserted to fail on *exactly* that subtest — so a failure
+anywhere else in it, or an unexpected pass, still surfaces as a distinct
+message rather than as a ROM everyone has learned to ignore.
 
 ## Code conventions
 

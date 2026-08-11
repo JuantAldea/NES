@@ -47,9 +47,12 @@ struct FrontendState {
     // which would otherwise be invisible.
     std::string status;
 
-    // Set when the CPU is caught branching to itself - the idiom every test ROM
-    // ends on. Latched rather than re-detected so the message survives the
-    // frames after the trap.
+    // Set when the CPU is caught in a loop nothing can break it out of: a
+    // branch to itself with NMI disabled and I set. The self-jump alone is NOT
+    // enough - it is also how most games idle between NMIs, SMB included - so
+    // the interrupt test is what separates the Blargg end-of-ROM idiom from a
+    // game running normally. Latched rather than re-detected so the message
+    // survives the frames after the trap.
     bool trapped = false;
     uint16_t trap_pc = 0;
 };

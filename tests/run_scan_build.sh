@@ -12,13 +12,11 @@
 # executed, so nothing has to be fetched. A network failure cannot turn this
 # red, and a missing fixture cannot either.
 #
-# MEASURED on 32 cores, from a clean tree:
+# It costs noticeably more than a normal build, which is why it is its own
+# tree and its own CI job rather than something the everyday build waits on.
 #
-#   normal build   10.0s wall, 119s user
-#   scan-build     31.0s wall, 399s user     (~3x)
-#
-# and it currently reports ZERO bugs, which is what makes --status-bugs usable
-# as a gate with no baseline file to maintain.
+# It currently reports ZERO bugs, which is what makes --status-bugs usable as a
+# gate with no baseline file to maintain.
 #
 # VERIFIED TO ACTUALLY FAIL, because a gate that cannot go red is worse than no
 # gate. A null dereference added to src/rom.cpp was reported as

@@ -194,7 +194,18 @@ An SDL2 window hosting Dear ImGui panels:
     the stack base highlighted.
 *   Palette RAM as colour swatches, with the `$3F10`/`$3F14`/`$3F18`/`$3F1C`
     aliases resolved so what is shown is what the PPU renders.
+*   Both controller ports drawn as pads, lighting each button as it is pressed,
+    with the button latch, the shift register and the strobe line beside them.
+    The shift register is the half no other view can show - it is what the next
+    eight reads of `$4016` will return, so a game clocking the pad out is
+    visible. Port 2 is drawn and stays dark, because nothing writes it yet.
 *   Run, pause, single-step, step-one-frame, reset, and a CPU trace to stdout.
+
+The keyboard drives port 1: arrows for the D-pad, `X` for A, `Z` for B, shift
+for Select, enter for Start. Keys reach the game only while no ImGui widget
+holds the keyboard, so clicking into the ROM path field takes the pad away
+until you click back out - the alternative being that typing a path also walks
+the player left.
 
 No panel reads emulator state through `Bus::read` or `PPU::read`. Those are
 hardware ports where a read clears the vblank flag, advances the VRAM address or
@@ -292,7 +303,7 @@ like a working setup and then fails in several places at once.
 count actively hides this. The two per-opcode suites call `GTEST_SKIP` when the
 1.1 GB of vectors is absent, and a skipped test exits 0, so `ctest` counts it as
 a pass. With no vectors fetched the suite still reports "100% tests passed out
-of 875" while having executed 359 of them.
+of 883" while having executed 366 of them.
 
 The ROM suites behave the other way round: a missing ROM is a loud failure
 naming the fetch script to run, not a skip. So the failure modes are:
@@ -315,16 +326,17 @@ ninja -C build check     # or: make -C build check
 that writes a fixture writes a uniquely named one - and the suite is dominated
 by 512 per-opcode cases that parallelise perfectly.
 
-On 32 cores the full 875-test suite takes about **5 seconds**. Two things got
-it there, and the second mattered more than the first:
+Two things decide how long that takes, and the second mattered more than the
+first:
 
-* Parallelism took it from 129s to 16s. Past that point the total was simply
-  the length of the single slowest test, so more cores stopped helping.
-* The default build type is `Checked` (`-O3 -g`, asserts left on), which took
-  16s to 3s. The suite spends nearly all its time emulating - the test ROMs run
-  hundreds of millions of bus cycles each - so an unoptimised build costs about
-  5x. `-O3` measured ~10% faster than `-O2`; `-march=native` was slower than
-  plain `-O3` and not portable.
+* Parallelism, up to the point where the total is just the length of the single
+  slowest test. Past that, more cores stop helping - which is why the runner
+  defaults to `nproc` shards and there is no reason to ask for more.
+* The default build type is `Checked` (`-O3 -g`, asserts left on). The suite
+  spends nearly all its time emulating - the test ROMs run hundreds of millions
+  of bus cycles each - so an unoptimised build costs roughly 5x for no added
+  coverage. `-O3` measured ~10% faster than `-O2`; `-march=native` was slower
+  than plain `-O3` and not portable.
 
 `Debug`, `Release` and the other stock types are untouched and still available
 via `-DCMAKE_BUILD_TYPE=`.
@@ -336,7 +348,7 @@ ctest --test-dir build --output-on-failure
 ctest --test-dir build -j8 --output-on-failure   # or pick your own level
 ```
 
-The 875 tests are dominated by the two per-opcode suites - 256 opcodes checked
+The 883 tests are dominated by the two per-opcode suites - 256 opcodes checked
 for their bus trace and 256 for their final state, 10,000 cases apiece.
 
 ### Sanitizers
@@ -366,9 +378,9 @@ Two details worth knowing if you change this:
   argument assumes a dirty baseline; this suite has none, so detection is free
   and the next leak becomes a build failure rather than something nobody sees.
 
-Instrumentation costs about **5x**: the 359 tests CI executes take 3.7s
-normally and 19.6s under ASan+UBSan on 32 cores. That is why it is a separate
-CI job - the fast suite keeps reporting in seconds.
+Instrumentation is substantially slower than the normal build, which is why it
+is a separate CI job rather than a step inside the fast one: the suite that
+gates everyday work should not wait behind it.
 
 ### Static analysis
 
@@ -381,7 +393,7 @@ static analyzer** job. It reports **zero** findings, so the job gates on
 `--status-bugs` with no baseline to maintain, and uploads the HTML reports as
 an artifact when it does fail.
 
-It is worth having next to a suite that already passes 875 tests because it
+It is worth having next to a suite that already passes 883 tests because it
 answers a different question. The ROM oracles and the asserts both require the
 code to *run*: a bug on a branch no test enters is invisible to them however
 green they are. The analyzer walks those branches instead of executing them.
@@ -403,8 +415,8 @@ Two consequences that are easy to miss:
   still prints "No bugs found" - the same false green as a skipped test scored
   as a pass. `NES_SCAN_INCREMENTAL=1` opts out while iterating on a fix.
 
-Cost is about **3x** a normal build: 10.0s wall / 119s CPU becomes 31.0s /
-399s on 32 cores.
+It costs noticeably more than a normal build, which is why it is a separate
+tree and a separate CI job.
 
 The frontend is excluded by default, and `CMakeLists.txt` makes that the
 default whenever it detects an analyzer tree. ImGui produces 16 findings of its

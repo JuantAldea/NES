@@ -228,7 +228,16 @@ void PPU::clock()
         }
         break;
     case 242 ... 260:
-        // TODO is it idle as well?
+        // Idle, which is the question this comment used to ask. NESdev's PPU
+        // rendering page, on the vblank lines after 241: "The PPU makes no
+        // memory accesses during these scanlines, so PPU memory can be freely
+        // accessed by the program."
+        //
+        // 241 is the only vblank line that does anything - it sets the flag at
+        // tick 1 - and it is the case directly above. These nineteen burn dots
+        // until the pre-render line, so an empty body is the correct model
+        // rather than an unfinished one.
+        // https://www.nesdev.org/wiki/PPU_rendering
         break;
     case pre_render_scanline:
         if (cycle == 0) {

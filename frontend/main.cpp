@@ -249,9 +249,12 @@ int main(int argc, char** argv)
 
             while (state.running && accumulator >= seconds_per_frame) {
                 // Stepped an instruction at a time rather than by Bus::run_frame
-                // so that a CPU branching to itself - how every test ROM ends -
-                // is caught and reported instead of spinning invisibly. The
-                // frame therefore ends at most one instruction late.
+                // so that a genuinely hung CPU is caught and reported instead
+                // of spinning invisibly. "Hung" means a branch to itself that
+                // no interrupt can leave - see step_instruction, which is
+                // deliberately not tripped by the identical-looking idle loop
+                // games sit in between NMIs. The frame therefore ends at most
+                // one instruction late.
                 const uint64_t started_on = console.ppu.frame;
                 while (console.ppu.frame == started_on && nes_gui::step_instruction(console, state)) {
                 }

@@ -12,12 +12,12 @@
 #     (see "Skipped is not passed" in CLAUDE.md), which is exactly the number
 #     this repo must not lose.
 #   - The binary run directly keeps gtest's output and the skip count, but is
-#     one process: MEASURED 35.8s for all 875 tests on 32 cores.
+#     one process, so it leaves the machine idle.
 #
 # Sharding the binary gets both. GTEST_TOTAL_SHARDS/GTEST_SHARD_INDEX are
 # gtest's own partitioning, applied AFTER --gtest_filter, so a filtered subset
-# shards too. MEASURED on 32 cores: 35.8s -> 5.0s wall (7.2x), 875 tests, same
-# result. That floor is the single slowest test, so more shards will not help.
+# shards too. Shards default to nproc, which is as parallel as this can go: the
+# floor is the single slowest test, so asking for more will not help.
 #
 # Process-parallel is safe here for the same reason `ctest -j` is: every test
 # that writes a fixture writes a uniquely named one (see tests/CMakeLists.txt).
