@@ -78,11 +78,21 @@ change in *how* it fails still surfaces.
 than a divergence, pinned at "fails subtest 3". **It now passes**, and how it
 was closed is worth recording because the theory in this README was wrong for
 months. The suspected cause was the garbage nametable reads in each sprite
-pattern fetch not reaching the PPU address bus. They still do not, and the ROM
-passes anyway. The actual cause was one dot: the background pipeline put its
-address on the bus at the first dot of each two-dot access and the sprite
-pipeline at the second, so A12 rose 257 dots apart instead of the 256 the ROM
-hard-codes. Five of the six MMC3 IRQ ROMs pass; `6-MMC3_alt` is the divergence
+pattern fetch not reaching the PPU address bus. They were not reaching it, and
+that was not the cause: the ROM passed once the real one was found. That was a
+single dot - the background pipeline put its address on the bus at the first
+dot of each two-dot access and the sprite pipeline at the second, so A12 rose
+257 dots apart instead of the 256 the ROM hard-codes.
+
+The garbage reads are on the bus now, fixed separately and for a different
+reason. They hold A12 **low** for four dots between fetch groups, which is
+under the MMC3's filter and so changes nothing on an ordinary line. It stops
+being nothing for 8x16 sprites drawn from both pattern tables, where per NESdev
+the gap between A12 edges grows "past the time that the MMC3 is able to filter
+out, causing the timer to count more than once per scanline". No test ROM in
+this suite sets that up, so `mmc3A12Filter.alternating_pattern_tables_clock_the_counter_more_than_once`
+does, written from the wiki's wording rather than from this emulator's model of
+itself. Five of the six MMC3 IRQ ROMs pass; `6-MMC3_alt` is the divergence
 above.
 
 Everything above answers "does it behave correctly when run". Clang's static
@@ -310,7 +320,7 @@ like a working setup and then fails in several places at once.
 count actively hides this. The two per-opcode suites call `GTEST_SKIP` when the
 1.1 GB of vectors is absent, and a skipped test exits 0, so `ctest` counts it as
 a pass. With no vectors fetched the suite still reports "100% tests passed out
-of 896" while having executed 379 of them.
+of 897" while having executed 380 of them.
 
 The ROM suites behave the other way round: a missing ROM is a loud failure
 naming the fetch script to run, not a skip. So the failure modes are:
@@ -355,7 +365,7 @@ ctest --test-dir build --output-on-failure
 ctest --test-dir build -j8 --output-on-failure   # or pick your own level
 ```
 
-The 896 tests are dominated by the two per-opcode suites - 256 opcodes checked
+The 897 tests are dominated by the two per-opcode suites - 256 opcodes checked
 for their bus trace and 256 for their final state, 10,000 cases apiece.
 
 ### Sanitizers
@@ -400,7 +410,7 @@ static analyzer** job. It reports **zero** findings, so the job gates on
 `--status-bugs` with no baseline to maintain, and uploads the HTML reports as
 an artifact when it does fail.
 
-It is worth having next to a suite that already passes 896 tests because it
+It is worth having next to a suite that already passes 897 tests because it
 answers a different question. The ROM oracles and the asserts both require the
 code to *run*: a bug on a branch no test enters is invisible to them however
 green they are. The analyzer walks those branches instead of executing them.

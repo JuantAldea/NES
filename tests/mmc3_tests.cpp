@@ -466,5 +466,116 @@ GTEST_TEST(mmc3A12Filter, rendering_clocks_the_counter_on_the_first_dot_of_the_p
     }
 }
 
+// --- 8x16 sprites across both pattern tables ---------------------------------
+//
+// The case no ROM in this suite reaches, and the reason the garbage nametable
+// fetches at dots 257-260 have to be on the bus. NESdev's MMC3 page:
+//
+//   "Using 8x16-pixel sprites from both pattern tables confuses the timer even
+//    more, as this increases the time between edges on PPU A12 past the time
+//    that the MMC3 is able to filter out, causing the timer to count more than
+//    once per scanline."
+//
+// Written from that wording rather than from this emulator's own model of
+// itself, because the two would otherwise agree by construction. blargg's six
+// ROMs never set this up, so nothing else here would notice if it broke.
+
+namespace
+{
+
+// Counts how many times the IRQ counter is clocked across one whole visible
+// scanline. The latch is $FF and the counter is left free-running, so every
+// clock is a visible change and none of them wrap inside a single line.
+int counter_clocks_on_one_line(Bus& console, const uint8_t* tiles)
+{
+    PPU& ppu = console.ppu;
+
+    while (ppu.in_reset_write_lockout()) {
+        ppu.clock();
+    }
+    for (uint64_t guard = 0; guard < 2ull * 341 * 262; ++guard) {
+        if (ppu.scanline == 245 && ppu.cycle == 0) {
+            break;
+        }
+        ppu.clock();
+    }
+
+    // Eight sprites on the same line, spread across it so all eight fetch
+    // groups hold a real sprite rather than the $FF dummy.
+    ppu.write(0x2003, 0x00);
+    for (int i = 0; i < 8; ++i) {
+        ppu.write(0x2004, 110);                                  // Y: visible on line 111
+        ppu.write(0x2004, tiles[i]);                             // tile: bit 0 picks the table
+        ppu.write(0x2004, 0x00);                                 // attributes
+        ppu.write(0x2004, static_cast<uint8_t>(i * 24));         // X
+    }
+
+    // $20 = 8x16 sprites, background at $0000. In 8x16 mode the sprite table
+    // comes from bit 0 of the tile number, NOT from PPUCTRL - which is what
+    // makes the alternating case expressible at all.
+    ppu.write(0x2000, 0x20);
+    ppu.write(0x2001, 0x18);
+
+    console.write(0xC000, 0xFF);
+    console.write(0xC001, 0x00);
+
+    // Settle onto the line before counting, so the count covers one line
+    // exactly rather than part of two.
+    for (uint64_t guard = 0; guard < 2ull * 341 * 262; ++guard) {
+        if (ppu.scanline == 110 && ppu.cycle == 0) {
+            break;
+        }
+        ppu.clock();
+    }
+
+    int clocks = 0;
+    uint8_t previous = console.rom.mmc3_irq_counter;
+    while (ppu.scanline == 110) {
+        ppu.clock();
+        if (console.rom.mmc3_irq_counter != previous) {
+            ++clocks;
+            previous = console.rom.mmc3_irq_counter;
+        }
+    }
+    return clocks;
+}
+
+}  // namespace
+
+GTEST_TEST(mmc3A12Filter, alternating_pattern_tables_clock_the_counter_more_than_once)
+{
+    // All eight sprites out of $1000: A12 goes high for the whole fetch phase,
+    // dropping only for the four-dot garbage pair between groups, which is
+    // under the filter. One clock for the line, the ordinary case.
+    int same_table = 0;
+    {
+        BankedRom rom("mmc3_a12_same_table.nes", 2, 2);
+        Bus console;
+        ASSERT_TRUE(console.load_cartridge(rom.path));
+        const uint8_t tiles[8] = {0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01};
+        same_table = counter_clocks_on_one_line(console, tiles);
+    }
+
+    // Alternating: every other group drops to $0xxx, so A12 is low for that
+    // group's four garbage dots PLUS its four pattern dots. Eight consecutive
+    // low dots, plus the neighbouring garbage pairs, carries the low period
+    // past the 9-dot filter and a second edge is counted.
+    int alternating = 0;
+    {
+        BankedRom rom("mmc3_a12_alt_table.nes", 2, 2);
+        Bus console;
+        ASSERT_TRUE(console.load_cartridge(rom.path));
+        const uint8_t tiles[8] = {0x01, 0x00, 0x01, 0x00, 0x01, 0x00, 0x01, 0x00};
+        alternating = counter_clocks_on_one_line(console, tiles);
+    }
+
+    EXPECT_EQ(1, same_table) << "sprites from one table give the ordinary one clock per scanline";
+    EXPECT_GT(alternating, same_table)
+        << "8x16 sprites from BOTH pattern tables must clock the counter more than once per\n"
+           "  scanline - NESdev MMC3: the gap between A12 edges grows 'past the time that the\n"
+           "  MMC3 is able to filter out'. Getting " << alternating << " means the garbage\n"
+           "  nametable fetches at dots 257-260 are not holding A12 low.";
+}
+
 }  // namespace mmc3
 }  // namespace tests

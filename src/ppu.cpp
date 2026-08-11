@@ -866,18 +866,39 @@ void PPU::load_sprite_units()
 // the ROM fails on a discrepancy of one. This WAS 262 - the pair's second dot -
 // and that single dot was the whole of the failure it reported for a long time.
 //
-// The two GARBAGE fetches of each group, at dots 257-258 and 259-260, are still
-// not driven onto the bus. Bounded omission rather than oversight: they read
-// $2xxx, so all they can do is hold A12 low for four dots, and four is below
-// mmc3_a12_filter_dots, so no edge they create is ever counted. The one case
-// where that reasoning fails is 8x16 sprites whose tiles alternate between the
-// two pattern tables - there the garbage reads stretch a low period from 8 dots
-// to 12, across the 9-dot threshold, and the counter would clock where ours
-// does not. No oracle here reaches that, so it is recorded rather than written.
+// The two GARBAGE fetches of each group, at dots 257-258 and 259-260, are two
+// garbage NAMETABLE bytes - not a nametable and an attribute. This comment
+// claimed the latter for a long time and was wrong. NESdev's PPU rendering page
+// lists the group as "Garbage nametable byte, Garbage nametable byte, Pattern
+// table tile low, Pattern table tile high". Both are $2xxx either way, so
+// nothing downstream changed, but a wrong claim about bus phases is not worth
+// keeping in a file whose whole job is bus phases.
+//
+// Same page: "All garbage nametable bytes except the first are the same address
+// as the first nametable fetch on the upcoming scanline", the first being "a
+// mix due to the PPU's bus being multiplexed". That multiplexing is not
+// modelled and both go out at tile_address(). Bounded to nothing observable
+// here: what a mapper sees is A12, and $2xxx holds it low whichever nametable
+// address it is.
+//
+// Driving them at all matters because A12 LOW is as observable as A12 high.
+// Without them A12 stayed high across dots 257-260 of every group; with them it
+// drops for four dots. Four is under mmc3_a12_filter_dots so no extra edge is
+// counted on an ordinary line - which is exactly why omitting them looked
+// harmless for so long - but the filter is a threshold, not an absence, and
+// 8x16 sprites alternating pattern tables push the low period past it.
 void PPU::fetch_sprite_pattern()
 {
     const int index = (cycle - 257) / 8;
     const int step = (cycle - 257) % 8;
+
+    // The garbage pair, on the same phase rule as everything else here: the
+    // address goes out on the FIRST dot of each two-dot access. Ahead of the
+    // dummy branch below, because hardware performs these on all eight groups
+    // whether or not the slot holds a sprite.
+    if (step == 0 || step == 2) {
+        (void)ppu_bus_read(tile_address());
+    }
 
     // Hardware performs EIGHT sprite pattern fetches on every rendering line,
     // however few sprites the line actually has. The empty slots read tile $FF,
