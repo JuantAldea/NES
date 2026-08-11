@@ -320,7 +320,7 @@ like a working setup and then fails in several places at once.
 count actively hides this. The two per-opcode suites call `GTEST_SKIP` when the
 1.1 GB of vectors is absent, and a skipped test exits 0, so `ctest` counts it as
 a pass. With no vectors fetched the suite still reports "100% tests passed out
-of 897" while having executed 380 of them.
+of 905" while having executed 388 of them.
 
 The ROM suites behave the other way round: a missing ROM is a loud failure
 naming the fetch script to run, not a skip. So the failure modes are:
@@ -365,7 +365,7 @@ ctest --test-dir build --output-on-failure
 ctest --test-dir build -j8 --output-on-failure   # or pick your own level
 ```
 
-The 897 tests are dominated by the two per-opcode suites - 256 opcodes checked
+The 905 tests are dominated by the two per-opcode suites - 256 opcodes checked
 for their bus trace and 256 for their final state, 10,000 cases apiece.
 
 ### Sanitizers
@@ -410,7 +410,7 @@ static analyzer** job. It reports **zero** findings, so the job gates on
 `--status-bugs` with no baseline to maintain, and uploads the HTML reports as
 an artifact when it does fail.
 
-It is worth having next to a suite that already passes 897 tests because it
+It is worth having next to a suite that already passes 905 tests because it
 answers a different question. The ROM oracles and the asserts both require the
 code to *run*: a bug on a branch no test enters is invisible to them however
 green they are. The analyzer walks those branches instead of executing them.

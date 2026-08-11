@@ -78,6 +78,9 @@ tests/test_files/visual
 # blargg's full_palette suite, fetched by tests/test_files/fetch_full_palette.sh
 tests/test_files/full_palette
 
+# blargg's apu_test suite, fetched by tests/test_files/fetch_apu_test.sh
+tests/test_files/apu_test
+
 # Blargg CPU reset / dummy-access ROMs, fetched by tests/test_files/fetch_cpu_behaviour.sh
 tests/test_files/cpu_behaviour
 
