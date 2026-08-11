@@ -69,11 +69,17 @@ TEST_P(ApuRomsThatPass, reports_pass)
     EXPECT_EQ(0, result.status) << name << " reported:\n" << result.message;
 }
 
-// The frame counter and its IRQ, which is all of the APU that exists. These
-// pass today and must not regress while the channels are built around them.
+// Six of the eight. The frame counter and its IRQ were passing before any of
+// this; the three length ROMs joined them when the length counters landed, and
+// each did so by FAILING its pin first, which is what those pins are for.
 INSTANTIATE_TEST_SUITE_P(ApuTest,
                          ApuRomsThatPass,
-                         ::testing::Values("3-irq_flag", "4-jitter", "6-irq_flag_timing"),
+                         ::testing::Values("1-len_ctr",
+                                           "2-len_table",
+                                           "3-irq_flag",
+                                           "4-jitter",
+                                           "5-len_timing",
+                                           "6-irq_flag_timing"),
                          [](const ::testing::TestParamInfo<const char*>& info) {
                              std::string name = info.param;
                              for (char& c : name) {
@@ -118,32 +124,8 @@ void expect_pinned_failure(const std::string& name, const uint8_t expected_statu
 
 }  // namespace
 
-// Length counters and $4015. blargg's readme lists seven separate failures
-// under this ROM, so it is the largest single piece of Phase 1 and the one to
-// start on: nothing else in the suite gets further until $4015 is real.
-GTEST_TEST(apuRomQueue, length_counters_are_not_implemented)
-{
-    SKIP_IF_ABSENT("1-len_ctr");
-    expect_pinned_failure("1-len_ctr", 2, "Problem with length counter load or $4015");
-}
 
-// The 32-entry length table. Fails without a subtest number, which means it
-// never got as far as identifying which entry is wrong - unsurprising when the
-// length counter does not exist.
-GTEST_TEST(apuRomQueue, the_length_table_is_not_implemented)
-{
-    SKIP_IF_ABSENT("2-len_table");
-    expect_pinned_failure("2-len_table", 1, "2-len_table");
-}
 
-// WHEN the length counters are clocked, as opposed to whether. Depends on the
-// frame counter, which already works - so this one should fall out of Phase 1
-// rather than needing timing work of its own.
-GTEST_TEST(apuRomQueue, length_clock_timing_is_not_implemented)
-{
-    SKIP_IF_ABSENT("5-len_timing");
-    expect_pinned_failure("5-len_timing", 2, "First length of mode 0 is too soon");
-}
 
 // The DMC, which is Phase 3 and deliberately last: it steals CPU cycles, and
 // the cycle-exact bus is the most heavily verified thing in this project.

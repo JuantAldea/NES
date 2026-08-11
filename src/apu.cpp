@@ -34,11 +34,45 @@ void APU::set_frame_irq(const bool asserted)
     bus->cpu.set_IRQ_line(CPU::IRQSource::apu_frame_counter, frame_irq_flag);
 }
 
-// The envelope and linear counter clock. No channels exist yet.
+// The envelope and linear counter clock. Neither exists yet.
 void APU::clock_quarter_frame() {}
 
-// The length counter and sweep clock. No channels exist yet.
-void APU::clock_half_frame() {}
+// The length counter and sweep clock. The sweep does not exist yet.
+void APU::clock_half_frame()
+{
+    for (LengthCounter& counter : lengths) {
+        // Halt suspends the countdown without clearing it, so a halted channel
+        // resumes from where it stopped rather than restarting - blargg's
+        // 1-len_ctr #8. The counter stops AT zero rather than wrapping; zero is
+        // the silent state and there is nothing below it.
+        if (!counter.halt && counter.value > 0) {
+            --counter.value;
+        }
+    }
+}
+
+// $4003/$4007/$400B/$400F bits 3-7 index this; bits 0-2 are the timer high
+// bits and belong to the channel, not here.
+//
+// The table is NOT a formula. The low half counts 10, 20, 40, 80, 160, 60, 14,
+// 26 - musical note lengths - while the odd entries count 254 down to 2 in
+// twos. Anything derived would be wrong somewhere, which is exactly what
+// 2-len_table checks by loading all 32 and timing each.
+void APU::load_length(const int channel, const uint8_t data)
+{
+    static constexpr uint8_t table[32] = {
+        10, 254, 20, 2,  40, 4,  80, 6,  160, 8,  60, 10, 14, 12, 26, 14,
+        12, 16,  24, 18, 48, 20, 96, 22, 192, 24, 72, 26, 16, 28, 32, 30,
+    };
+
+    // A disabled channel ignores the load entirely - see LengthCounter's
+    // comment. Silently, and that IS the hardware behaviour rather than a
+    // shortcut.
+    if (!lengths[channel].enabled) {
+        return;
+    }
+    lengths[channel].value = table[data >> 3];
+}
 
 void APU::clock()
 {
@@ -118,8 +152,52 @@ void APU::write(const uint16_t addr, const uint8_t data)
 {
     switch (addr) {
     case APUSTATUS:
-        // Channel enables. Writing $4015 also clears the DMC interrupt, which
-        // does not exist yet; it does NOT touch the frame interrupt.
+        // Channel enables, one bit each in Channel order. Writing $4015 also
+        // clears the DMC interrupt, which does not exist yet; it does NOT touch
+        // the frame interrupt, which is why set_frame_irq is absent here.
+        for (int channel = 0; channel < length_channels; ++channel) {
+            const bool enable = (data & (1 << channel)) != 0;
+            lengths[channel].enabled = enable;
+
+            // Clearing the enable clears the counter outright. Not "stops
+            // counting" - blargg's 1-len_ctr #6 is "disabling via $4015 should
+            // clear length counter", and #7 then checks the channel cannot be
+            // reloaded while it stays disabled.
+            if (!enable) {
+                lengths[channel].value = 0;
+            }
+        }
+        break;
+
+    // The halt bits. Same bit position on both pulses and the noise, and a
+    // different one on the triangle, where $4008 bit 7 does double duty as the
+    // linear counter's control flag - one flag, two jobs, which is the
+    // hardware's doing and not a simplification here.
+    case 0x4000:
+        lengths[pulse1].halt = (data & 0x20) != 0;
+        break;
+    case 0x4004:
+        lengths[pulse2].halt = (data & 0x20) != 0;
+        break;
+    case 0x4008:
+        lengths[triangle].halt = (data & 0x80) != 0;
+        break;
+    case 0x400C:
+        lengths[noise].halt = (data & 0x20) != 0;
+        break;
+
+    // The length loads.
+    case 0x4003:
+        load_length(pulse1, data);
+        break;
+    case 0x4007:
+        load_length(pulse2, data);
+        break;
+    case 0x400B:
+        load_length(triangle, data);
+        break;
+    case 0x400F:
+        load_length(noise, data);
         break;
 
     case FRAMECOUNTER: {
@@ -165,9 +243,17 @@ uint8_t APU::read(const uint16_t addr)
         return open_bus();
     }
 
-    // Bit 6 is the frame interrupt flag. Bit 7 would be the DMC interrupt and
-    // bits 0-4 the channel length-counter statuses; none exist yet.
-    const uint8_t status = frame_irq_flag ? 0x40 : 0x00;
+    // Bits 0-3 report whether each length counter is still running - the
+    // COUNTER, not the enable. A channel enabled at $4015 with a counter that
+    // has reached zero reads back as 0, which is how a program waits for a note
+    // to finish. Bit 4 would be the DMC's bytes-remaining and bit 7 its
+    // interrupt; neither exists yet.
+    uint8_t status = frame_irq_flag ? 0x40 : 0x00;
+    for (int channel = 0; channel < length_channels; ++channel) {
+        if (lengths[channel].value > 0) {
+            status |= static_cast<uint8_t>(1 << channel);
+        }
+    }
 
     // Reading acknowledges: the flag clears and the line is released.
     //

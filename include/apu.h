@@ -4,13 +4,17 @@
 #include "device.h"
 
 // Audio generation is not implemented. What IS implemented is the frame
-// counter, because it is the NES's only source of maskable interrupts and the
-// CPU's /IRQ path is otherwise untestable - the SingleStepTests vectors carry
-// no interrupts, and the PPU only drives /NMI.
+// counter - because it is the NES's only source of maskable interrupts and the
+// CPU's /IRQ path is otherwise untestable, the SingleStepTests vectors carrying
+// no interrupts and the PPU driving only /NMI - and the length counters, which
+// are the first piece of the channels themselves and are entirely CPU-visible,
+// so they are verifiable long before anything makes a sound.
 //
-// The frame counter is a divider driving a 4- or 5-step sequence. Each step
-// clocks the envelope/sweep/length units (none of which exist yet), and in
-// 4-step mode the final step also asserts /IRQ unless inhibited.
+// The frame counter is a divider driving a 4- or 5-step sequence. Quarter-frame
+// steps clock the envelope and the triangle's linear counter, neither of which
+// exists yet; half-frame steps clock the length counters and the sweep, of
+// which only the length counters exist. In 4-step mode the final step also
+// asserts /IRQ unless inhibited.
 class APU : public Device
 {
 public:
@@ -31,6 +35,17 @@ public:
 
     bool frame_irq_asserted() const { return frame_irq_flag; }
 
+    // The four channels that HAVE a length counter, in $4015 bit order. The DMC
+    // is bit 4 of that register but counts bytes remaining rather than length,
+    // so it is deliberately not one of these.
+    enum Channel : int { pulse1 = 0, pulse2 = 1, triangle = 2, noise = 3, length_channels = 4 };
+
+    // Non-destructive, for tests. Reading $4015 reports the same bits, but that
+    // read also acknowledges the frame interrupt - an observer using it would
+    // swallow an IRQ the program was waiting for. Same rule as the controller's
+    // shift register.
+    uint8_t length_counter(const int channel) const { return lengths[channel].value; }
+
     // Sequence lengths in CPU cycles. Mode 0 asserts /IRQ across its last three
     // cycles - not on one of them - which is why a read of $4015 placed
     // anywhere in that window sees the flag.
@@ -49,10 +64,27 @@ public:
     static constexpr int8_t write_delay_even_cycle = 4;
 
 private:
+    // One channel's length counter: how many half-frame clocks the channel has
+    // left before it silences itself.
+    //
+    // `enabled` is a separate flag rather than being folded into `value`,
+    // because $4015 distinguishes them. Clearing the enable zeroes the counter
+    // AND blocks any later reload, so a channel disabled at $4015 stays silent
+    // however many times $4003 is written - which is blargg's 1-len_ctr #7,
+    // "when disabled via $4015, length shouldn't allow reloading".
+    struct LengthCounter {
+        uint8_t value = 0;
+        bool halt = false;
+        bool enabled = false;
+    };
+
     void clock_sequencer();
     void clock_quarter_frame();
     void clock_half_frame();
     void set_frame_irq(bool asserted);
+    void load_length(int channel, uint8_t data);
+
+    LengthCounter lengths[length_channels];
 
     uint32_t frame_cycle = 0;
     bool five_step_mode = false;

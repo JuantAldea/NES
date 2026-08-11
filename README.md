@@ -22,11 +22,12 @@ still no audio.
 | Sprites | Secondary OAM, per-dot evaluation, 8-per-line, the overflow search bug, priority, 8x16, flip. Passes blargg's 5 `sprite_overflow` and 11 `sprite_hit` ROMs |
 | Cartridge | iNES, NROM (0), UNROM (2), CNROM (3) and MMC3 (4), CHR-ROM and CHR-RAM |
 | MMC3 IRQ | A12-filtered scanline counter driving `/IRQ`, clocked on the right dot. Passes 5 of blargg's 6 `mmc3_test_2` ROMs; the sixth tests the other chip revision, see below |
-| APU | Frame counter and `/IRQ`. No audio. |
+| APU | Frame counter, `/IRQ`, and length counters. No audio yet. |
 | Display | SDL2 + Dear ImGui: the screen and the debugger in one window |
 | Controllers | Both ports at `$4016`/`$4017`, keyboard-driven. Passes blargg's `read_joy3` `test_buttons` |
 
-Next: APU audio, the largest subsystem still entirely absent. SDL is already a
+Next: the rest of the APU - envelope, sweep, the channels themselves, the
+mixer and the DMC. SDL is already a
 dependency and its audio callback is the natural clock for it.
 
 ### Verification: what has and has not been exercised
@@ -198,7 +199,15 @@ few thousand frames, and every mapper beyond 0, 2, 3 and 4.
         sequences and the frame interrupt - it is the machine's only maskable
         interrupt source, so the CPU's `/IRQ` path is untestable without it.
         Passes all five `cpu_interrupts_v2` ROMs.
-    *   **No audio.** No channels, no mixer, no output.
+    *   Length counters for the two pulses, the triangle and the noise, with
+        the 32-entry length table, the halt bits, and a `$4015` that enables
+        channels, clears a counter when it disables one, refuses a reload while
+        disabled, and reports each counter's status on read. Passes six of
+        blargg's eight `apu_test` ROMs.
+    *   **Still no audio.** No envelope, sweep or linear counter, no channel
+        output, no mixer and no DMC - `7-dmc_basics` and `8-dmc_rates` are
+        pinned to their current failures in `tests/apu_rom_tests.cpp` so that
+        finishing them is announced by a test rather than noticed by hand.
 
 ### Frontend and debugger (`nes_frontend`)
 An SDL2 window hosting Dear ImGui panels:
