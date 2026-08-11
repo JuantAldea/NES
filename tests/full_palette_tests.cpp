@@ -117,49 +117,52 @@ GTEST_TEST(fullPalette, two_runs_produce_the_same_picture)
 
 // --- the gap, pinned ---------------------------------------------------------
 //
-// THIS TEST IS EXPECTED TO BE DELETED. It asserts the CURRENT, WRONG output so
-// that the gap is visible in the suite rather than only in a comment, exactly
-// as mmc3Irq.scanline_timing_is_not_yet_correct did before 4-scanline_timing
-// was fixed. It is not a statement that 5 is right.
+// The ROM draws 56 palette entries, and 57 distinct indices is the COMPLETE
+// result rather than a near miss. The seven never drawn are $0E, $1E, $1F,
+// $2E, $2F, $3E and $3F, and that is the ROM's doing, not ours: each row group
+// points v at $3F3F and then writes fourteen consecutive entries starting at
+// (Y & $18) << 1, so it covers $x0-$xD and stops. Four groups of fourteen is
+// 56, plus the $0F the palette was blackened with = 57.
 //
-// Measured with emphasis and forced backdrop both absent: 5 distinct indices,
-// 01 0F 11 21 31. $0F dominates because it is the black the ROM fills the
-// palette with, and a disabled renderer currently emits the backdrop ($3F00)
-// instead of the colour v points at - so almost the whole screen is one colour
-// the hardware would not show. The other four are bands from where the
-// background was still enabled while the ROM rewrote palette RAM underneath it.
+// Those same 56 are exactly the entries NESdev says emphasis darkens -
+// "$00-$0D, $10-$1D, $20-$2D, and $30-$3D" - which is presumably why blargg
+// chose them: $xE and $xF are the entries emphasis leaves alone, so they would
+// carry no information in a grid whose purpose is showing emphasis.
 //
-// When forced backdrop lands this count jumps toward 64, and when emphasis
-// lands the display path gains the other three bits. Both will fail this
-// assertion, which is the point: replace it with the real bound, do not relax
-// it.
-GTEST_TEST(fullPalette, forced_backdrop_and_emphasis_are_not_yet_implemented)
+// Before forced backdrop existed this was 5 (01 0F 11 21 31), almost all of it
+// the blackened backdrop, because a disabled renderer emitted $3F00 instead of
+// the colour v points at. See fetch_full_palette.sh for that baseline.
+//
+// EXACT, not a lower bound: 57 is what a correct renderer produces, and a
+// change in either direction is a finding. Higher would mean colours appearing
+// that the ROM never writes.
+GTEST_TEST(fullPalette, the_whole_grid_is_drawn_through_the_forced_backdrop)
 {
     Bus console;
     SKIP_IF_ABSENT(console, "full_palette.nes");
 
-    EXPECT_EQ(5, distinct_indices(console.ppu))
-        << "The palette output changed. If it went UP, forced backdrop and/or emphasis now\n"
-           "  work - delete this test and assert the real figure (the ROM draws all 64\n"
-           "  colours, so the bound should be near that). If it went DOWN, something that\n"
-           "  used to render has stopped.";
+    EXPECT_EQ(57, distinct_indices(console.ppu))
+        << "The ROM writes 56 palette entries ($x0-$xD of four groups) plus the $0F it\n"
+           "  blackens the palette with. A drop means the forced-backdrop path stopped\n"
+           "  selecting v; a rise means something is on screen the ROM never wrote.";
 }
 
-// The other two ROMs in the suite drive the same mechanism on different
-// timing, so they are held to the same floor rather than left unrun - an
-// implementation that fixed one and not the others would otherwise hide it.
-GTEST_TEST(fullPalette, the_smooth_variant_shows_the_same_gap)
+GTEST_TEST(fullPalette, the_smooth_variant_draws_the_same_grid)
 {
     Bus console;
     SKIP_IF_ABSENT(console, "full_palette_smooth.nes");
-    EXPECT_EQ(5, distinct_indices(console.ppu)) << "see forced_backdrop_and_emphasis_are_not_yet_implemented";
+    EXPECT_EQ(57, distinct_indices(console.ppu)) << "see the_whole_grid_is_drawn_through_the_forced_backdrop";
 }
 
-GTEST_TEST(fullPalette, the_flowing_variant_shows_the_same_gap)
+// The animated one, so a single frame is a moving subset rather than the whole
+// grid - measured at 49 on frame 300. Held to a floor instead of an exact
+// figure for that reason: what it guards is that the mechanism works at all
+// under a changing palette, not the phase the animation happens to be in.
+GTEST_TEST(fullPalette, the_flowing_variant_animates_through_the_palette)
 {
     Bus console;
     SKIP_IF_ABSENT(console, "flowing_palette.nes");
-    EXPECT_EQ(5, distinct_indices(console.ppu)) << "see forced_backdrop_and_emphasis_are_not_yet_implemented";
+    EXPECT_GT(distinct_indices(console.ppu), 40) << "see the_whole_grid_is_drawn_through_the_forced_backdrop";
 }
 
 }  // namespace full_palette

@@ -353,14 +353,16 @@ public:
     // The finished picture: one 6-bit palette index per pixel, already through
     // the greyscale mask, ready to be looked up in nes_palette.
     //
-    // KNOWN GAPS, deliberate:
+    // KNOWN GAP, deliberate:
     //  - PPUMASK colour emphasis (bits 5-7) is not applied. The framebuffer is
     //    a palette index, and emphasis is a property of the video signal; it
     //    belongs to the display path, not here.
-    //  - The "forced backdrop" case - rendering disabled while v points into
-    //    $3F00-$3FFF, where hardware outputs the colour v addresses rather than
-    //    the backdrop - is not modelled. Nothing tests it and it needs the
-    //    palette read to be driven from v.
+    //
+    // The "forced backdrop" case used to be listed here too and is now
+    // implemented in render_pixel - see the citation there. It was closed by
+    // acquiring an oracle rather than by new insight: blargg's full_palette
+    // suite is BUILT on that behaviour, so wiring it up turned an untestable
+    // paragraph into a failing assertion, and the fix was four lines.
     static constexpr int screen_width = 256;
     static constexpr int screen_height = 240;
     uint8_t framebuffer[screen_width * screen_height] = {0};

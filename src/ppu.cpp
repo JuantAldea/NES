@@ -493,8 +493,33 @@ void PPU::render_pixel()
     //
     // A transparent pixel always loses. When both are opaque, attribute bit 5
     // decides. Sprite palettes live in the upper half of palette RAM at $3F10.
+    // FORCED BACKDROP, the "background palette hack". With both rendering bits
+    // clear the PPU is in forced blank and would normally drive the backdrop -
+    // but palette RAM has only ONE address input, so whatever v holds is what
+    // the palette outputs. NESdev's PPU palettes page:
+    //
+    //   "During forced blank, the PPU normally draws the backdrop color.
+    //    However, if the current VRAM address in v points into palette RAM
+    //    ($3F00-$3FFF), then the color at that address will be drawn, instead,
+    //    overriding the backdrop color."
+    //
+    // v is used unmodified, and that is the point rather than laziness: it is
+    // the same single decoder, so the $3F10/$14/$18/$1C aliases resolve exactly
+    // as they do during rendering. It is also why $3F04/$3F08/$3F0C become
+    // visible here - during rendering nothing ever selects them, so this is
+    // their only route to the screen.
+    //
+    // Micro Machines depends on this, and blargg's full_palette suite is built
+    // entirely on it, which is what finally made it testable.
+    //
+    // Masked with $3F00 rather than compared against a range because the PPU
+    // bus is 14 bits while v is 15 - bit 14 is not an address line here.
+    const bool forced_blank = !show_background && !show_sprites;
+
     uint16_t palette_addr;
-    if (sprites_visible && sprite_pixel != 0 && (pixel == 0 || !sprite_behind_background)) {
+    if (forced_blank && (registers.PPUADDR & 0x3F00) == 0x3F00) {
+        palette_addr = registers.PPUADDR;
+    } else if (sprites_visible && sprite_pixel != 0 && (pixel == 0 || !sprite_behind_background)) {
         palette_addr = static_cast<uint16_t>(0x3F10 + (sprite_palette << 2) + sprite_pixel);
     } else if (pixel == 0) {
         // Colour 0 of every palette is not stored: it reads through to the
