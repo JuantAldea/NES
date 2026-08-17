@@ -1,4 +1,5 @@
 #pragma once
+#include <cassert>
 #include <cstdint>
 
 #include "device.h"
@@ -44,7 +45,16 @@ public:
     // read also acknowledges the frame interrupt - an observer using it would
     // swallow an IRQ the program was waiting for. Same rule as the controller's
     // shift register.
-    uint8_t length_counter(const int channel) const { return lengths[channel].value; }
+    uint8_t length_counter(const int channel) const
+    {
+        // Asserted rather than clamped: a caller asking for channel 4 has
+        // confused the length counters with $4015's five bits, where bit 4 is
+        // the DMC. Clamping would answer that question with a plausible number
+        // instead of stopping. Asserts are live in the default Checked build,
+        // which is what makes this worth writing.
+        assert(channel >= 0 && channel < length_channels);
+        return lengths[channel].value;
+    }
 
     // Sequence lengths in CPU cycles. Mode 0 asserts /IRQ across its last three
     // cycles - not on one of them - which is why a read of $4015 placed

@@ -157,7 +157,17 @@ GTEST_TEST(commercialRom, pressing_start_begins_the_game)
     for (int f = 0; f < 120; ++f) {
         console.run_frame();
     }
-    uint8_t title[PPU::screen_width * PPU::screen_height];
+    // uint16_t, matching the framebuffer's element type - NOT uint8_t.
+    //
+    // It was uint8_t until the framebuffer widened to carry emphasis, and
+    // nothing caught the mismatch: memcpy and memcmp both take void*, so the
+    // compiler had nothing to object to, and sizeof(title) silently became half
+    // the frame. The test kept passing because the top half of the screen does
+    // change, so it was comparing 30,720 pixels' worth of bytes and calling it
+    // the frame. Keep this type tracking PPU::framebuffer's.
+    uint16_t title[PPU::screen_width * PPU::screen_height];
+    static_assert(sizeof(title) == sizeof(console.ppu.framebuffer), "title must cover the WHOLE framebuffer");
+
     std::memcpy(title, console.ppu.framebuffer, sizeof(title));
 
     for (int f = 0; f < 10; ++f) {

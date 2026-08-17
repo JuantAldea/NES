@@ -225,4 +225,32 @@ GTEST_TEST(frameDumpEmphasis, the_lookup_table_matches_the_function_for_every_pi
     }
 }
 
+// The out-of-range branch, which is REACHABLE rather than defensive: write_ppm
+// is called in this very file with palettes of 4 and 1 entries, so a pixel
+// whose index exceeds the palette is a case the code already meets. It was
+// untested in both the old form of these tests and the new one - found by
+// reviewing what the rewritten masking test stopped covering.
+//
+// THE BACKING ARRAY IS DELIBERATELY LARGER THAN THE CLAIMED SIZE. The obvious
+// way to write this - a 4-entry array and an index of 4 - does not test
+// anything: removing the bounds check then reads past the array, which is
+// undefined, and in practice returned 0, which is exactly what the assertion
+// expected. It passed for the wrong reason, and only mutation-testing it showed
+// that. Backing the palette with real, non-zero entries beyond the claimed size
+// makes the check the ONLY thing that can produce 0, and keeps the mutated read
+// in bounds so the test stays well-defined either way.
+GTEST_TEST(frameDump, an_index_past_the_claimed_palette_size_returns_black)
+{
+    const uint32_t backing[8] = {
+        0x111111, 0x222222, 0x333333, 0x444444, 0xDEADBE, 0xDEADBE, 0xDEADBE, 0xDEADBE,
+    };
+    constexpr size_t claimed = 4;
+
+    EXPECT_EQ(0x444444u, nes::palette_index_to_rgb(3, backing, claimed)) << "the last valid entry";
+    EXPECT_EQ(0u, nes::palette_index_to_rgb(4, backing, claimed))
+        << "one past the claimed size must return black, not $DEADBE - the entry exists in "
+           "memory, and only the size check should stop it being used";
+    EXPECT_EQ(0u, nes::palette_index_to_rgb(7, backing, claimed)) << "and the same for any index beyond it";
+}
+
 }  // namespace tests

@@ -63,7 +63,7 @@ jobs:
       - name: Test
         run: ctest --test-dir build -j"$(nproc)" --output-on-failure
 
-      # "100% tests passed out of 906" is a MISLEADING headline here, and this
+      # "100% tests passed out of 907" is a MISLEADING headline here, and this
       # step exists to say so on every run.
       #
       # GTEST_SKIP makes a test exit 0, so ctest counts a skipped test as a
@@ -107,7 +107,7 @@ jobs:
 
       # Same fixtures as the `test` job, and same omission of
       # fetch_single_step_tests.sh - see the comment there. Those 512 tests
-      # skip, so this job executes 389 of them.
+      # skip, so this job executes 390 of them.
       - name: Fetch test fixtures
         run: |
           tests/test_files/fetch_nestest.sh
@@ -162,7 +162,7 @@ jobs:
 
     # The sanitizers above and the ROM oracles both need the code to RUN before
     # they can say anything. That is a real limit: a bug on a path no test
-    # takes is invisible to a suite of 906 passing tests. The analyzer walks
+    # takes is invisible to a suite of 907 passing tests. The analyzer walks
     # paths symbolically instead of executing them, so it covers the arms of
     # every branch the tests happen not to enter.
     #
