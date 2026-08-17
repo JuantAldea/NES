@@ -169,19 +169,41 @@ fetch_all() {
     return $status
 }
 
-printf 'starting independent trees and fetches in parallel...\n'
+# The suite runs against the repository's OWN build directory, so it never
+# depended on the clean-tree build and can start immediately.
+BUILD=${NES_BUILD_DIR:-$ROOT/build}
+[ -x "$BUILD/tests/tests" ] || BUILD="$OUT/fresh"
+
+suite_job() {
+    NES_TEST_BIN="$BUILD/tests/tests" "$ROOT/tests/run_tests.sh" 2>/dev/null | grep "executed" | tail -1
+}
+
+# Build AND run chained inside ONE job, so the suite starts the instant its
+# build is ready instead of at a barrier. This chain is the critical path.
+asan_job() {
+    cmake -S "$ROOT" -B "$OUT/asan" -G Ninja -DNES_BUILD_FRONTEND=OFF \
+        -DNES_SANITIZE=address,undefined >/dev/null 2>&1 || return 1
+    cmake --build "$OUT/asan" >/dev/null 2>&1 || return 1
+    NES_TEST_BIN="$OUT/asan/tests/tests" \
+        ASAN_OPTIONS=detect_leaks=1:detect_stack_use_after_return=1 \
+        UBSAN_OPTIONS=print_stacktrace=1:report_error_type=1 \
+        "$ROOT/tests/run_tests.sh" 2>/dev/null | grep "executed" | tail -1
+}
+
+# EVERY unit of work is a job. There is still one `wait`, but it no longer
+# blocks anything - it only delays PRINTING. Before this the test suite sat idle
+# from 41s to 56.4s waiting for an analyzer it does not depend on, and the
+# sanitizer suite waited from 46.7s for the same reason.
+printf 'launching every independent job at once...\n'
 
 job fresh build_tree "$OUT/fresh" tests/tests -DCMAKE_BUILD_TYPE=Checked
 job nosdl build_tree "$OUT/nosdl" tests/tests -DNES_BUILD_FRONTEND=OFF
 job fetch fetch_all
+job suite suite_job
 command -v scan-build >/dev/null 2>&1 && job analyze "$ROOT/tests/run_scan_build.sh"
-[ "$WITH_SANITIZERS" -eq 1 ] &&
-    job asanbuild sh -c "cmake -S '$ROOT' -B '$OUT/asan' -G Ninja -DNES_BUILD_FRONTEND=OFF -DNES_SANITIZE=address,undefined >/dev/null 2>&1 && cmake --build '$OUT/asan'"
+[ "$WITH_SANITIZERS" -eq 1 ] && job asan asan_job
 
 wait
-
-BUILD=${NES_BUILD_DIR:-$ROOT/build}
-[ -x "$BUILD/tests/tests" ] || BUILD="$OUT/fresh"
 
 section() { printf '\n%s\n' "$1"; }
 
@@ -213,11 +235,10 @@ else
 fi
 
 section "verification"
-suite_run() { counts=$(NES_TEST_BIN="$BUILD/tests/tests" "$ROOT/tests/run_tests.sh" 2>/dev/null | grep "executed" | tail -1); }
-timed suite_run
+counts=$(grep "executed" "$OUT/suite.log" 2>/dev/null | tail -1)
 case "$counts" in
-*"0 failed"*) report PASS "test suite" "$counts" "$STEP_MS" ;;
-*) report FAIL "test suite" "${counts:-no result}" "$STEP_MS" ;;
+*"0 failed"*) report PASS "test suite" "$counts" "$(ms_of suite)" ;;
+*) report FAIL "test suite" "${counts:-no result}" "$(ms_of suite)" ;;
 esac
 
 timed env NES_BUILD_DIR="$BUILD" "$ROOT/tests/test_counts.sh" --check >"$OUT/counts.log" 2>&1 &&
@@ -232,23 +253,11 @@ else
 fi
 
 if [ "$WITH_SANITIZERS" -eq 1 ]; then
-    if [ "$(rc_of asanbuild)" -eq 0 ]; then
-        # SHARDED. As one process this is ~5x slower and leaves the machine idle.
-        report PASS "  (ASan build, in parallel)" "" "$(ms_of asanbuild)"
-        asan_run() {
-            san=$(NES_TEST_BIN="$OUT/asan/tests/tests" \
-                ASAN_OPTIONS=detect_leaks=1:detect_stack_use_after_return=1 \
-                UBSAN_OPTIONS=print_stacktrace=1:report_error_type=1 \
-                "$ROOT/tests/run_tests.sh" 2>/dev/null | grep "executed" | tail -1)
-        }
-        timed asan_run
-        case "$san" in
-        *"0 failed"*) report PASS "ASan + UBSan suite" "$san" "$STEP_MS" ;;
-        *) report FAIL "ASan + UBSan suite" "${san:-see $OUT/asanbuild.log}" "$STEP_MS" ;;
-        esac
-    else
-        report FAIL "ASan + UBSan" "build failed, see $OUT/asanbuild.log" "$(ms_of asanbuild)"
-    fi
+    san=$(grep "executed" "$OUT/asan.log" 2>/dev/null | tail -1)
+    case "$san" in
+    *"0 failed"*) report PASS "ASan + UBSan (build + suite)" "$san" "$(ms_of asan)" ;;
+    *) report FAIL "ASan + UBSan (build + suite)" "${san:-see $OUT/asan.log}" "$(ms_of asan)" ;;
+    esac
 else
     report SKIP "ASan + UBSan" "pass --full to include"
 fi
@@ -331,10 +340,10 @@ printf '\n%s failed, %s skipped. Wall %ss. Logs: %s\n' "$FAILED" "$SKIPPED" "$wa
 # breakdown that added up would be misleading. What matters is which job is the
 # long pole and whether it is working or waiting.
 printf '\nparallel phase, per job:\n'
-for j in fresh nosdl fetch analyze asanbuild; do
+for j in fresh nosdl fetch suite analyze asan; do
     [ -f "$OUT/$j.ms" ] || continue
     printf '  %-12s %s\n' "$j" "$(secs "$(ms_of "$j")")"
 done
-printf '  the phase costs the LONGEST of these, not their sum.\n'
+printf '  wall is the LONGEST of these, not their sum - they overlap.\n'
 printf '  fetch is network-bound: time there is idle CPU, not slow code.\n'
 exit "$FAILED"
