@@ -34,6 +34,7 @@
 #include "../frontend/debugger_state.h"
 #include "../include/bus.h"
 #include "gtest/gtest.h"
+#include "rom_fixture.h"
 
 namespace tests
 {
@@ -42,33 +43,26 @@ namespace local_rom
 namespace
 {
 
+using tests::fixture::distinct_indices;
+
 std::string smb_path() { return std::string(NES_TEST_FILES_DIR) + "/local/smb.nes"; }
 
-// Loads the ROM, or skips the whole test with a message that says what to do.
-bool load_or_skip(Bus& console)
+constexpr const char* kHowToGetIt =
+    "This test needs a dump of a cartridge you own; nothing here fetches one."
+    "\n  See tests/test_files/local/README.md.";
+
+// Loads the cartridge. Asserted rather than returning a bool: presence is
+// established by SKIP_IF_ROM_ABSENT before this is called, so a failure here
+// means the file is there and will not parse - a broken dump, not a missing
+// one, and worth stopping for rather than skipping past.
+void load_smb(Bus& console)
 {
-    if (!console.load_cartridge(smb_path())) {
-        return false;
-    }
+    ASSERT_TRUE(console.load_cartridge(smb_path())) << "the ROM is present but did not load: " << smb_path();
+
     // power_on(), not reset(): Bus's constructor already reset this CPU before a
     // cartridge was mapped, and a reset subtracts 3 from S rather than
     // reloading it.
     console.cpu.power_on();
-    return true;
-}
-
-int distinct_colours(const PPU& ppu)
-{
-    bool seen[64] = {false};
-    int n = 0;
-    for (int i = 0; i < PPU::screen_width * PPU::screen_height; ++i) {
-        const uint8_t c = ppu.framebuffer[i] & 0x3F;
-        if (!seen[c]) {
-            seen[c] = true;
-            ++n;
-        }
-    }
-    return n;
 }
 
 // Boots to the title screen, presses Start, and waits out the "WORLD 1-1" card.
@@ -87,20 +81,13 @@ void start_a_game(Bus& console)
     }
 }
 
-#define SKIP_IF_ABSENT(console)                                                                   \
-    if (!load_or_skip(console)) {                                                                 \
-        GTEST_SKIP() << "no ROM at " << smb_path()                                                \
-                     << "\n  This test needs a dump of a cartridge you own; nothing here fetches" \
-                        "\n  one. See tests/test_files/local/README.md."                          \
-                        "\n  NOTE: ctest counts this skip as a pass. It is not one.";             \
-    }
-
 }  // namespace
 
 GTEST_TEST(commercialRom, boots_to_a_drawn_title_screen)
 {
     Bus console;
-    SKIP_IF_ABSENT(console);
+    SKIP_IF_ROM_ABSENT(smb_path(), kHowToGetIt);
+    load_smb(console);
 
     for (int f = 0; f < 120; ++f) {
         console.run_frame();
@@ -108,7 +95,7 @@ GTEST_TEST(commercialRom, boots_to_a_drawn_title_screen)
 
     // Measured: 8+ colours by frame 33, settling at 10-11. A blank or
     // single-colour screen is the failure this catches.
-    EXPECT_GT(distinct_colours(console.ppu), 5) << "the title screen never drew";
+    EXPECT_GT(distinct_indices(console.ppu), 5) << "the title screen never drew";
     EXPECT_NE(0, console.ppu.registers.PPUMASK & 0x18) << "rendering was never enabled";
 }
 
@@ -128,7 +115,8 @@ GTEST_TEST(commercialRom, boots_to_a_drawn_title_screen)
 GTEST_TEST(commercialRom, boots_under_the_debuggers_own_step_loop)
 {
     Bus console;
-    SKIP_IF_ABSENT(console);
+    SKIP_IF_ROM_ABSENT(smb_path(), kHowToGetIt);
+    load_smb(console);
 
     nes_gui::FrontendState state;
     state.running = true;
@@ -144,7 +132,7 @@ GTEST_TEST(commercialRom, boots_under_the_debuggers_own_step_loop)
                                 << " - an idle loop an NMI will break is not a hang";
     EXPECT_TRUE(state.running) << "the free-run stopped before the game started";
     EXPECT_NE(0, console.ppu.registers.PPUMASK & 0x18) << "rendering was never enabled";
-    EXPECT_GT(distinct_colours(console.ppu), 5) << "the title screen never drew under the step loop";
+    EXPECT_GT(distinct_indices(console.ppu), 5) << "the title screen never drew under the step loop";
 }
 
 // The whole machine at once: the controller reaching the game, the game
@@ -152,7 +140,8 @@ GTEST_TEST(commercialRom, boots_under_the_debuggers_own_step_loop)
 GTEST_TEST(commercialRom, pressing_start_begins_the_game)
 {
     Bus console;
-    SKIP_IF_ABSENT(console);
+    SKIP_IF_ROM_ABSENT(smb_path(), kHowToGetIt);
+    load_smb(console);
 
     for (int f = 0; f < 120; ++f) {
         console.run_frame();
@@ -188,7 +177,8 @@ GTEST_TEST(commercialRom, pressing_start_begins_the_game)
 GTEST_TEST(commercialRom, holding_right_scrolls_the_playfield)
 {
     Bus console;
-    SKIP_IF_ABSENT(console);
+    SKIP_IF_ROM_ABSENT(smb_path(), kHowToGetIt);
+    load_smb(console);
     start_a_game(console);
 
     bool coarse_seen[32] = {false};
@@ -225,7 +215,8 @@ GTEST_TEST(commercialRom, holding_right_scrolls_the_playfield)
 GTEST_TEST(commercialRom, the_status_bar_split_fires_every_frame)
 {
     Bus console;
-    SKIP_IF_ABSENT(console);
+    SKIP_IF_ROM_ABSENT(smb_path(), kHowToGetIt);
+    load_smb(console);
     start_a_game(console);
 
     int frames_with_hit = 0;

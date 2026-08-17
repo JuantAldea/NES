@@ -23,6 +23,7 @@
 
 #include "../include/bus.h"
 #include "gtest/gtest.h"
+#include "rom_fixture.h"
 
 namespace tests
 {
@@ -30,6 +31,8 @@ namespace visual_rom
 {
 namespace
 {
+
+using tests::fixture::distinct_indices;
 
 std::string rom_path(const std::string& name) { return std::string(NES_TEST_FILES_DIR) + "/visual/" + name; }
 
@@ -62,20 +65,6 @@ SpriteLoad measure_sprite_load(Bus& console)
     return load;
 }
 
-int distinct_colours(const PPU& ppu)
-{
-    bool seen[64] = {false};
-    int n = 0;
-    for (int i = 0; i < PPU::screen_width * PPU::screen_height; ++i) {
-        const uint8_t c = ppu.framebuffer[i] & 0x3F;
-        if (!seen[c]) {
-            seen[c] = true;
-            ++n;
-        }
-    }
-    return n;
-}
-
 }  // namespace
 
 // --- 240pee: the only real UNROM image here --------------------------------
@@ -103,7 +92,7 @@ GTEST_TEST(visualRoms, the_240p_suite_runs_and_switches_prg_banks_under_its_own_
 
     // Measured: 10 distinct colours over 56818 non-backdrop pixels. A blank or
     // single-colour screen is the failure worth catching, so the bound is loose.
-    EXPECT_GT(distinct_colours(console.ppu), 3) << "the screen is blank or nearly so";
+    EXPECT_GT(distinct_indices(console.ppu), 3) << "the screen is blank or nearly so";
 }
 
 GTEST_TEST(visualRoms, the_240p_suite_renders_deterministically)

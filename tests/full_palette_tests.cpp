@@ -33,6 +33,7 @@
 
 #include "../include/bus.h"
 #include "gtest/gtest.h"
+#include "rom_fixture.h"
 
 namespace tests
 {
@@ -41,65 +42,32 @@ namespace full_palette
 namespace
 {
 
+using tests::fixture::distinct_indices;
+using tests::fixture::distinct_pixels;
+
 std::string rom_path(const std::string& name) { return std::string(NES_TEST_FILES_DIR) + "/full_palette/" + name; }
 
-// Distinct 6-bit palette indices in the framebuffer. The mask is deliberate:
-// the framebuffer holds an index, not a colour, so this counts what the PPU
-// selected rather than what a display would make of it.
-int distinct_indices(const PPU& ppu)
-{
-    bool seen[64] = {false};
-    int n = 0;
-    for (int i = 0; i < PPU::screen_width * PPU::screen_height; ++i) {
-        const uint8_t c = static_cast<uint8_t>(ppu.framebuffer[i] & 0x3F);
-        if (!seen[c]) {
-            seen[c] = true;
-            ++n;
-        }
-    }
-    return n;
-}
-
-// Distinct index+emphasis pairs - the whole 9-bit pixel rather than its low
-// six bits. distinct_indices is blind to emphasis by construction, so without
-// this a renderer that captured no emphasis at all would still score 57.
-int distinct_pixels(const PPU& ppu)
-{
-    bool seen[512] = {false};
-    int n = 0;
-    for (int i = 0; i < PPU::screen_width * PPU::screen_height; ++i) {
-        const uint16_t p = static_cast<uint16_t>(ppu.framebuffer[i] & 0x1FF);
-        if (!seen[p]) {
-            seen[p] = true;
-            ++n;
-        }
-    }
-    return n;
-}
+constexpr const char* kFetch = "Run tests/test_files/fetch_full_palette.sh to fetch it.";
 
 // Frames measured as sufficient in fetch_full_palette.sh: the count is stable
 // at 60, 300 and 900, so 300 is well past settling without being slow. The ROM
 // spends its first frames synchronising the CPU to VBL.
 constexpr int kFrames = 300;
 
-bool run_or_skip(Bus& console, const std::string& name, int frames = kFrames)
+// Named for what it does. This used to hide behind a macro called
+// SKIP_IF_ABSENT, so six tests emulated ~2,100 frames between them and the call
+// sites read as a file check. The load is asserted rather than returning a
+// bool: presence is already established by SKIP_IF_ROM_ABSENT, so a failure
+// here means the file exists and will not parse, which is a broken fixture
+// rather than a missing one and should stop the test.
+void load_and_run(Bus& console, const std::string& name, int frames = kFrames)
 {
-    if (!console.load_cartridge(rom_path(name))) {
-        return false;
-    }
+    ASSERT_TRUE(console.load_cartridge(rom_path(name))) << "the ROM is present but did not load: " << rom_path(name);
     console.cpu.power_on();
     for (int f = 0; f < frames; ++f) {
         console.run_frame();
     }
-    return true;
 }
-
-#define SKIP_IF_ABSENT(console, name)                                                 \
-    if (!run_or_skip(console, name)) {                                                \
-        GTEST_SKIP() << "no ROM at " << rom_path(name)                                \
-                     << "\n  Run tests/test_files/fetch_full_palette.sh to fetch it." \
-                        "\n  NOTE: ctest counts this skip as a pass. It is not one."; \
-    }
 
 }  // namespace
 
@@ -111,7 +79,8 @@ bool run_or_skip(Bus& console, const std::string& name, int frames = kFrames)
 GTEST_TEST(fullPalette, the_rom_runs_to_a_picture)
 {
     Bus console;
-    SKIP_IF_ABSENT(console, "full_palette.nes");
+    SKIP_IF_ROM_ABSENT(rom_path("full_palette.nes"), kFetch);
+    load_and_run(console, "full_palette.nes");
 
     EXPECT_GT(console.ppu.frame, 0u) << "the PPU never completed a frame";
     EXPECT_GT(distinct_indices(console.ppu), 1) << "the screen is a single flat colour - the ROM drew nothing";
@@ -125,8 +94,9 @@ GTEST_TEST(fullPalette, two_runs_produce_the_same_picture)
 {
     Bus a;
     Bus b;
-    SKIP_IF_ABSENT(a, "full_palette.nes");
-    ASSERT_TRUE(run_or_skip(b, "full_palette.nes"));
+    SKIP_IF_ROM_ABSENT(rom_path("full_palette.nes"), kFetch);
+    load_and_run(a, "full_palette.nes");
+    load_and_run(b, "full_palette.nes");
 
     EXPECT_EQ(0, std::memcmp(a.ppu.framebuffer, b.ppu.framebuffer, sizeof(a.ppu.framebuffer)))
         << "the same ROM produced two different frames - the timing is not deterministic";
@@ -156,7 +126,8 @@ GTEST_TEST(fullPalette, two_runs_produce_the_same_picture)
 GTEST_TEST(fullPalette, the_whole_grid_is_drawn_through_the_forced_backdrop)
 {
     Bus console;
-    SKIP_IF_ABSENT(console, "full_palette.nes");
+    SKIP_IF_ROM_ABSENT(rom_path("full_palette.nes"), kFetch);
+    load_and_run(console, "full_palette.nes");
 
     EXPECT_EQ(57, distinct_indices(console.ppu))
         << "The ROM writes 56 palette entries ($x0-$xD of four groups) plus the $0F it\n"
@@ -167,7 +138,8 @@ GTEST_TEST(fullPalette, the_whole_grid_is_drawn_through_the_forced_backdrop)
 GTEST_TEST(fullPalette, the_smooth_variant_draws_the_same_grid)
 {
     Bus console;
-    SKIP_IF_ABSENT(console, "full_palette_smooth.nes");
+    SKIP_IF_ROM_ABSENT(rom_path("full_palette_smooth.nes"), kFetch);
+    load_and_run(console, "full_palette_smooth.nes");
     EXPECT_EQ(57, distinct_indices(console.ppu)) << "see the_whole_grid_is_drawn_through_the_forced_backdrop";
 }
 
@@ -178,7 +150,8 @@ GTEST_TEST(fullPalette, the_smooth_variant_draws_the_same_grid)
 GTEST_TEST(fullPalette, the_flowing_variant_animates_through_the_palette)
 {
     Bus console;
-    SKIP_IF_ABSENT(console, "flowing_palette.nes");
+    SKIP_IF_ROM_ABSENT(rom_path("flowing_palette.nes"), kFetch);
+    load_and_run(console, "flowing_palette.nes");
     EXPECT_GT(distinct_indices(console.ppu), 40) << "see the_whole_grid_is_drawn_through_the_forced_backdrop";
 }
 
@@ -208,7 +181,8 @@ GTEST_TEST(fullPalette, the_flowing_variant_animates_through_the_palette)
 GTEST_TEST(fullPalette, every_emphasis_state_reaches_the_framebuffer)
 {
     Bus console;
-    SKIP_IF_ABSENT(console, "full_palette.nes");
+    SKIP_IF_ROM_ABSENT(rom_path("full_palette.nes"), kFetch);
+    load_and_run(console, "full_palette.nes");
 
     EXPECT_EQ(57 * 8, distinct_pixels(console.ppu))
         << "distinct index+emphasis pairs. 57 would mean emphasis is not being captured at\n"
@@ -223,7 +197,8 @@ GTEST_TEST(fullPalette, every_emphasis_state_reaches_the_framebuffer)
 GTEST_TEST(fullPalette, emphasis_varies_within_a_single_frame)
 {
     Bus console;
-    SKIP_IF_ABSENT(console, "full_palette.nes");
+    SKIP_IF_ROM_ABSENT(rom_path("full_palette.nes"), kFetch);
+    load_and_run(console, "full_palette.nes");
 
     bool seen[8] = {false};
     int n = 0;

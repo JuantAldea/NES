@@ -26,11 +26,11 @@
 // See fetch_apu_test.sh for the measured baseline, and blargg's readme.txt for
 // what each numbered failure means; 1-len_ctr alone enumerates seven distinct
 // ways length counters go wrong, which is the order to implement them in.
-#include <fstream>
 #include <string>
 
 #include "blargg_rom_harness.h"
 #include "gtest/gtest.h"
+#include "rom_fixture.h"
 
 namespace tests
 {
@@ -46,14 +46,9 @@ std::string rom_path(const std::string& name) { return std::string(NES_TEST_FILE
 // a tight budget would turn progress into a timeout.
 constexpr uint64_t kMaxFrames = 600;
 
-blargg::RomResult run(const std::string& name) { return blargg::run_rom(rom_path(name), kMaxFrames); }
+constexpr const char* kFetch = "Run tests/test_files/fetch_apu_test.sh to fetch it.";
 
-#define SKIP_IF_ABSENT(name)                                                          \
-    if (!std::ifstream(rom_path(name)).good()) {                                      \
-        GTEST_SKIP() << "no ROM at " << rom_path(name)                                \
-                     << "\n  Run tests/test_files/fetch_apu_test.sh to fetch it."     \
-                        "\n  NOTE: ctest counts this skip as a pass. It is not one."; \
-    }
+blargg::RomResult run(const std::string& name) { return blargg::run_rom(rom_path(name), kMaxFrames); }
 
 }  // namespace
 
@@ -66,7 +61,7 @@ class ApuRomsThatPass : public ::testing::TestWithParam<const char*>
 TEST_P(ApuRomsThatPass, reports_pass)
 {
     const std::string name = GetParam();
-    SKIP_IF_ABSENT(name);
+    SKIP_IF_ROM_ABSENT(rom_path(name), kFetch);
 
     const blargg::RomResult result = run(name);
 
@@ -129,13 +124,13 @@ void expect_pinned_failure(const std::string& name, const uint8_t expected_statu
 // the cycle-exact bus is the most heavily verified thing in this project.
 GTEST_TEST(apuRomQueue, the_dmc_is_not_implemented)
 {
-    SKIP_IF_ABSENT("7-dmc_basics");
+    SKIP_IF_ROM_ABSENT(rom_path("7-dmc_basics"), kFetch);
     expect_pinned_failure("7-dmc_basics", 2, "DMC isn't working well enough to test further");
 }
 
 GTEST_TEST(apuRomQueue, the_dmc_rate_table_is_not_implemented)
 {
-    SKIP_IF_ABSENT("8-dmc_rates");
+    SKIP_IF_ROM_ABSENT(rom_path("8-dmc_rates"), kFetch);
     expect_pinned_failure("8-dmc_rates", 2, "Rate 0's period is too short");
 }
 
