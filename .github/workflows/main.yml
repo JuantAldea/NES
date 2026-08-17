@@ -60,10 +60,19 @@ jobs:
       - name: Build
         run: cmake --build build
 
+      # Registration is compile-time - a case that GTEST_SKIPs still registers -
+      # so this check needs no fixtures at all and would pass even with every
+      # fetch step removed. That makes it, like the analyzer job, immune to a
+      # network failure. It fails when a suite LOSES cases, which is the one
+      # thing a total cannot detect: a renamed file drops every case in it,
+      # because tests/CMakeLists.txt globs *.cpp.
+      - name: Check the test-count table
+        run: tests/test_counts.sh --check
+
       - name: Test
         run: ctest --test-dir build -j"$(nproc)" --output-on-failure
 
-      # "100% tests passed out of 907" is a MISLEADING headline here, and this
+      # "100% tests passed out of N" is a MISLEADING headline here, and this
       # step exists to say so on every run.
       #
       # GTEST_SKIP makes a test exit 0, so ctest counts a skipped test as a
@@ -162,7 +171,7 @@ jobs:
 
     # The sanitizers above and the ROM oracles both need the code to RUN before
     # they can say anything. That is a real limit: a bug on a path no test
-    # takes is invisible to a suite of 907 passing tests. The analyzer walks
+    # takes is invisible to a suite of passing tests. The analyzer walks
     # paths symbolically instead of executing them, so it covers the arms of
     # every branch the tests happen not to enter.
     #

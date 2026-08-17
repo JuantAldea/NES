@@ -41,8 +41,14 @@ backs it. The recurring failure modes:
   actually implemented, not what the prose remembers.
 - **"Next:" and roadmap lines** pointing at work that has since merged. Check
   `git log`.
-- **Named test counts** ("all eleven `sprite_hit` ROMs", "854 tests"). Verify
-  against the fetch script's file list and the actual run.
+- **Named test counts** ("all eleven `sprite_hit` ROMs"). Verify against the
+  fetch script's file list and the actual run.
+- **Bare totals in prose** ("854 tests", "executed 359 of them"). These do not
+  belong in the README at all any more — `tests/TEST_COUNTS.md` is the one
+  place a count is written down, and it is generated. If you find one, replace
+  it with a link to that table rather than updating it; see the `test-counts`
+  skill. A total maintained by hand goes stale between the paragraph and the
+  run it describes, which this README has already done once.
 
 ## 3. Rewrite, keeping the voice
 
