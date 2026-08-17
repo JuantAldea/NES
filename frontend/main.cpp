@@ -47,13 +47,20 @@ constexpr int screen_pixels = PPU::screen_width * PPU::screen_height;
 
 // Converts the PPU's palette-index framebuffer into the ARGB the texture wants.
 //
-// The conversion goes through nes::palette_index_to_rgb, which is also what the
-// PPM dump and the palette panel use. One home for it means the screen cannot
-// quietly disagree with a dump of the same frame.
+// Through nes::EmphasisTable, which is built from the same apply_emphasis the
+// PPM dump and the palette panel call. One definition of the conversion means
+// the screen cannot quietly disagree with a dump of the same frame.
+//
+// The table rather than per-pixel conversion because this runs 256 x 240 times
+// per frame at 60fps - 3.7 million conversions a second - and applying emphasis
+// arithmetically there would put floating-point work on every one of them. Made
+// static so the 2KB is built once for the process, not once per frame.
 void upload_framebuffer(SDL_Texture* texture, const PPU& ppu, std::vector<uint32_t>& scratch)
 {
+    static const nes::EmphasisTable table(PPU::nes_palette, 64);
+
     for (int i = 0; i < screen_pixels; ++i) {
-        scratch[i] = 0xFF000000u | nes::palette_index_to_rgb(ppu.framebuffer[i], PPU::nes_palette, 64);
+        scratch[i] = 0xFF000000u | table.rgb[ppu.framebuffer[i] & 0x1FF];
     }
 
     SDL_UpdateTexture(texture, nullptr, scratch.data(), PPU::screen_width * static_cast<int>(sizeof(uint32_t)));

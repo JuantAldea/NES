@@ -504,10 +504,10 @@ int counter_clocks_on_one_line(Bus& console, const uint8_t* tiles)
     // groups hold a real sprite rather than the $FF dummy.
     ppu.write(0x2003, 0x00);
     for (int i = 0; i < 8; ++i) {
-        ppu.write(0x2004, 110);                                  // Y: visible on line 111
-        ppu.write(0x2004, tiles[i]);                             // tile: bit 0 picks the table
-        ppu.write(0x2004, 0x00);                                 // attributes
-        ppu.write(0x2004, static_cast<uint8_t>(i * 24));         // X
+        ppu.write(0x2004, 110);                           // Y: visible on line 111
+        ppu.write(0x2004, tiles[i]);                      // tile: bit 0 picks the table
+        ppu.write(0x2004, 0x00);                          // attributes
+        ppu.write(0x2004, static_cast<uint8_t>(i * 24));  // X
     }
 
     // $20 = 8x16 sprites, background at $0000. In 8x16 mode the sprite table
@@ -573,7 +573,9 @@ GTEST_TEST(mmc3A12Filter, alternating_pattern_tables_clock_the_counter_more_than
     EXPECT_GT(alternating, same_table)
         << "8x16 sprites from BOTH pattern tables must clock the counter more than once per\n"
            "  scanline - NESdev MMC3: the gap between A12 edges grows 'past the time that the\n"
-           "  MMC3 is able to filter out'. Getting " << alternating << " means the garbage\n"
+           "  MMC3 is able to filter out'. Getting "
+        << alternating
+        << " means the garbage\n"
            "  nametable fetches at dots 257-260 are not holding A12 low.";
 }
 

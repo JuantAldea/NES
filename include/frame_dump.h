@@ -86,12 +86,42 @@ inline uint32_t apply_emphasis(const uint32_t rgb, const uint8_t index, const ui
            static_cast<uint32_t>(channel[2]);
 }
 
+// The 64 colours under all 8 emphasis states, built once.
+//
+// This is the .pal format's 1536-byte extension in memory - 64 x 8 x 3 - and it
+// exists for a measured reason rather than tidiness. The frontend converts
+// every pixel of every frame: 256 x 240 x 60 is 3.7 MILLION calls a second, and
+// apply_emphasis builds three doubles and does up to six multiplications per
+// call. Precomputing collapses that to one array load. 2KB of table against
+// floating-point work on the hottest loop in the display path.
+//
+// Keyed by the 9-bit pixel exactly as the framebuffer stores it, so the caller
+// needs no unpacking.
+struct EmphasisTable {
+    uint32_t rgb[512] = {0};
+
+    explicit EmphasisTable(const uint32_t* palette, const size_t palette_size)
+    {
+        for (size_t entry = 0; entry < 64; ++entry) {
+            const uint32_t base = entry < palette_size ? palette[entry] : 0;
+            for (uint8_t emphasis = 0; emphasis < 8; ++emphasis) {
+                rgb[(emphasis << 6) | entry] = apply_emphasis(base, static_cast<uint8_t>(entry), emphasis);
+            }
+        }
+    }
+};
+
 // Turns one framebuffer pixel - 6-bit palette index plus 3 emphasis bits - into
 // 0xRRGGBB.
 //
 // The index is masked to six bits because that is the width of palette RAM;
 // anything wider is a caller bug, and masking makes it a visible wrong colour
-// rather than a read off the end of the table.
+// rather than a read off the end of the table. Bits above the 9-bit pixel are
+// ignored entirely - they are not part of it.
+//
+// Correct but unhurried: this is the cold path, used by the PPM dump and the
+// debugger. Anything converting a whole frame per frame should build one
+// EmphasisTable and index it.
 inline uint32_t palette_index_to_rgb(const uint16_t pixel, const uint32_t* palette, const size_t palette_size)
 {
     const size_t entry = pixel & 0x3F;

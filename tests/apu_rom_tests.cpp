@@ -1,22 +1,27 @@
 // blargg's apu_test suite - the oracle for building the APU.
 //
 // Every other ROM suite here guards work that is finished. This one measures
-// work that has barely started: the frame counter and its /IRQ exist, and
-// nothing else does. clock_quarter_frame() and clock_half_frame() are empty
-// bodies, $4000-$4013 are unhandled, and the $4015 write is a stub.
+// work in progress: the frame counter, its /IRQ and the length counters exist;
+// the envelope, the sweep, the triangle's linear counter, the channels' output,
+// the mixer and the DMC do not, and clock_quarter_frame() is still empty.
 //
-// So the file is arranged as a WORK QUEUE, not a pass/fail gate. Three ROMs
-// pass today and are asserted to keep passing; five fail and are pinned to
-// their exact status and message. Pinning rather than skipping is the point -
-// see the $AB/ATX precedent in instr_test_roms.cpp. A skipped failure says
-// nothing when it changes; a pinned one fails loudly the moment the behaviour
-// moves, in either direction.
+// So the file is arranged as a WORK QUEUE, not a pass/fail gate. Six ROMs pass
+// today and are asserted to keep passing; two fail and are pinned to their
+// exact status and message. Pinning rather than skipping is the point - see the
+// $AB/ATX precedent in instr_test_roms.cpp. A skipped failure says nothing when
+// it changes; a pinned one fails loudly the moment the behaviour moves, in
+// either direction.
 //
-// WHICH THREE PASS IS ITSELF A RESULT. 3-irq_flag, 4-jitter and
-// 6-irq_flag_timing are exactly the frame-counter and frame-IRQ ROMs. That
-// code - including the write-parity detail in APU::write, which was reasoned
-// out rather than measured - is now confirmed against an oracle it was never
-// run against.
+// THE PINS HAVE ALREADY EARNED THEIR KEEP. This file began with three ROMs
+// passing and five pinned. Implementing the length counters broke three of
+// those pins, which is how their completion was announced - the assertion fails
+// and its message says to promote the ROM into the list above. Keep that
+// property when editing: a pin that is merely deleted teaches nothing.
+//
+// WHICH ROMS PASS IS ITSELF A RESULT. 3-irq_flag, 4-jitter and 6-irq_flag_timing
+// were passing before any of this work, confirming a frame counter - including
+// the write-parity detail in APU::write - that had been reasoned out rather
+// than measured, against an oracle it was never run against.
 //
 // See fetch_apu_test.sh for the measured baseline, and blargg's readme.txt for
 // what each numbered failure means; 1-len_ctr alone enumerates seven distinct
@@ -72,23 +77,19 @@ TEST_P(ApuRomsThatPass, reports_pass)
 // Six of the eight. The frame counter and its IRQ were passing before any of
 // this; the three length ROMs joined them when the length counters landed, and
 // each did so by FAILING its pin first, which is what those pins are for.
-INSTANTIATE_TEST_SUITE_P(ApuTest,
-                         ApuRomsThatPass,
-                         ::testing::Values("1-len_ctr",
-                                           "2-len_table",
-                                           "3-irq_flag",
-                                           "4-jitter",
-                                           "5-len_timing",
-                                           "6-irq_flag_timing"),
-                         [](const ::testing::TestParamInfo<const char*>& info) {
-                             std::string name = info.param;
-                             for (char& c : name) {
-                                 if (c == '-' || c == '.') {
-                                     c = '_';
-                                 }
-                             }
-                             return name;
-                         });
+INSTANTIATE_TEST_SUITE_P(
+    ApuTest,
+    ApuRomsThatPass,
+    ::testing::Values("1-len_ctr", "2-len_table", "3-irq_flag", "4-jitter", "5-len_timing", "6-irq_flag_timing"),
+    [](const ::testing::TestParamInfo<const char*>& info) {
+        std::string name = info.param;
+        for (char& c : name) {
+            if (c == '-' || c == '.') {
+                c = '_';
+            }
+        }
+        return name;
+    });
 
 // --- the queue ---------------------------------------------------------------
 //
@@ -123,9 +124,6 @@ void expect_pinned_failure(const std::string& name, const uint8_t expected_statu
 }
 
 }  // namespace
-
-
-
 
 // The DMC, which is Phase 3 and deliberately last: it steals CPU cycles, and
 // the cycle-exact bus is the most heavily verified thing in this project.

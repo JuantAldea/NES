@@ -173,8 +173,7 @@ GTEST_TEST(frameDumpEmphasis, emphasising_red_attenuates_only_green_and_blue)
 GTEST_TEST(frameDumpEmphasis, all_three_darkens_every_channel_twice_over)
 {
     const uint32_t out = nes::apply_emphasis(0xFFFFFF, 0x01, 7);
-    const uint8_t expected =
-        static_cast<uint8_t>(0xFF * nes::emphasis_attenuation * nes::emphasis_attenuation);
+    const uint8_t expected = static_cast<uint8_t>(0xFF * nes::emphasis_attenuation * nes::emphasis_attenuation);
 
     EXPECT_EQ(expected, static_cast<uint8_t>(out >> 16));
     EXPECT_EQ(expected, static_cast<uint8_t>(out >> 8));
@@ -203,12 +202,27 @@ GTEST_TEST(frameDumpEmphasis, a_framebuffer_pixel_carries_its_emphasis_into_the_
     for (uint32_t& entry : palette) {
         entry = 0xFFFFFF;
     }
-    const uint16_t plain = 0x01;                                   // index $01, no emphasis
+    const uint16_t plain = 0x01;                                         // index $01, no emphasis
     const uint16_t emphasised = static_cast<uint16_t>(0x01 | (1 << 6));  // index $01, red emphasis
 
     EXPECT_EQ(0xFFFFFFu, nes::palette_index_to_rgb(plain, palette, 64));
     EXPECT_NE(0xFFFFFFu, nes::palette_index_to_rgb(emphasised, palette, 64))
         << "the high bits of the pixel were dropped on the way to RGB";
+}
+
+// The lookup table the frontend uses must agree with the function everything
+// else uses, for all 512 pixel values. Two paths to one answer is exactly how a
+// display quietly starts disagreeing with a PPM dump of the same frame - and
+// the table exists only as an optimisation, so any divergence is a bug in it
+// rather than a difference of intent.
+GTEST_TEST(frameDumpEmphasis, the_lookup_table_matches_the_function_for_every_pixel)
+{
+    const nes::EmphasisTable table(PPU::nes_palette, 64);
+
+    for (uint16_t pixel = 0; pixel < 512; ++pixel) {
+        ASSERT_EQ(nes::palette_index_to_rgb(pixel, PPU::nes_palette, 64), table.rgb[pixel])
+            << "table and function disagree for pixel $" << std::hex << pixel;
+    }
 }
 
 }  // namespace tests

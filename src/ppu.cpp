@@ -409,9 +409,12 @@ void PPU::fetch_background_byte()
 // Produces the pixel for dot `cycle` of a visible scanline and writes it into
 // the framebuffer.
 //
-// The framebuffer holds a 6-bit palette INDEX, not a colour: the greyscale mask
-// is applied here because it is part of the palette lookup, but colour emphasis
-// is not, because it is a property of the video signal rather than of the pixel.
+// The framebuffer holds a 6-bit palette INDEX plus three emphasis bits, not a
+// colour. Both are captured here and for different reasons: greyscale because
+// it is part of the palette LOOKUP, emphasis because $2001 can be rewritten
+// mid-frame, so it varies per scanline and nothing later can recover it. What
+// emphasis does to the colour is still the display's job - see apply_emphasis
+// in frame_dump.h - and only the capture happens here.
 void PPU::render_pixel()
 {
     const int x = cycle - 1;
@@ -514,7 +517,7 @@ void PPU::render_pixel()
     //
     // Masked with $3F00 rather than compared against a range because the PPU
     // bus is 14 bits while v is 15 - bit 14 is not an address line here.
-    const bool forced_blank = !show_background && !show_sprites;
+    const bool forced_blank = !rendering_enabled();
 
     uint16_t palette_addr;
     if (forced_blank && (registers.PPUADDR & 0x3F00) == 0x3F00) {
@@ -543,8 +546,11 @@ void PPU::render_pixel()
     // two are separate hardware stages: greyscale masks the palette LOOKUP,
     // emphasis attenuates the signal that comes OUT. Merging them here would
     // discard which is which. See the framebuffer declaration for the encoding.
-    const uint16_t emphasis =
-        static_cast<uint16_t>((emphasize_red ? 1 : 0) | (emphasize_green ? 2 : 0) | (emphasize_blue ? 4 : 0));
+    // Taken straight off PPUMASK rather than reassembled from the three decoded
+    // bools: they are bits 5, 6 and 7 in that order, so this IS the same field,
+    // and rebuilding it would be redundant work on the hottest loop here -
+    // 61,440 pixels a frame.
+    const uint16_t emphasis = static_cast<uint16_t>((registers.PPUMASK >> 5) & 0x07);
     framebuffer[scanline * screen_width + x] = static_cast<uint16_t>(colour | (emphasis << 6));
 
     // The units advance at the END of the dot, so the pixel chosen above is the
