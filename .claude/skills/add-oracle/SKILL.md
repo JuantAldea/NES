@@ -1,6 +1,6 @@
 ---
 name: add-oracle
-description: Add a new hardware test ROM suite as a verification oracle - fetch script with SHA256 pins, gitignore, both CI jobs, GTEST_SKIP wiring, and a baseline measurement of what the ROMs report before the feature exists. Use when bringing in a new blargg suite, a nesdev test ROM, or any external ROM/vector set the tests will run against.
+description: Add a new hardware test ROM suite as a verification oracle - fetch script with SHA256 pins, gitignore, both CI jobs, an actionable failure when the ROM is absent, and a baseline measurement of what the ROMs report before the feature exists. Use when bringing in a new blargg suite, a nesdev test ROM, or any external ROM/vector set the tests will run against.
 ---
 
 # Adding a test ROM oracle
@@ -60,9 +60,22 @@ The header must say the ROMs are not committed and why.
   **with no trailing slash**. Follow the existing block's format.
 - `.github/workflows/main.yml`: the fetch list is duplicated in the `test` job
   *and* the `sanitizers` job. Add it to both; they drift otherwise.
-- The test file: `GTEST_SKIP` with a message naming the fetch script when the
-  ROMs are absent, so a missing fixture reports as skipped rather than as a
-  mysterious emulation failure.
+- The test file: a message naming the fetch script when the ROMs are absent —
+  `could not load <path> - run tests/test_files/fetch_x.sh`. **Fail, do not
+  skip.** CI fetches these, so a missing one means the *fetch step failed*, and
+  `GTEST_SKIP` exits 0: skipping there turns a broken CI run green, which is
+  the outcome this repo is built to prevent. The message is what stops a
+  missing fixture looking like an emulation defect.
+
+  `GTEST_SKIP` is only for fixtures that **cannot** be fetched at all —
+  `tests/test_files/local/` cartridge dumps and the 1.1 GB SingleStepTests
+  vectors. Those are absent on every clean checkout, so failing on them would
+  mean a permanently red suite. `SKIP_IF_ROM_ABSENT` in `tests/rom_fixture.h`
+  is for exactly that case and no other.
+
+  This section used to say every oracle needed a `GTEST_SKIP`. Twenty suites
+  did not have one and were right not to; see "Test ROMs are never committed"
+  in CLAUDE.md.
 - The CI "Report what was actually verified" step, **only if** the new tests
   cannot run in CI (large fixtures, user-supplied ROMs). Its `skipped` grep
   needs the new suite's test-name pattern, or the executed count goes wrong.
@@ -75,11 +88,31 @@ implements the PRG-RAM reporting protocol. Do not reimplement it.
 Prefer `TEST_P` with a parameterised list of ROM names over one test per ROM;
 that is what `tests/mmc3_rom_tests.cpp` does.
 
+`tests/rom_fixture.h` holds the shared helpers — `rom_present`,
+`distinct_indices`, `distinct_pixels`, and `SKIP_IF_ROM_ABSENT`. Use them
+rather than growing a per-file copy; three suites once had three incompatible
+`SKIP_IF_ABSENT` macros, one of which quietly emulated 300 frames behind a name
+that promised a file check.
+
 If two ROMs in the suite test opposite hardware revisions, do not drop one.
 Pick a revision, say which and why in a comment, and assert the other's failure
 *precisely* — the pattern from opcode `$AB` in `tests/instr_test_roms.cpp`,
 where an exact-failure assertion keeps a real disagreement visible instead of
 burying it.
+
+**Pin the failures you are not fixing yet**, with their exact status and
+message, as `tests/apu_rom_tests.cpp` does. A skipped failure says nothing when
+it changes; a pinned one fails in both directions, and its message tells the
+next person to promote the ROM into the passing list. That is how completing a
+feature announces itself — three ROMs did exactly that when the APU length
+counters landed.
+
+**Not every non-zero status is a failure.** Blargg's `$81` means "needs reset":
+the ROM finished one half and is waiting for a soft RESET to run the other.
+`blargg_rom_harness.h` reports that as `RomResult::needs_reset` and does not
+drive one, so such a ROM is neither passing nor failing — it is *blocked on a
+harness feature*. Say so in the baseline rather than recording it as a failure,
+or a later "3 of 6 pass" will read as progress it is not.
 
 ## Finally
 
