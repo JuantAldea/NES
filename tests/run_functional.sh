@@ -179,12 +179,26 @@ suite_job() {
 }
 
 # Build AND run chained inside ONE job, so the suite starts the instant its
-# build is ready instead of at a barrier. This chain is the critical path.
+# build is ready instead of at a barrier. This chain is the critical path: it
+# was 105s of a 106s wall, every other job finishing inside it.
+#
+# THE TREE IS PERSISTENT AND INCREMENTAL, which is where the time went. Building
+# a fresh sanitizer tree into $OUT cost ~47s of the chain on every run, and
+# bought nothing: clean-tree integrity is what the `fresh` job checks, and the
+# sanitizer build has no reason to be clean. scan-build is the opposite case and
+# genuinely must be wiped - it only analyses what it compiles, so an up-to-date
+# tree would analyse nothing and still report success. ASan has no such
+# property; a stale object file cannot hide a sanitizer finding, it just is not
+# rebuilt.
+#
+# build-asan is also the tree CLAUDE.md documents, so this shares the developer's
+# existing one rather than keeping a second copy warm.
+ASAN_TREE=${NES_ASAN_DIR:-$ROOT/build-asan}
 asan_job() {
-    cmake -S "$ROOT" -B "$OUT/asan" -G Ninja -DNES_BUILD_FRONTEND=OFF \
+    cmake -S "$ROOT" -B "$ASAN_TREE" -G Ninja -DNES_BUILD_FRONTEND=OFF \
         -DNES_SANITIZE=address,undefined >/dev/null 2>&1 || return 1
-    cmake --build "$OUT/asan" >/dev/null 2>&1 || return 1
-    NES_TEST_BIN="$OUT/asan/tests/tests" \
+    cmake --build "$ASAN_TREE" >/dev/null 2>&1 || return 1
+    NES_TEST_BIN="$ASAN_TREE/tests/tests" \
         ASAN_OPTIONS=detect_leaks=1:detect_stack_use_after_return=1 \
         UBSAN_OPTIONS=print_stacktrace=1:report_error_type=1 \
         "$ROOT/tests/run_tests.sh" 2>/dev/null | grep "executed" | tail -1
