@@ -28,6 +28,20 @@ It shards the binary across every core rather than running one process, takes
 `tests/run_tests.sh --gtest_filter='testCPU.*'` works. `NES_TEST_BIN=` points
 it at another tree, e.g. `build-asan`.
 
+Everything a green suite does *not* prove — a clean tree building from nothing,
+the suite linking with no SDL, every fetch script from a cold cache, the CLI's
+exit codes, and the frontend opening a window per mapper:
+
+```sh
+tests/run_functional.sh            # add --full for the sanitizers, --no-gui for headless
+# 0 failed, 2 skipped
+```
+
+One line per check, detail only on failure. It exits with the number of
+failures. Prefer it to driving those checks by hand — it was written by
+automating a pass that took fifteen separate commands and produced pages of
+output to read.
+
 Sanitizers (a separate tree, never the default one):
 
 ```sh
