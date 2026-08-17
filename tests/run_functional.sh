@@ -3,43 +3,54 @@
 # NOT prove.
 #
 # WHY THIS EXISTS. Driving these checks by hand costs about fifteen separate
-# commands and pages of output to read, and most of that output is noise on a
-# good day. This prints one line per check and details only for failures, so
-# the whole pass is one command and a short table.
+# commands and pages of output to read, most of it noise on a good day. This
+# prints one line per check, detail only on failure, and exits with the number
+# of failures.
 #
 # WHAT IT COVERS THAT `ctest` DOES NOT:
 #
 #   build     a clean tree configures and builds from nothing - catches a header
 #             that only compiles because an old object file is lying around
 #   nosdl     the suite builds AND LINKS with no SDL present. CLAUDE.md requires
-#             this; nothing under tests/ may depend on the frontend, and the
-#             check is `ldd | grep sdl`, not just "it compiled"
-#   fetch     every fetch script works from a COLD cache and is idempotent on a
-#             second run. Locally the ROMs are always already there, so this is
-#             the one class of failure a developer machine structurally cannot
-#             see - it only ever showed up in CI before
+#             it; the check is `ldd | grep sdl`, not just "it compiled"
+#   fetch     every fetch script works from a COLD cache and is idempotent.
+#             Locally the ROMs are always already there, so this is the one
+#             class of failure a developer machine structurally cannot see
 #   cli       ./build/NES reports failure with a non-zero EXIT CODE, not just a
-#             message. A wrapper script cannot see a message
-#   hygiene   no ROM or build output is tracked by git, imgui.ini is ignored
-#   gui       the frontend actually opens a window and renders a cartridge
+#             message a wrapper script cannot see
+#   hygiene   no ROM or build output tracked by git, imgui.ini ignored
+#   gui       the frontend opens a window and renders one cartridge per mapper
 #
 # THE GUI SECTION IS A SMOKE TEST, NOT AN ORACLE. It proves the window opens,
-# the process survives, and nothing lands on stderr. Whether the PICTURE is
-# right is not decidable here - screenshots are written to the output directory
-# and judging them is a separate, human (or model) job. Saying otherwise would
-# be the same false green this repo spends its effort avoiding.
+# the process survives, and stderr is empty. Whether the PICTURE is right is not
+# decidable here - screenshots are written out and judging them is a separate
+# job. Saying otherwise would be the false green this repo exists to avoid.
+#
+# ---------------------------------------------------------------------------
+# PARALLELISM, and the two measurements that shaped it.
+#
+# The independent work is the four TREES - a clean build, a no-SDL build, a
+# sanitizer build, and scan-build - plus the fetches, which are network-bound
+# and share no state with any of them. Those all start at once. Everything that
+# consumes a build waits for its own tree and nothing else.
+#
+# The sanitizer suite is run SHARDED, through run_tests.sh, not as one process.
+# Measured: 297s as a single process against 57s sharded, a 5.2x difference
+# that is entirely "one core versus all of them". A single-process sanitizer run
+# looks like a hung machine - almost no CPU, for five minutes - which is how
+# this was noticed.
+#
+# The ordinary suite is NOT worth parallelising further: 41s of CPU across 907
+# cases, but the slowest single case is 3.5s, and that is the floor no amount of
+# sharding beats.
 #
 #   tests/run_functional.sh              everything except the sanitizers
-#   tests/run_functional.sh --full       including the sanitizer suite (slow)
+#   tests/run_functional.sh --full       including the sanitizer suite
 #   tests/run_functional.sh --no-gui     skip the frontend (headless machines)
-#
-# Exit status is the number of failed checks, so `if tests/run_functional.sh`
-# works.
 set -u
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 OUT=${NES_FUNCTIONAL_OUT:-${TMPDIR:-/tmp}/nes-functional}
-LOG="$OUT/log"
 
 WITH_SANITIZERS=0
 WITH_GUI=1
@@ -47,186 +58,195 @@ for arg in "$@"; do
     case "$arg" in
     --full) WITH_SANITIZERS=1 ;;
     --no-gui) WITH_GUI=0 ;;
-    *) echo "usage: tests/run_functional.sh [--full] [--no-gui]" >&2; exit 2 ;;
+    *)
+        echo "usage: tests/run_functional.sh [--full] [--no-gui]" >&2
+        exit 2
+        ;;
     esac
 done
 
 rm -rf "$OUT"
 mkdir -p "$OUT"
-: >"$LOG"
 
 FAILED=0
 SKIPPED=0
 
-# Each check prints one line. Detail goes to the log and is echoed only when
-# the check fails - which is the whole point of the exercise.
 report() {
-    verdict=$1
-    name=$2
-    detail=${3:-}
-    case "$verdict" in
-    PASS) printf '  \033[32mPASS\033[0m  %-34s %s\n' "$name" "$detail" ;;
-    SKIP) printf '  \033[33mSKIP\033[0m  %-34s %s\n' "$name" "$detail"; SKIPPED=$((SKIPPED + 1)) ;;
+    case "$1" in
+    PASS) printf '  \033[32mPASS\033[0m  %-34s %s\n' "$2" "${3:-}" ;;
+    SKIP)
+        printf '  \033[33mSKIP\033[0m  %-34s %s\n' "$2" "${3:-}"
+        SKIPPED=$((SKIPPED + 1))
+        ;;
     FAIL)
-        printf '  \033[31mFAIL\033[0m  %-34s %s\n' "$name" "$detail"
+        printf '  \033[31mFAIL\033[0m  %-34s %s\n' "$2" "${3:-}"
         FAILED=$((FAILED + 1))
         ;;
     esac
 }
 
-section() { printf '\n%s\n' "$1"; }
+# Starts a named background job. Its exit status lands in $OUT/<name>.rc and its
+# output in $OUT/<name>.log, so results are collected in a fixed order later and
+# the printed table stays deterministic however the jobs interleave.
+job() {
+    name=$1
+    shift
+    (
+        "$@" >"$OUT/$name.log" 2>&1
+        echo $? >"$OUT/$name.rc"
+    ) &
+}
+rc_of() { cat "$OUT/$1.rc" 2>/dev/null || echo 99; }
 
-# ---------------------------------------------------------------- build ------
-section "build integrity"
+build_tree() { cmake -S "$ROOT" -B "$1" -G Ninja "$3" >/dev/null 2>&1 && cmake --build "$1" && [ -x "$1/$2" ]; }
 
-if cmake -S "$ROOT" -B "$OUT/fresh" -G Ninja >>"$LOG" 2>&1 &&
-    cmake --build "$OUT/fresh" >>"$LOG" 2>&1 &&
-    [ -x "$OUT/fresh/tests/tests" ]; then
-    report PASS "clean tree configures and builds"
-else
-    report FAIL "clean tree configures and builds" "see $LOG"
-fi
+# Runs every fetch script IN A SANDBOX, leaving tests/test_files untouched.
+#
+# Each script derives its destination from its own location, so copying the
+# scripts into a scratch directory and running them there fetches into the
+# scratch directory. The real fixtures are never moved, deleted or risked.
+#
+# That is the second design. The first deleted the real directories to force a
+# cold fetch, and it cost exactly what it looks like it would: a run killed
+# part-way left tests/test_files/sprite_hit holding 7 of its 11 ROMs, and the
+# next suite run reported four failures in an emulator that was working
+# perfectly. A backup-and-restore trap was the third design and still had a
+# window. Not touching the tree has no window.
+fetch_all() {
+    sandbox="$OUT/fetch-sandbox"
+    rm -rf "$sandbox"
+    mkdir -p "$sandbox"
+    cp "$ROOT"/tests/test_files/fetch_*.sh "$sandbox/"
 
-if cmake -S "$ROOT" -B "$OUT/nosdl" -G Ninja -DNES_BUILD_FRONTEND=OFF >>"$LOG" 2>&1 &&
-    cmake --build "$OUT/nosdl" >>"$LOG" 2>&1 &&
-    [ -x "$OUT/nosdl/tests/tests" ]; then
-    sdl=$(ldd "$OUT/nosdl/tests/tests" 2>/dev/null | grep -ci sdl)
-    if [ "$sdl" -eq 0 ]; then
-        report PASS "suite builds and links without SDL"
-    else
-        report FAIL "suite builds and links without SDL" "$sdl SDL libs linked"
-    fi
-else
-    report FAIL "suite builds without SDL" "see $LOG"
-fi
+    status=0
+    for script in "$sandbox"/fetch_*.sh; do
+        case "$(basename "$script")" in
+        fetch_single_step_tests.sh) continue ;; # 1.1 GB, deliberately not pulled
+        esac
+
+        # One retry: these hosts really do produce "TLS connect error:
+        # unexpected eof". A retry that SUCCEEDS is still reported, so the
+        # flakiness stays visible rather than being smoothed away.
+        if ! "$script"; then
+            echo "RETRY $(basename "$script")"
+            "$script" || {
+                echo "COLD-FETCH-FAILED $(basename "$script")"
+                status=1
+                continue
+            }
+        fi
+        "$script" | grep -q "fetching" && {
+            echo "NOT-IDEMPOTENT $(basename "$script")"
+            status=1
+        }
+    done
+    rm -rf "$sandbox"
+    return $status
+}
+
+printf 'starting independent trees and fetches in parallel...\n'
+
+job fresh build_tree "$OUT/fresh" tests/tests -DCMAKE_BUILD_TYPE=Checked
+job nosdl build_tree "$OUT/nosdl" tests/tests -DNES_BUILD_FRONTEND=OFF
+job fetch fetch_all
+command -v scan-build >/dev/null 2>&1 && job analyze "$ROOT/tests/run_scan_build.sh"
+[ "$WITH_SANITIZERS" -eq 1 ] &&
+    job asanbuild sh -c "cmake -S '$ROOT' -B '$OUT/asan' -G Ninja -DNES_BUILD_FRONTEND=OFF -DNES_SANITIZE=address,undefined >/dev/null 2>&1 && cmake --build '$OUT/asan'"
+
+wait
 
 BUILD=${NES_BUILD_DIR:-$ROOT/build}
 [ -x "$BUILD/tests/tests" ] || BUILD="$OUT/fresh"
 
-# ---------------------------------------------------------------- fetch ------
-section "fixtures"
+section() { printf '\n%s\n' "$1"; }
 
-cold_ok=1
-idem_ok=1
-for script in "$ROOT"/tests/test_files/fetch_*.sh; do
-    name=$(basename "$script" .sh)
-    case "$name" in
-    fetch_single_step_tests) continue ;;  # 1.1 GB, deliberately not pulled here
-    esac
+section "build integrity"
+[ "$(rc_of fresh)" -eq 0 ] && report PASS "clean tree configures and builds" ||
+    report FAIL "clean tree configures and builds" "see $OUT/fresh.log"
 
-    dir=$(sed -n 's/^DEST="\$DIR\/\([a-z0-9_.]*\)".*/\1/p' "$script" | head -1)
-    [ -n "$dir" ] && rm -rf "$ROOT/tests/test_files/$dir"
-
-    # One retry, and it is not indulgence. The hosts these pull from produce a
-    # real "TLS connect error: unexpected eof while reading" often enough that
-    # a single attempt makes this check about the network rather than about the
-    # project. A retry that SUCCEEDS is still reported, so the flakiness stays
-    # visible instead of being smoothed away; a retry that fails is a failure.
-    if ! "$script" >>"$LOG" 2>&1; then
-        if "$script" >>"$LOG" 2>&1; then
-            report PASS "cold fetch: $name" "after one retry - the host was flaky"
-        else
-            report FAIL "cold fetch: $name" "twice, see $LOG"
-            cold_ok=0
-        fi
-        continue
-    fi
-    # A second run must re-download nothing.
-    if "$script" 2>>"$LOG" | grep -qv "ok (cached)" >/dev/null 2>&1; then
-        second=$("$script" 2>>"$LOG" | grep -c "fetching")
-        [ "$second" -ne 0 ] && idem_ok=0
-    fi
-done
-[ "$cold_ok" -eq 1 ] && report PASS "every fetch script from a cold cache"
-[ "$idem_ok" -eq 1 ] && report PASS "fetch scripts re-download nothing" ||
-    report FAIL "fetch scripts re-download nothing" "a second run fetched again"
-
-# ---------------------------------------------------------------- suite ------
-section "verification"
-
-# grep, not `tail -N | head -1`. The summary is the last NON-BLANK line and the
-# first draft of this counted lines from the end, landing on the blank one and
-# reporting "no result" against a suite that had just passed 907 tests. Matching
-# the content rather than its position is the fix.
-counts=$(NES_TEST_BIN="$BUILD/tests/tests" "$ROOT/tests/run_tests.sh" 2>>"$LOG" | grep "executed" | tail -1)
-case "$counts" in
-*"0 failed"*) report PASS "test suite" "$counts" ;;
-*) report FAIL "test suite" "${counts:-no result - see $LOG}" ;;
-esac
-
-if NES_BUILD_DIR="$BUILD" "$ROOT/tests/test_counts.sh" --check >>"$LOG" 2>&1; then
-    report PASS "test-count table matches"
+if [ "$(rc_of nosdl)" -eq 0 ]; then
+    sdl=$(ldd "$OUT/nosdl/tests/tests" 2>/dev/null | grep -ci sdl)
+    [ "$sdl" -eq 0 ] && report PASS "suite builds and links without SDL" ||
+        report FAIL "suite builds and links without SDL" "$sdl SDL libs linked"
 else
-    report FAIL "test-count table matches" "run tests/test_counts.sh --check"
+    report FAIL "suite builds without SDL" "see $OUT/nosdl.log"
 fi
 
-if command -v scan-build >/dev/null 2>&1; then
-    if "$ROOT/tests/run_scan_build.sh" >>"$LOG" 2>&1; then
-        report PASS "static analyzer" "no bugs found"
+section "fixtures"
+if [ "$(rc_of fetch)" -eq 0 ]; then
+    # `grep -c` prints 0 AND exits 1 when it matches nothing, so `|| echo 0`
+    # yields TWO lines and every later numeric test on it misbehaves. Count the
+    # lines instead; there is no failure path to paper over.
+    retried=$(grep RETRY "$OUT/fetch.log" 2>/dev/null | wc -l)
+    if [ "$retried" -eq 0 ]; then
+        report PASS "fetch scripts, cold and idempotent"
     else
-        report FAIL "static analyzer" "see $LOG"
+        report PASS "fetch scripts, cold and idempotent" "$retried needed a retry - flaky host"
     fi
+else
+    report FAIL "fetch scripts, cold and idempotent" "see $OUT/fetch.log"
+fi
+
+section "verification"
+counts=$(NES_TEST_BIN="$BUILD/tests/tests" "$ROOT/tests/run_tests.sh" 2>/dev/null | grep "executed" | tail -1)
+case "$counts" in
+*"0 failed"*) report PASS "test suite" "$counts" ;;
+*) report FAIL "test suite" "${counts:-no result}" ;;
+esac
+
+NES_BUILD_DIR="$BUILD" "$ROOT/tests/test_counts.sh" --check >"$OUT/counts.log" 2>&1 &&
+    report PASS "test-count table matches" ||
+    report FAIL "test-count table matches" "run tests/test_counts.sh --check"
+
+if [ -f "$OUT/analyze.rc" ]; then
+    [ "$(rc_of analyze)" -eq 0 ] && report PASS "static analyzer" "no bugs found" ||
+        report FAIL "static analyzer" "see $OUT/analyze.log"
 else
     report SKIP "static analyzer" "scan-build not installed"
 fi
 
 if [ "$WITH_SANITIZERS" -eq 1 ]; then
-    if cmake -S "$ROOT" -B "$OUT/asan" -G Ninja -DNES_BUILD_FRONTEND=OFF \
-        -DNES_SANITIZE=address,undefined >>"$LOG" 2>&1 &&
-        cmake --build "$OUT/asan" >>"$LOG" 2>&1; then
-        san=$(ASAN_OPTIONS=detect_leaks=1:detect_stack_use_after_return=1 \
+    if [ "$(rc_of asanbuild)" -eq 0 ]; then
+        # SHARDED. As one process this is ~5x slower and leaves the machine idle.
+        san=$(NES_TEST_BIN="$OUT/asan/tests/tests" \
+            ASAN_OPTIONS=detect_leaks=1:detect_stack_use_after_return=1 \
             UBSAN_OPTIONS=print_stacktrace=1:report_error_type=1 \
-            "$OUT/asan/tests/tests" 2>>"$LOG" | tail -1)
+            "$ROOT/tests/run_tests.sh" 2>/dev/null | grep "executed" | tail -1)
         case "$san" in
-        *PASSED*) report PASS "ASan + UBSan" "$san" ;;
-        *) report FAIL "ASan + UBSan" "${san:-see $LOG}" ;;
+        *"0 failed"*) report PASS "ASan + UBSan" "$san" ;;
+        *) report FAIL "ASan + UBSan" "${san:-see $OUT/asanbuild.log}" ;;
         esac
     else
-        report FAIL "ASan + UBSan" "build failed, see $LOG"
+        report FAIL "ASan + UBSan" "build failed, see $OUT/asanbuild.log"
     fi
 else
     report SKIP "ASan + UBSan" "pass --full to include"
 fi
 
-# ------------------------------------------------------------------ cli ------
 section "command line"
-
-# The exit CODE, not the message. Measured without a pipe: `cmd | head; echo $?`
-# reports head's status, which has silently turned a real failure into a pass
-# more than once in this project's history.
 check_exit() {
-    desc=$1; want=$2; shift 2
+    desc=$1
+    want=$2
+    shift 2
     timeout 60 "$@" >"$OUT/cli.txt" 2>&1
     got=$?
-    if [ "$got" -eq "$want" ]; then
-        report PASS "$desc" "exit=$got"
-    else
+    [ "$got" -eq "$want" ] && report PASS "$desc" "exit=$got" ||
         report FAIL "$desc" "exit=$got, wanted $want"
-    fi
 }
-check_exit "CLI rejects no arguments"  1 "$BUILD/NES"
+check_exit "CLI rejects no arguments" 1 "$BUILD/NES"
 check_exit "CLI rejects a missing file" 1 "$BUILD/NES" /nonexistent/nope.nes
-check_exit "CLI rejects a non-ROM"      1 "$BUILD/NES" "$ROOT/README.md"
+check_exit "CLI rejects a non-ROM" 1 "$BUILD/NES" "$ROOT/README.md"
 
-# -------------------------------------------------------------- hygiene ------
 section "repository hygiene"
-
 tracked=$(cd "$ROOT" && git ls-files | grep -cE '\.nes$|^build')
-if [ "$tracked" -eq 0 ]; then
-    report PASS "no ROMs or build output tracked"
-else
+[ "$tracked" -eq 0 ] && report PASS "no ROMs or build output tracked" ||
     report FAIL "no ROMs or build output tracked" "$tracked files"
-fi
-
-if (cd "$ROOT" && git check-ignore -q imgui.ini); then
-    report PASS "imgui.ini is ignored"
-else
+(cd "$ROOT" && git check-ignore -q imgui.ini) && report PASS "imgui.ini is ignored" ||
     report FAIL "imgui.ini is ignored"
-fi
 
-# ------------------------------------------------------------------ gui ------
 section "frontend"
-
+# Serial by necessity: every instance opens a window called NES, so two at once
+# cannot be told apart by xdotool.
 if [ "$WITH_GUI" -eq 0 ]; then
     report SKIP "frontend smoke test" "--no-gui"
 elif [ ! -x "$BUILD/nes_frontend" ]; then
@@ -236,8 +256,6 @@ elif [ -z "${DISPLAY:-}" ] && [ -z "${WAYLAND_DISPLAY:-}" ]; then
 elif ! command -v xdotool >/dev/null 2>&1 || ! command -v import >/dev/null 2>&1; then
     report SKIP "frontend smoke test" "needs xdotool and ImageMagick"
 else
-    # One cartridge per supported mapper, so a mapper that stopped working in
-    # the frontend shows up even though the ROM suite still passes.
     for entry in \
         "mapper0:$ROOT/tests/test_files/local/smb.nes" \
         "mapper2:$ROOT/tests/test_files/visual/240pee.nes" \
@@ -245,7 +263,10 @@ else
         "mapper4:$ROOT/tests/test_files/mmc3/4-scanline_timing.nes"; do
         tag=${entry%%:*}
         rom=${entry#*:}
-        [ -f "$rom" ] || { report SKIP "frontend $tag" "no ROM"; continue; }
+        [ -f "$rom" ] || {
+            report SKIP "frontend $tag" "no ROM"
+            continue
+        }
 
         SDL_VIDEODRIVER=x11 "$BUILD/nes_frontend" "$rom" >"$OUT/$tag.err" 2>&1 &
         pid=$!
@@ -257,7 +278,7 @@ else
             i=$((i + 1))
             sleep 0.5
         done
-        sleep 4
+        sleep 3
 
         if [ -z "$wid" ]; then
             report FAIL "frontend $tag" "no window appeared"
@@ -269,11 +290,9 @@ else
         fi
         kill "$pid" 2>/dev/null
         wait "$pid" 2>/dev/null
-        sleep 0.5
     done
     echo "        screenshots in $OUT - the PICTURE still needs looking at"
 fi
 
-# --------------------------------------------------------------- verdict -----
-printf '\n%s failed, %s skipped. Log: %s\n' "$FAILED" "$SKIPPED" "$LOG"
+printf '\n%s failed, %s skipped. Logs: %s\n' "$FAILED" "$SKIPPED" "$OUT"
 exit "$FAILED"
