@@ -54,12 +54,14 @@ OUT=${NES_FUNCTIONAL_OUT:-${TMPDIR:-/tmp}/nes-functional}
 
 WITH_SANITIZERS=0
 WITH_GUI=1
+WITH_TREES=1 # the clean build, the no-SDL build, the cold fetch and the analyzer
 for arg in "$@"; do
     case "$arg" in
     --full) WITH_SANITIZERS=1 ;;
+    --quick) WITH_TREES=0 ;;
     --no-gui) WITH_GUI=0 ;;
     *)
-        echo "usage: tests/run_functional.sh [--full] [--no-gui]" >&2
+        echo "usage: tests/run_functional.sh [--quick|--full] [--no-gui]" >&2
         exit 2
         ;;
     esac
@@ -210,11 +212,13 @@ asan_job() {
 # sanitizer suite waited from 46.7s for the same reason.
 printf 'launching every independent job at once...\n'
 
-job fresh build_tree "$OUT/fresh" tests/tests -DCMAKE_BUILD_TYPE=Checked
-job nosdl build_tree "$OUT/nosdl" tests/tests -DNES_BUILD_FRONTEND=OFF
-job fetch fetch_all
 job suite suite_job
-command -v scan-build >/dev/null 2>&1 && job analyze "$ROOT/tests/run_scan_build.sh"
+if [ "$WITH_TREES" -eq 1 ]; then
+    job fresh build_tree "$OUT/fresh" tests/tests -DCMAKE_BUILD_TYPE=Checked
+    job nosdl build_tree "$OUT/nosdl" tests/tests -DNES_BUILD_FRONTEND=OFF
+    job fetch fetch_all
+    command -v scan-build >/dev/null 2>&1 && job analyze "$ROOT/tests/run_scan_build.sh"
+fi
 [ "$WITH_SANITIZERS" -eq 1 ] && job asan asan_job
 
 wait
@@ -222,19 +226,30 @@ wait
 section() { printf '\n%s\n' "$1"; }
 
 section "build integrity"
-[ "$(rc_of fresh)" -eq 0 ] && report PASS "clean tree configures and builds" "" "$(ms_of fresh)" ||
-    report FAIL "clean tree configures and builds" "see $OUT/fresh.log" "$(ms_of fresh)"
-
-if [ "$(rc_of nosdl)" -eq 0 ]; then
-    sdl=$(ldd "$OUT/nosdl/tests/tests" 2>/dev/null | grep -ci sdl)
-    [ "$sdl" -eq 0 ] && report PASS "suite builds and links without SDL" "" "$(ms_of nosdl)" ||
-        report FAIL "suite builds and links without SDL" "$sdl SDL libs linked" "$(ms_of nosdl)"
+if [ "$WITH_TREES" -eq 0 ]; then
+    report SKIP "clean tree configures and builds" "--quick"
+    report SKIP "suite builds and links without SDL" "--quick"
+elif [ "$(rc_of fresh)" -eq 0 ]; then
+    report PASS "clean tree configures and builds" "" "$(ms_of fresh)"
 else
-    report FAIL "suite builds without SDL" "see $OUT/nosdl.log" "$(ms_of nosdl)"
+    report FAIL "clean tree configures and builds" "see $OUT/fresh.log" "$(ms_of fresh)"
+fi
+
+if [ "$WITH_TREES" -eq 1 ]; then
+
+    if [ "$(rc_of nosdl)" -eq 0 ]; then
+        sdl=$(ldd "$OUT/nosdl/tests/tests" 2>/dev/null | grep -ci sdl)
+        [ "$sdl" -eq 0 ] && report PASS "suite builds and links without SDL" "" "$(ms_of nosdl)" ||
+            report FAIL "suite builds and links without SDL" "$sdl SDL libs linked" "$(ms_of nosdl)"
+    else
+        report FAIL "suite builds without SDL" "see $OUT/nosdl.log" "$(ms_of nosdl)"
+    fi
 fi
 
 section "fixtures"
-if [ "$(rc_of fetch)" -eq 0 ]; then
+if [ "$WITH_TREES" -eq 0 ]; then
+    report SKIP "fetch scripts (NETWORK-BOUND)" "--quick"
+elif [ "$(rc_of fetch)" -eq 0 ]; then
     # `grep -c` prints 0 AND exits 1 when it matches nothing, so `|| echo 0`
     # yields TWO lines and every later numeric test on it misbehaves. Count the
     # lines instead; there is no failure path to paper over.
@@ -259,7 +274,9 @@ timed env NES_BUILD_DIR="$BUILD" "$ROOT/tests/test_counts.sh" --check >"$OUT/cou
     report PASS "test-count table matches" "" "$STEP_MS" ||
     report FAIL "test-count table matches" "run tests/test_counts.sh --check" "$STEP_MS"
 
-if [ -f "$OUT/analyze.rc" ]; then
+if [ "$WITH_TREES" -eq 0 ]; then
+    report SKIP "static analyzer" "--quick"
+elif [ -f "$OUT/analyze.rc" ]; then
     [ "$(rc_of analyze)" -eq 0 ] && report PASS "static analyzer" "no bugs found" "$(ms_of analyze)" ||
         report FAIL "static analyzer" "see $OUT/analyze.log" "$(ms_of analyze)"
 else
@@ -354,7 +371,7 @@ printf '\n%s failed, %s skipped. Wall %ss. Logs: %s\n' "$FAILED" "$SKIPPED" "$wa
 # breakdown that added up would be misleading. What matters is which job is the
 # long pole and whether it is working or waiting.
 printf '\nparallel phase, per job:\n'
-for j in fresh nosdl fetch suite analyze asan; do
+for j in suite fresh nosdl fetch analyze asan; do
     [ -f "$OUT/$j.ms" ] || continue
     printf '  %-12s %s\n' "$j" "$(secs "$(ms_of "$j")")"
 done
