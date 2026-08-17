@@ -176,7 +176,21 @@ fetch_all() {
 BUILD=${NES_BUILD_DIR:-$ROOT/build}
 [ -x "$BUILD/tests/tests" ] || BUILD="$OUT/fresh"
 
+# BUILDS FIRST, and that is not a convenience.
+#
+# This ran the binary already sitting in build/ without rebuilding it. Given an
+# edited-but-not-compiled tree it reported "907 executed, 0 skipped, 0 failed"
+# against a deliberately broken test - measured, not theoretical. A tool whose
+# whole job is "are my changes good" was reporting on somebody else's changes,
+# which is the exact false green this repository exists to prevent.
+#
+# The incremental build is ~1s against a ~9s suite, so there was never a cost
+# worth trading for it.
 suite_job() {
+    if ! cmake --build "$BUILD" >"$OUT/suite-build.log" 2>&1; then
+        echo "BUILD FAILED - see $OUT/suite-build.log"
+        return 1
+    fi
     NES_TEST_BIN="$BUILD/tests/tests" "$ROOT/tests/run_tests.sh" 2>/dev/null | grep "executed" | tail -1
 }
 
@@ -264,10 +278,10 @@ else
 fi
 
 section "verification"
-counts=$(grep "executed" "$OUT/suite.log" 2>/dev/null | tail -1)
+counts=$(grep -E "executed|BUILD FAILED" "$OUT/suite.log" 2>/dev/null | tail -1)
 case "$counts" in
-*"0 failed"*) report PASS "test suite" "$counts" "$(ms_of suite)" ;;
-*) report FAIL "test suite" "${counts:-no result}" "$(ms_of suite)" ;;
+*"0 failed"*) report PASS "test suite (built first)" "$counts" "$(ms_of suite)" ;;
+*) report FAIL "test suite (built first)" "${counts:-no result}" "$(ms_of suite)" ;;
 esac
 
 timed env NES_BUILD_DIR="$BUILD" "$ROOT/tests/test_counts.sh" --check >"$OUT/counts.log" 2>&1 &&
