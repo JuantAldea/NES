@@ -70,19 +70,40 @@ mkdir -p "$OUT"
 
 FAILED=0
 SKIPPED=0
+WALL_START=$(date +%s)
 
+# Milliseconds. Timing exists to answer one question: is a slow pass slow
+# because the machine is working, or because it is waiting on the network? A
+# step that takes 90s at 3% CPU and one that takes 90s at 3000% look identical
+# in a total.
+now_ms() { date +%s%3N; }
+secs() { awk -v ms="$1" 'BEGIN { printf "%6.1fs", ms / 1000 }'; }
+
+# $4, when given, is the step's duration in ms.
 report() {
+    dur=""
+    [ -n "${4:-}" ] && dur="[$(secs "$4")]"
     case "$1" in
-    PASS) printf '  \033[32mPASS\033[0m  %-34s %s\n' "$2" "${3:-}" ;;
+    PASS) printf '  \033[32mPASS\033[0m %9s  %-34s %s\n' "$dur" "$2" "${3:-}" ;;
     SKIP)
-        printf '  \033[33mSKIP\033[0m  %-34s %s\n' "$2" "${3:-}"
+        printf '  \033[33mSKIP\033[0m %9s  %-34s %s\n' "$dur" "$2" "${3:-}"
         SKIPPED=$((SKIPPED + 1))
         ;;
     FAIL)
-        printf '  \033[31mFAIL\033[0m  %-34s %s\n' "$2" "${3:-}"
+        printf '  \033[31mFAIL\033[0m %9s  %-34s %s\n' "$dur" "$2" "${3:-}"
         FAILED=$((FAILED + 1))
         ;;
     esac
+}
+
+# Times a serial check and leaves the result in $STEP_MS.
+STEP_MS=0
+timed() {
+    _t0=$(now_ms)
+    "$@"
+    _rc=$?
+    STEP_MS=$(( $(now_ms) - _t0 ))
+    return $_rc
 }
 
 # Starts a named background job. Its exit status lands in $OUT/<name>.rc and its
@@ -92,11 +113,15 @@ job() {
     name=$1
     shift
     (
+        _j0=$(now_ms)
         "$@" >"$OUT/$name.log" 2>&1
-        echo $? >"$OUT/$name.rc"
+        _rc=$?
+        echo $(( $(now_ms) - _j0 )) >"$OUT/$name.ms"
+        echo $_rc >"$OUT/$name.rc"
     ) &
 }
 rc_of() { cat "$OUT/$1.rc" 2>/dev/null || echo 99; }
+ms_of() { cat "$OUT/$1.ms" 2>/dev/null || echo 0; }
 
 build_tree() { cmake -S "$ROOT" -B "$1" -G Ninja "$3" >/dev/null 2>&1 && cmake --build "$1" && [ -x "$1/$2" ]; }
 
@@ -161,15 +186,15 @@ BUILD=${NES_BUILD_DIR:-$ROOT/build}
 section() { printf '\n%s\n' "$1"; }
 
 section "build integrity"
-[ "$(rc_of fresh)" -eq 0 ] && report PASS "clean tree configures and builds" ||
-    report FAIL "clean tree configures and builds" "see $OUT/fresh.log"
+[ "$(rc_of fresh)" -eq 0 ] && report PASS "clean tree configures and builds" "" "$(ms_of fresh)" ||
+    report FAIL "clean tree configures and builds" "see $OUT/fresh.log" "$(ms_of fresh)"
 
 if [ "$(rc_of nosdl)" -eq 0 ]; then
     sdl=$(ldd "$OUT/nosdl/tests/tests" 2>/dev/null | grep -ci sdl)
-    [ "$sdl" -eq 0 ] && report PASS "suite builds and links without SDL" ||
-        report FAIL "suite builds and links without SDL" "$sdl SDL libs linked"
+    [ "$sdl" -eq 0 ] && report PASS "suite builds and links without SDL" "" "$(ms_of nosdl)" ||
+        report FAIL "suite builds and links without SDL" "$sdl SDL libs linked" "$(ms_of nosdl)"
 else
-    report FAIL "suite builds without SDL" "see $OUT/nosdl.log"
+    report FAIL "suite builds without SDL" "see $OUT/nosdl.log" "$(ms_of nosdl)"
 fi
 
 section "fixtures"
@@ -179,28 +204,29 @@ if [ "$(rc_of fetch)" -eq 0 ]; then
     # lines instead; there is no failure path to paper over.
     retried=$(grep RETRY "$OUT/fetch.log" 2>/dev/null | wc -l)
     if [ "$retried" -eq 0 ]; then
-        report PASS "fetch scripts, cold and idempotent"
+        report PASS "fetch scripts (NETWORK-BOUND)" "" "$(ms_of fetch)"
     else
-        report PASS "fetch scripts, cold and idempotent" "$retried needed a retry - flaky host"
+        report PASS "fetch scripts (NETWORK-BOUND)" "$retried retried - flaky host" "$(ms_of fetch)"
     fi
 else
-    report FAIL "fetch scripts, cold and idempotent" "see $OUT/fetch.log"
+    report FAIL "fetch scripts (NETWORK-BOUND)" "see $OUT/fetch.log" "$(ms_of fetch)"
 fi
 
 section "verification"
-counts=$(NES_TEST_BIN="$BUILD/tests/tests" "$ROOT/tests/run_tests.sh" 2>/dev/null | grep "executed" | tail -1)
+suite_run() { counts=$(NES_TEST_BIN="$BUILD/tests/tests" "$ROOT/tests/run_tests.sh" 2>/dev/null | grep "executed" | tail -1); }
+timed suite_run
 case "$counts" in
-*"0 failed"*) report PASS "test suite" "$counts" ;;
-*) report FAIL "test suite" "${counts:-no result}" ;;
+*"0 failed"*) report PASS "test suite" "$counts" "$STEP_MS" ;;
+*) report FAIL "test suite" "${counts:-no result}" "$STEP_MS" ;;
 esac
 
-NES_BUILD_DIR="$BUILD" "$ROOT/tests/test_counts.sh" --check >"$OUT/counts.log" 2>&1 &&
-    report PASS "test-count table matches" ||
-    report FAIL "test-count table matches" "run tests/test_counts.sh --check"
+timed env NES_BUILD_DIR="$BUILD" "$ROOT/tests/test_counts.sh" --check >"$OUT/counts.log" 2>&1 &&
+    report PASS "test-count table matches" "" "$STEP_MS" ||
+    report FAIL "test-count table matches" "run tests/test_counts.sh --check" "$STEP_MS"
 
 if [ -f "$OUT/analyze.rc" ]; then
-    [ "$(rc_of analyze)" -eq 0 ] && report PASS "static analyzer" "no bugs found" ||
-        report FAIL "static analyzer" "see $OUT/analyze.log"
+    [ "$(rc_of analyze)" -eq 0 ] && report PASS "static analyzer" "no bugs found" "$(ms_of analyze)" ||
+        report FAIL "static analyzer" "see $OUT/analyze.log" "$(ms_of analyze)"
 else
     report SKIP "static analyzer" "scan-build not installed"
 fi
@@ -208,16 +234,20 @@ fi
 if [ "$WITH_SANITIZERS" -eq 1 ]; then
     if [ "$(rc_of asanbuild)" -eq 0 ]; then
         # SHARDED. As one process this is ~5x slower and leaves the machine idle.
-        san=$(NES_TEST_BIN="$OUT/asan/tests/tests" \
-            ASAN_OPTIONS=detect_leaks=1:detect_stack_use_after_return=1 \
-            UBSAN_OPTIONS=print_stacktrace=1:report_error_type=1 \
-            "$ROOT/tests/run_tests.sh" 2>/dev/null | grep "executed" | tail -1)
+        report PASS "  (ASan build, in parallel)" "" "$(ms_of asanbuild)"
+        asan_run() {
+            san=$(NES_TEST_BIN="$OUT/asan/tests/tests" \
+                ASAN_OPTIONS=detect_leaks=1:detect_stack_use_after_return=1 \
+                UBSAN_OPTIONS=print_stacktrace=1:report_error_type=1 \
+                "$ROOT/tests/run_tests.sh" 2>/dev/null | grep "executed" | tail -1)
+        }
+        timed asan_run
         case "$san" in
-        *"0 failed"*) report PASS "ASan + UBSan" "$san" ;;
-        *) report FAIL "ASan + UBSan" "${san:-see $OUT/asanbuild.log}" ;;
+        *"0 failed"*) report PASS "ASan + UBSan suite" "$san" "$STEP_MS" ;;
+        *) report FAIL "ASan + UBSan suite" "${san:-see $OUT/asanbuild.log}" "$STEP_MS" ;;
         esac
     else
-        report FAIL "ASan + UBSan" "build failed, see $OUT/asanbuild.log"
+        report FAIL "ASan + UBSan" "build failed, see $OUT/asanbuild.log" "$(ms_of asanbuild)"
     fi
 else
     report SKIP "ASan + UBSan" "pass --full to include"
@@ -294,5 +324,17 @@ else
     echo "        screenshots in $OUT - the PICTURE still needs looking at"
 fi
 
-printf '\n%s failed, %s skipped. Logs: %s\n' "$FAILED" "$SKIPPED" "$OUT"
+wall=$(( $(date +%s) - WALL_START ))
+printf '\n%s failed, %s skipped. Wall %ss. Logs: %s\n' "$FAILED" "$SKIPPED" "$wall" "$OUT"
+
+# The parallel phase is bounded by its SLOWEST job, not by their sum, so a
+# breakdown that added up would be misleading. What matters is which job is the
+# long pole and whether it is working or waiting.
+printf '\nparallel phase, per job:\n'
+for j in fresh nosdl fetch analyze asanbuild; do
+    [ -f "$OUT/$j.ms" ] || continue
+    printf '  %-12s %s\n' "$j" "$(secs "$(ms_of "$j")")"
+done
+printf '  the phase costs the LONGEST of these, not their sum.\n'
+printf '  fetch is network-bound: time there is idle CPU, not slow code.\n'
 exit "$FAILED"
