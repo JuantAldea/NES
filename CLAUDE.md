@@ -96,7 +96,22 @@ target directory has a `.gitignore` entry. Write `tests/test_files/mmc3`, not
 
 Adding a new oracle means all four of: the fetch script, the `.gitignore`
 entry, the wiring into **both** CI jobs (`test` and `sanitizers` each carry
-their own copy of the fetch list), and a `GTEST_SKIP` when the ROM is absent.
+their own copy of the fetch list), and a clear message when the ROM is absent.
+
+**A missing fetched ROM must FAIL, not skip**, and the message must name the
+fetch script — `could not load <path> - run tests/test_files/fetch_x.sh`. CI
+fetches these, so a missing one means the *fetch step failed*, and `GTEST_SKIP`
+exits 0: skipping there would turn a broken CI run green. That is the one
+outcome this repo is built to prevent, and it outranks "a missing fixture
+shouldn't look like an emulation bug" — which the message already handles.
+
+`GTEST_SKIP` is for fixtures that **cannot** be fetched at all:
+`tests/test_files/local/` cartridge dumps and the 1.1 GB SingleStepTests
+vectors. Those are absent on every clean checkout and always will be, so
+failing on them would mean a permanently red suite.
+
+This paragraph used to say every oracle needed a `GTEST_SKIP`. Twenty suites
+did not have one, and were right not to.
 
 `tests/test_files/local/` is for ROMs of cartridges the user owns. Nothing
 fetches those, ever, and they must stay ignored.
