@@ -206,14 +206,21 @@ void PPU::clock()
     // external PPU memory accessed every two clocks = 170 reads
     //+ 1 spare cycle
 
-    switch (scanline) {
-    case 0 ... 239:
+    // An if-chain rather than a switch, because `case 0 ... 239:` is a GCC
+    // range extension and -pedantic rejects it. The two warnings it produced
+    // were invisible in practice: this file only recompiles when something it
+    // includes changes, so an ordinary incremental build printed nothing and
+    // looked clean.
+    //
+    // The bounds are written with both ends explicit. `scanline` is signed, so
+    // a bare `scanline < post_render_scanline` would route a negative value
+    // into the visible-scanline path instead of the error branch below, which
+    // is the one behaviour the switch had for free.
+    if (scanline >= 0 && scanline < post_render_scanline) {
         process_visible_scanline();
-        break;
-    case post_render_scanline:
+    } else if (scanline == post_render_scanline) {
         // idle
-        break;
-    case vblank_start_scanline:
+    } else if (scanline == vblank_start_scanline) {
         // The vblank flag is set on the second dot of scanline 241.
         if (cycle == 1) {
             // ...unless the CPU read $2002 on this very dot. The read's
@@ -226,20 +233,18 @@ void PPU::clock()
             }
             suppress_vblank_flag_set = false;
         }
-        break;
-    case 242 ... 260:
+    } else if (scanline > vblank_start_scanline && scanline < pre_render_scanline) {
         // Idle, which is the question this comment used to ask. NESdev's PPU
         // rendering page, on the vblank lines after 241: "The PPU makes no
         // memory accesses during these scanlines, so PPU memory can be freely
         // accessed by the program."
         //
         // 241 is the only vblank line that does anything - it sets the flag at
-        // tick 1 - and it is the case directly above. These nineteen burn dots
-        // until the pre-render line, so an empty body is the correct model
+        // tick 1 - and it is the branch directly above. These nineteen burn
+        // dots until the pre-render line, so an empty body is the correct model
         // rather than an unfinished one.
         // https://www.nesdev.org/wiki/PPU_rendering
-        break;
-    case pre_render_scanline:
+    } else if (scanline == pre_render_scanline) {
         if (cycle == 0) {
             oam_refresh_bug();
         }
@@ -254,10 +259,8 @@ void PPU::clock()
         // pixels. It is also the only line that copies t's vertical half
         // into v.
         process_visible_scanline();
-        break;
-    default:
+    } else {
         std::cerr << "Scanline out of range: " << scanline << std::endl;
-        break;
     }
 
     advance_dot();
