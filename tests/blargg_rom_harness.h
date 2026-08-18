@@ -1,9 +1,12 @@
 #pragma once
 // Shared runner for Blargg's test ROMs.
 //
-// All of his suites report through PRG-RAM using the same protocol, so the
-// ppu_vbl_nmi and cpu_interrupts_v2 harnesses differ only in which directory
-// they load from and how long they are allowed to run.
+// All of his suites report through PRG-RAM using the same protocol, so they
+// differ only in which directory they load from, how long they are allowed to
+// run, and - for the cpu_reset ROMs alone - whether they start from a power-on
+// or a reset. Every suite in this repo that speaks the protocol goes through
+// here; a suite keeping its own copy of the loop is how the three copies this
+// replaced drifted apart in the first place.
 //
 //   $6001-$6003  validation signature $DE $B0 $61; until it reads back exactly
 //                this, $6000 holds no meaningful value
@@ -48,6 +51,25 @@ struct RomResult {
     // "the ROM is alive and waiting on something".
     uint64_t cpu_cycles = 0;
     uint16_t final_pc = 0;
+    // Read directly out of the register rather than through PPU::read, which
+    // would clear the vblank flag it is being sampled to report.
+    uint8_t final_ppustatus = 0;
+};
+
+// Which entry point a suite needs before its ROM starts running.
+//
+// `Reset` suits every suite that only needs the ROM started: Bus's constructor
+// has already reset the CPU once, and these ROMs cannot tell that this is the
+// second.
+//
+// `PowerOn` exists because two ROMs CAN tell. That constructor reset ran before
+// a cartridge was mapped, so resetting again here would be the second one,
+// leaving S at $FA - and blargg's registers.nes checks for $FD at power. That
+// distinction is the entire reason CPU::power_on and CPU::reset are separate
+// functions, and it did not exist until this ROM forced it.
+enum class Start {
+    Reset,
+    PowerOn,
 };
 
 inline bool signature_present(Bus& console)
@@ -96,7 +118,7 @@ constexpr uint32_t kMaxResets = 4;
 // Runs one ROM to completion or until `max_frames` elapse, pressing RESET
 // whenever the ROM asks. The caller supplies the full path so each suite can
 // keep its own fixtures directory.
-inline RomResult run_rom(const std::string& path, uint64_t max_frames)
+inline RomResult run_rom(const std::string& path, uint64_t max_frames, Start start = Start::Reset)
 {
     RomResult result;
 
@@ -106,7 +128,11 @@ inline RomResult run_rom(const std::string& path, uint64_t max_frames)
         return result;
     }
 
-    console.cpu.reset();
+    if (start == Start::PowerOn) {
+        console.cpu.power_on();
+    } else {
+        console.cpu.reset();
+    }
 
     // Counts down only while a reset is pending, so an ordinary run never
     // touches it.
@@ -120,6 +146,11 @@ inline RomResult run_rom(const std::string& path, uint64_t max_frames)
     // ROM given longer had usually republished by the time it was read, but
     // that only moved the race. The status is trusted again once the ROM writes
     // $80 (running) from its reset handler.
+    //
+    // Still load-bearing, and re-measured when cpu_behaviour folded in: with
+    // this guard defeated those two ROMs fail again, and so does registers.nes
+    // (Failed #3, 2 resets driven, S=$F1). Its old private loop carried a
+    // 15-frame delay for exactly this reason.
     bool status_is_stale = false;
 
     // Stepped a frame at a time rather than by a cycle budget. The old loop
@@ -184,6 +215,14 @@ inline RomResult run_rom(const std::string& path, uint64_t max_frames)
     result.frames_run = max_frames;
     result.cpu_cycles = console.cpu.total_cycles;
     result.final_pc = console.cpu.registers.PC;
+    result.final_ppustatus = console.ppu.registers.PPUSTATUS;
+    // A ROM that ran out of frames has usually already printed which subtest it
+    // reached, which is the most useful line in the failure message. Guarded on
+    // the signature because before that appears $6004 is uninitialised PRG-RAM
+    // and would decode as noise presented as a quotation from the ROM.
+    if (result.saw_signature) {
+        result.message = read_message(console);
+    }
     return result;
 }
 

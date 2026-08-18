@@ -17,8 +17,10 @@
 #include <string>
 
 #include "../include/bus.h"
+#include "blargg_rom_harness.h"
 #include "gtest/gtest.h"
 #include "nametable_screen.h"
+#include "rom_fixture.h"
 
 namespace tests
 {
@@ -27,103 +29,34 @@ namespace cpu_behaviour
 namespace
 {
 
+using blargg::RomResult;
 using nametable_screen::read_text;
 using nametable_screen::run_one_frame;
 
-constexpr uint16_t kStatusAddr = 0x6000;
-constexpr uint16_t kSignatureAddr = 0x6001;
-constexpr uint16_t kMessageAddr = 0x6004;
-constexpr uint8_t kStatusRunning = 0x80;
-constexpr uint8_t kStatusNeedsReset = 0x81;
+constexpr uint64_t kMaxFrames = 900;
 
-// Measured: registers.nes still reports Failed #3 with a 7-frame delay and
-// passes from 12 onward. blargg's readme asks for roughly 100ms of held RESET;
-// 15 frames is ~250ms, comfortably past the threshold without being slow.
-constexpr int kFramesBeforeReset = 15;
-constexpr int kMaxFrames = 900;
+constexpr const char* kFetch = "run tests/test_files/fetch_cpu_behaviour.sh";
 
 std::string rom_path(const std::string& name)
 {
     return std::string(NES_TEST_FILES_DIR) + "/cpu_behaviour/" + name + ".nes";
 }
 
-bool signature_present(Bus& console)
-{
-    return console.read(kSignatureAddr) == 0xDE && console.read(static_cast<uint16_t>(kSignatureAddr + 1)) == 0xB0 &&
-           console.read(static_cast<uint16_t>(kSignatureAddr + 2)) == 0x61;
-}
-
-std::string read_message(Bus& console)
-{
-    std::string out;
-    for (uint16_t i = 0; i < 512; ++i) {
-        const uint8_t c = console.read(static_cast<uint16_t>(kMessageAddr + i));
-        if (c == 0x00) {
-            break;
-        }
-        out.push_back(static_cast<char>(c));
-    }
-    return out;
-}
-
-struct RomResult {
-    bool completed = false;
-    uint8_t status = 0xFF;
-    std::string message;
-    int resets = 0;
-};
-
-// Runs a $6000-protocol ROM, DRIVING A SOFT RESET whenever it asks for one.
+// Started with power_on(), not reset(), which is the one thing these ROMs need
+// that no other $6000 suite does - see blargg::Start.
 //
-// This used to be the only harness that did, which is why it is a local copy.
-// blargg_rom_harness.h now drives resets too, so this exists only for the
-// power_on() below - these two ROMs are the reason CPU::power_on and CPU::reset
-// are separate, and the shared harness resets rather than powers on. Folding
-// the two together needs that difference kept, not smoothed over.
+// This file used to carry its own copy of the whole protocol loop for that one
+// difference, and the copy lacked the shared harness's stale-$6000 guard. That
+// cost it a 15-frame reset delay where the shared loop uses 10, because without
+// the guard registers.nes reported Failed #3 at 7 frames and only passed from
+// 12 - which read as a timing threshold and was really the race.
+//
+// Measured, not assumed: through the shared loop it passes at 10, and disabling
+// the guard there brings the identical Failed #3 back (2 resets driven, S=$F1
+// from the spurious one) with the delay left at 10. The delay was masking it.
 RomResult run_with_resets(const std::string& name)
 {
-    RomResult result;
-
-    Bus console;
-    if (!console.load_cartridge(rom_path(name))) {
-        ADD_FAILURE() << "could not load " << rom_path(name) << " - run tests/test_files/fetch_cpu_behaviour.sh";
-        return result;
-    }
-
-    // power_on(), not reset(). Bus's constructor already reset this CPU before
-    // a cartridge was mapped, so a reset here would be the SECOND - leaving S
-    // at $FA, and registers.nes checks for $FD at power. That distinction did
-    // not exist until this ROM forced it.
-    console.cpu.power_on();
-
-    for (int frame = 0; frame < kMaxFrames; ++frame) {
-        run_one_frame(console);
-
-        if (!signature_present(console)) {
-            continue;
-        }
-
-        const uint8_t status = console.read(kStatusAddr);
-        if (status == kStatusNeedsReset) {
-            for (int w = 0; w < kFramesBeforeReset; ++w) {
-                run_one_frame(console);
-            }
-            console.reset();
-            ++result.resets;
-            continue;
-        }
-        if (status == kStatusRunning) {
-            continue;
-        }
-
-        result.completed = true;
-        result.status = status;
-        result.message = read_message(console);
-        return result;
-    }
-
-    result.message = read_message(console);
-    return result;
+    return blargg::run_rom(rom_path(name), kMaxFrames, blargg::Start::PowerOn);
 }
 
 }  // namespace
@@ -212,13 +145,23 @@ class CpuResetRoms : public ::testing::TestWithParam<std::string>
 TEST_P(CpuResetRoms, reports_pass)
 {
     const std::string name = GetParam();
+    REQUIRE_ROM(rom_path(name), kFetch);
+
     const RomResult result = run_with_resets(name);
 
-    ASSERT_TRUE(result.completed) << name << ": no verdict within " << kMaxFrames << " frames after " << result.resets
-                                  << " reset(s).\n  last message: " << result.message;
+    ASSERT_FALSE(result.needs_reset) << name << " asked for more than " << blargg::kMaxResets
+                                     << " resets, which is a defect rather than a verdict";
+    ASSERT_TRUE(result.completed) << name << ": no verdict within " << kMaxFrames << " frames after "
+                                  << result.resets_driven << " reset(s).\n  last message: " << result.message;
 
     EXPECT_EQ(0, result.status) << name << " failed with code " << static_cast<int>(result.status) << " after "
-                                << result.resets << " reset(s):\n  " << result.message;
+                                << result.resets_driven << " reset(s):\n  " << result.message;
+
+    // Measured: both of these ask exactly once, at frame 161 and 156 of 900.
+    // Asserted for the same reason apu_reset asserts it - a shared harness that
+    // stopped pressing RESET would leave these ROMs reporting $81 forever, and
+    // the failure would read as a timeout rather than as the missing feature.
+    EXPECT_GT(result.resets_driven, 0u) << name << " reached its verdict without a reset being driven";
 }
 
 INSTANTIATE_TEST_SUITE_P(CpuReset,
@@ -233,9 +176,12 @@ class CpuDummyWriteRoms : public ::testing::TestWithParam<std::string>
 TEST_P(CpuDummyWriteRoms, reports_pass)
 {
     const std::string name = GetParam();
+    REQUIRE_ROM(rom_path(name), kFetch);
+
     const RomResult result = run_with_resets(name);
 
-    ASSERT_TRUE(result.completed) << name << ": no verdict within " << kMaxFrames << " frames";
+    ASSERT_TRUE(result.completed) << name << ": no verdict within " << kMaxFrames
+                                  << " frames.\n  last message: " << result.message;
     EXPECT_EQ(0, result.status) << name << " failed with code " << static_cast<int>(result.status) << ":\n  "
                                 << result.message;
 }

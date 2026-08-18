@@ -190,13 +190,21 @@ message rather than as a ROM everyone has learned to ignore.
 
 `blargg_rom_harness.h` implements the shared PRG-RAM reporting protocol —
 signature at `$6001`, status at `$6000`, ASCII message at `$6004` — and drives
-a soft RESET via `Bus::reset()` when a ROM reports `$81`. Any new blargg suite
-should go through it rather than reimplementing the protocol.
+a soft RESET via `Bus::reset()` when a ROM reports `$81`. Every suite that
+speaks the protocol goes through it, and a new one must too.
 
-Two suites still carry their own copy from before that was true:
-`blargg_ppu_tests.cpp` (does not drive resets at all) and
-`cpu_behaviour_tests.cpp` (drives them, but starts with `CPU::power_on()`
-rather than `reset()`, which its ROMs genuinely require). Do not add a third.
+There is no longer a second copy. `blargg_ppu_tests.cpp` and
+`cpu_behaviour_tests.cpp` each kept one until they were folded in, and the two
+had already drifted apart in ways that mattered: the ppu one drove no resets at
+all, and the cpu one lacked the stale-`$6000` guard below and paid for it with
+a 15-frame reset delay that masked a spurious extra reset rather than fixing
+one. A suite that needs `CPU::power_on()` instead of `reset()` — which the
+cpu_reset ROMs genuinely do, and nothing else does — passes
+`blargg::Start::PowerOn` rather than forking the loop.
+
+Per-suite *diagnostics* still belong in the suite: what to suspect when a ROM
+times out is different for each, and those messages are the reason a red run is
+a work queue rather than a wall. Only the protocol is shared.
 
 **Blargg's 2005-era suites predate `$6000` and report on screen.** They are not
 unusable headlessly: `tests/nametable_screen.h` reads the result straight out of

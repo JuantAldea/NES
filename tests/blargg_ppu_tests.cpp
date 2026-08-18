@@ -1,4 +1,4 @@
-// Blargg ppu_vbl_nmi test-ROM harness.
+// Blargg's ppu_vbl_nmi test ROMs, run through the shared $6000 harness.
 //
 // These ROMs are the oracle for PPU frame timing: vblank set/clear timing, NMI
 // enable/suppression, and odd-frame behaviour. They report their result through
@@ -28,31 +28,21 @@
 // above were the actual gap, which is worth remembering: a plausible diagnosis
 // that survives because nobody re-derives it is expensive.
 #include <cstdint>
-#include <fstream>
 #include <string>
-#include <vector>
 
 #include "../include/bus.h"
+#include "blargg_rom_harness.h"
 #include "gtest/gtest.h"
+#include "rom_fixture.h"
 
 namespace tests
 {
 namespace blargg
 {
-
-// Blargg's shared test protocol (see his readme.txt):
-//   $6001-$6003  validation signature $DE $B0 $61; until it reads back exactly
-//                this, $6000 holds no meaningful value
-//   $6000        $80 = still running, $81 = ROM wants a soft reset,
-//                anything else = final result code, 0 meaning pass
-//   $6004...     NUL-terminated ASCII description of the result
-constexpr uint16_t kStatusAddr = 0x6000;
-constexpr uint16_t kSignatureAddr = 0x6001;
-constexpr uint16_t kMessageAddr = 0x6004;
-
-constexpr uint8_t kSignature[3] = {0xDE, 0xB0, 0x61};
-constexpr uint8_t kStatusRunning = 0x80;
-constexpr uint8_t kStatusNeedsReset = 0x81;
+namespace ppu_vbl_nmi
+{
+namespace
+{
 
 // Frames are stepped with Bus::run_frame rather than counted in cycles; see
 // the comment on its declaration for why a frame is not a fixed length.
@@ -65,102 +55,16 @@ constexpr uint8_t kStatusNeedsReset = 0x81;
 // fails with a diagnosis instead of hanging the suite.
 constexpr uint64_t kMaxFrames = 400;
 
-struct BlarggResult {
-    bool completed = false;  // signature appeared and status left the running state
-    // ROM asked for a soft reset, which THIS harness does not drive. The shared
-    // one in blargg_rom_harness.h does; no ROM in this suite asks, which is the
-    // only reason the difference has never shown.
-    bool needs_reset = false;
-    bool saw_signature = false;
-    uint8_t status = 0xFF;
-    uint8_t last_status = 0xFF;  // last $6000 seen while the signature was valid
-    std::string message;
-    uint64_t frames_run = 0;
-    // Sampled at the end of a timed-out run, to distinguish "the ROM never got
-    // going" from "the ROM is alive but waiting on something the PPU owes it".
-    uint64_t cpu_cycles = 0;
-    uint16_t final_pc = 0;
-    uint8_t final_ppustatus = 0;
-};
+constexpr const char* kFetch = "run tests/test_files/fetch_blargg_ppu.sh";
 
 std::string rom_path(const std::string& name)
 {
     return std::string(NES_TEST_FILES_DIR) + "/blargg_ppu/" + name + ".nes";
 }
 
-bool signature_present(Bus& console)
-{
-    for (uint16_t i = 0; i < 3; ++i) {
-        if (console.read(static_cast<uint16_t>(kSignatureAddr + i)) != kSignature[i]) {
-            return false;
-        }
-    }
-    return true;
-}
+RomResult run(const std::string& name) { return run_rom(rom_path(name), kMaxFrames); }
 
-std::string read_message(Bus& console)
-{
-    std::string out;
-    // Bounded: PRG-RAM is 8KB and a runaway pointer must not spin here.
-    for (uint16_t i = 0; i < 1024; ++i) {
-        const uint8_t c = console.read(static_cast<uint16_t>(kMessageAddr + i));
-        if (c == 0x00) {
-            break;
-        }
-        out.push_back(static_cast<char>(c));
-    }
-    return out;
-}
-
-BlarggResult run_rom(const std::string& name)
-{
-    BlarggResult result;
-
-    Bus console;
-    if (!console.load_cartridge(rom_path(name))) {
-        ADD_FAILURE() << "could not load " << rom_path(name) << " - run tests/test_files/fetch_blargg_ppu.sh";
-        return result;
-    }
-
-    console.cpu.reset();
-
-    // Stepped a frame at a time. The old loop multiplied out a fixed
-    // 341*262*4 per frame, which overshoots by a dot on every odd frame once
-    // rendering is enabled - and these ROMs enable it. Sampling once per frame
-    // is also cheaper than the every-65536-cycles compromise it replaces.
-    for (uint64_t frame = 0; frame < kMaxFrames; ++frame) {
-        console.run_frame();
-
-        if (!signature_present(console)) {
-            continue;
-        }
-        result.saw_signature = true;
-
-        const uint8_t status = console.read(kStatusAddr);
-        result.last_status = status;
-        if (status == kStatusRunning) {
-            continue;
-        }
-
-        result.frames_run = frame + 1;
-        result.status = status;
-        result.message = read_message(console);
-
-        if (status == kStatusNeedsReset) {
-            result.needs_reset = true;
-            return result;
-        }
-
-        result.completed = true;
-        return result;
-    }
-
-    result.frames_run = kMaxFrames;
-    result.cpu_cycles = console.cpu.total_cycles;
-    result.final_pc = console.cpu.registers.PC;
-    result.final_ppustatus = console.ppu.registers.PPUSTATUS;
-    return result;
-}
+}  // namespace
 
 class BlarggPpuVblNmi : public ::testing::TestWithParam<std::string>
 {
@@ -169,7 +73,9 @@ class BlarggPpuVblNmi : public ::testing::TestWithParam<std::string>
 TEST_P(BlarggPpuVblNmi, reports_pass)
 {
     const std::string name = GetParam();
-    const BlarggResult result = run_rom(name);
+    REQUIRE_ROM(rom_path(name), kFetch);
+
+    const RomResult result = run(name);
 
     if (!result.completed && !result.needs_reset) {
         // Distinguish the two very different reasons for a timeout, because
@@ -192,13 +98,19 @@ TEST_P(BlarggPpuVblNmi, reports_pass)
                << " cycles, ending at PC=$" << std::hex << result.final_pc << std::dec
                << ".\n"
                   "  The frame state machine itself works: vblank sets at (241,1) and\n"
-                  "  clears at (261,1) once per frame. Expected while CPU::clock applies\n"
-                  "  an instruction's entire memory effect on its last cycle instead of\n"
-                  "  per-cycle, which these ROMs measure to single-cycle resolution.";
+                  "  clears at (261,1) once per frame, so suspect the CPU/PPU timing\n"
+                  "  RELATIONSHIP instead - /NMI held as a level, the interrupt poll on\n"
+                  "  the penultimate cycle, the one-dot gap between a bus access and that\n"
+                  "  poll, or the odd-frame skip sampling a dot early. Those four are what\n"
+                  "  these ROMs measure, to single-cycle resolution.";
     }
 
+    // Reachable only if a ROM asks for more resets than the shared harness will
+    // drive. None of these ten asks even once - it is cpu_reset and apu_reset
+    // that do - so this firing means something is repeating the request.
     if (result.needs_reset) {
-        FAIL() << name << ": ROM requested a soft reset, which this harness does not drive yet";
+        FAIL() << name << ": asked for more than " << kMaxResets << " soft resets, which is a defect rather than a\n"
+               << "  verdict. Last message:\n  " << result.message;
     }
 
     EXPECT_EQ(0, result.status) << name << " failed with code " << static_cast<int>(result.status) << ":\n  "
@@ -252,5 +164,6 @@ GTEST_TEST(blarggHarness, prg_ram_window_is_readable_and_roms_are_present)
     EXPECT_EQ(0, console.rom.mapper_id);
 }
 
+}  // namespace ppu_vbl_nmi
 }  // namespace blargg
 }  // namespace tests
