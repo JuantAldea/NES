@@ -8,12 +8,12 @@
 // and the harness pressing RESET, without which the other half of every ROM
 // here was unreachable.
 //
-// FIVE OF SIX PASS. The sixth, works_immediately, is filed under power-on by
-// its name and by this suite's own baseline, and that is wrong. Its source
-// configures all five channels - including $4010/$4013 and $4015 bit 4 - then
-// reads $4015 four times and compares the log. Bit 4 is the DMC's
-// bytes-remaining, which this APU always reports as 0. It never even reaches
-// the reset half; no amount of reset work will move it, and the DMC will.
+// ALL SIX PASS. works_immediately was the last, and it was filed under power-on
+// by its name and by this suite's own baseline - wrongly. Its source configures
+// all five channels, including $4010/$4013 and $4015 bit 4, then reads $4015
+// four times and compares the log. Bit 4 is the DMC's bytes-remaining, so it
+// was never a reset problem at all; it was waiting for the DMC, which is what
+// eventually moved it.
 //
 // What each ROM checks, from blargg's readme - the reset column is the half
 // that only became testable when the harness learned to press the button:
@@ -79,19 +79,23 @@ TEST_P(ApuResetRoms, reports_pass)
                                 << result.resets_driven << " reset(s):\n  " << result.message;
 }
 
-INSTANTIATE_TEST_SUITE_P(
-    ApuReset,
-    ApuResetRoms,
-    ::testing::Values("4015_cleared", "irq_flag_cleared", "len_ctrs_enabled", "4017_written", "4017_timing"),
-    [](const ::testing::TestParamInfo<const char*>& info) {
-        std::string name = info.param;
-        for (char& c : name) {
-            if (!std::isalnum(static_cast<unsigned char>(c))) {
-                c = '_';
-            }
-        }
-        return name;
-    });
+INSTANTIATE_TEST_SUITE_P(ApuReset,
+                         ApuResetRoms,
+                         ::testing::Values("4015_cleared",
+                                           "irq_flag_cleared",
+                                           "len_ctrs_enabled",
+                                           "4017_written",
+                                           "4017_timing",
+                                           "works_immediately"),
+                         [](const ::testing::TestParamInfo<const char*>& info) {
+                             std::string name = info.param;
+                             for (char& c : name) {
+                                 if (!std::isalnum(static_cast<unsigned char>(c))) {
+                                     c = '_';
+                                 }
+                             }
+                             return name;
+                         });
 
 // Every one of these needs the RESET button. Asserting that the harness really
 // pressed it stops the suite from quietly reverting to testing only the power-on
@@ -100,7 +104,8 @@ INSTANTIATE_TEST_SUITE_P(
 // rather than as the missing feature it is.
 GTEST_TEST(apuResetHarness, every_passing_rom_needed_a_reset_driven)
 {
-    for (const char* name : {"4015_cleared", "irq_flag_cleared", "len_ctrs_enabled", "4017_written", "4017_timing"}) {
+    for (const char* name :
+         {"4015_cleared", "irq_flag_cleared", "len_ctrs_enabled", "4017_written", "4017_timing", "works_immediately"}) {
         REQUIRE_ROM(rom_path(name), kFetch);
         const blargg::RomResult result = run(name);
         EXPECT_GT(result.resets_driven, 0u) << name << " reached its verdict without a reset being driven";
@@ -126,35 +131,6 @@ GTEST_TEST(apuResetRoms, reports_the_4017_delay_we_implement)
            "  blargg's readme accepts 9-12; 4-irq_and_dma additionally requires an\n"
            "  EVEN value. Full message:\n"
         << result.message;
-}
-
-// --- the queue ---------------------------------------------------------------
-
-// Pinned, not skipped, and pinned to the DMC rather than to power-on: see the
-// header. When the DMC lands this fails, and the message says to promote it.
-GTEST_TEST(apuResetRomQueue, works_immediately_is_blocked_on_the_dmc)
-{
-    REQUIRE_ROM(rom_path("works_immediately"), kFetch);
-
-    const blargg::RomResult result = run("works_immediately");
-
-    ASSERT_TRUE(result.completed) << "works_immediately: no verdict within " << kMaxFrames << " frames";
-
-    EXPECT_EQ(2, result.status) << "works_immediately changed status. If it now PASSES (0), the DMC is far\n"
-                                   "  enough along: delete this pin and move the ROM into the list above.\n"
-                                   "  Full message:\n"
-                                << result.message;
-
-    EXPECT_NE(std::string::npos, result.message.find("At power, writes should work immediately"))
-        << "works_immediately still fails, but on a DIFFERENT subtest than the one\n"
-           "  recorded - check blargg's source for the new number.\n"
-           "  Full message:\n"
-        << result.message;
-
-    // It fails before ever asking for a reset, which is the evidence that this
-    // is a power-stage failure and not a reset-stage one.
-    EXPECT_EQ(0u, result.resets_driven) << "works_immediately now reaches the reset half - re-read which subtest\n"
-                                           "  it is failing, because the DMC diagnosis above may no longer hold.";
 }
 
 }  // namespace apu_reset_rom

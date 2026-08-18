@@ -22,7 +22,7 @@ still no audio.
 | Sprites | Secondary OAM, per-dot evaluation, 8-per-line, the overflow search bug, priority, 8x16, flip. Passes blargg's 5 `sprite_overflow` and 11 `sprite_hit` ROMs |
 | Cartridge | iNES, NROM (0), UNROM (2), CNROM (3) and MMC3 (4), CHR-ROM and CHR-RAM |
 | MMC3 IRQ | A12-filtered scanline counter driving `/IRQ`, clocked on the right dot. Passes 5 of blargg's 6 `mmc3_test_2` ROMs; the sixth tests the other chip revision, see below |
-| APU | Frame counter, `/IRQ`, length counters, and the power-on/RESET state. Passes 5 of blargg's 6 `apu_reset` and **all 11** `blargg_apu_2005` ROMs. No audio yet. |
+| APU | Frame counter, `/IRQ`, length counters, the power-on/RESET state. Delta modulation channel, minus its CPU stall. Passes **all** of blargg's `apu_test`, `apu_reset` and `blargg_apu_2005` ROMs. No audio output yet. |
 | Display | SDL2 + Dear ImGui: the screen and the debugger in one window |
 | Controllers | Both ports at `$4016`/`$4017`, keyboard-driven. Passes blargg's `read_joy3` `test_buttons` |
 
@@ -227,12 +227,26 @@ few thousand frames, and every mapper beyond 0, 2, 3 and 4.
         it by failing those pins. Moving the frame counter's own timing instead
         was tried and rejected - it fixes those two and breaks `05`/`06` with
         "first length is clocked too soon".
-    *   **Still no audio.** No envelope, sweep or linear counter, no channel
-        output, no mixer and no DMC. Three ROMs remain pinned to their current
-        failures so that finishing them is announced by a test rather than
-        noticed by hand: `7-dmc_basics` and `8-dmc_rates`
-        (`tests/apu_rom_tests.cpp`) and `works_immediately`
-        (`tests/apu_reset_rom_tests.cpp`). All three want the DMC.
+    *   The **delta modulation channel**: the 16-entry rate table, the sample
+        address and length registers, the one-byte sample buffer, the output
+        unit's shift register and 7-bit level, looping, and the DMC interrupt
+        with its `$4015` bit 4 and bit 7. This closed the last three pinned
+        ROMs - `7-dmc_basics`, `8-dmc_rates` and `works_immediately` - and
+        **every APU ROM in the repository now passes**.
+    *   **What the DMC does not do yet is stall the CPU.** Its memory reader
+        fetches in zero cycles. Everything a program can observe by polling is
+        implemented; the timing distortion the DMA imposes on the CPU is not,
+        and it is deliberately absent rather than approximated - a wrong number
+        of stolen cycles looks implemented while being wrong, which is worse
+        than none. `dmc_dma_during_read4` and `sprdma_and_dmc_dma` are the
+        oracles for that, and are the next step.
+    *   Two DMC details are **spec-derived and unverified**, labelled as such in
+        `src/apu.cpp`: the sample address wrapping to `$8000` rather than
+        `$0000`, and the output level clamping at 127. Every ROM here passes
+        with either behaviour, because their samples never reach `$FFFF` and
+        nothing reads the level back.
+    *   **Still no audio output.** No envelope, sweep or linear counter, no
+        channel waveforms and no mixer.
     *   **There is no oracle for the envelope, sweep or linear counter, and
         that is not a gap in this repo's fixtures.** blargg's own `tests.txt`
         states his suite "does not test clocking of the envelope, sweep, or

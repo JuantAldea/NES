@@ -154,6 +154,53 @@ private:
         uint8_t value_before_clock = 0;
     };
 
+    // The delta modulation channel. Unlike the length counters this one READS
+    // MEMORY, which is why it is the last thing built: its memory reader stalls
+    // the CPU, and the cycle-exact bus is the most heavily verified thing here.
+    //
+    // This is the channel WITHOUT that stall - the fetch happens in zero cycles.
+    // Everything a program can observe by polling ($4015's bytes-remaining and
+    // IRQ bits, the rate table, the output level, looping) is here; what is not
+    // is the timing distortion the DMA imposes on the CPU. Two of blargg's ROMs
+    // exist to measure exactly that, and they are the next step, so the stall is
+    // deliberately absent rather than approximated - a wrong number of stolen
+    // cycles is worse than none, because it looks implemented.
+    struct DeltaModulation {
+        // $4010
+        bool irq_enabled = false;
+        bool loop = false;
+        uint16_t timer_period = 0;
+        uint16_t timer = 0;
+
+        // $4011. Seven bits, and writable directly - which is how games play
+        // PCM by hammering it from a timed loop rather than using samples.
+        uint8_t output_level = 0;
+
+        // $4012/$4013, held as written. The reader works from current_address
+        // and bytes_remaining so a restart can reload these unchanged.
+        uint16_t sample_address = 0xC000;
+        uint16_t sample_length = 1;
+        uint16_t current_address = 0xC000;
+        uint16_t bytes_remaining = 0;
+
+        uint8_t sample_buffer = 0;
+        bool sample_buffer_filled = false;
+
+        uint8_t shift_register = 0;
+        uint8_t bits_remaining = 0;
+        bool silence = true;
+
+        bool irq_flag = false;
+        bool enabled = false;
+    };
+
+    void clock_dmc();
+    void dmc_restart_sample();
+    void dmc_fill_sample_buffer();
+    void set_dmc_irq(bool asserted);
+
+    DeltaModulation dmc;
+
     // Shared by power_on() and reset(), which differ only in the value written.
     void restart_frame_counter(uint8_t value_written_to_4017);
 

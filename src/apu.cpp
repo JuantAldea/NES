@@ -20,6 +20,126 @@ constexpr uint32_t kMode0Step4 = 29829;
 constexpr uint32_t kMode1Step5 = 37281;
 }  // namespace
 
+// NTSC only. These are PERIODS IN CPU CYCLES between output-level changes, not
+// frequencies and not APU cycles, which is what "Rate 0's period is too short"
+// was telling us when the table did not exist: index 0 is the slowest at 428.
+//
+// The table is not a formula - the values come from the chip's own divider
+// taps - so 8-dmc_rates times all sixteen rather than checking a few.
+namespace
+{
+constexpr uint16_t kDmcRates[16] = {
+    428, 380, 340, 320, 286, 254, 226, 214, 190, 160, 142, 128, 106, 84, 72, 54,
+};
+}  // namespace
+
+void APU::set_dmc_irq(const bool asserted)
+{
+    dmc.irq_flag = asserted;
+
+    // Its own bit of the CPU's /IRQ input, ORed with the frame counter's and
+    // the cartridge's rather than overwriting them.
+    bus->cpu.set_IRQ_line(CPU::IRQSource::apu_dmc, dmc.irq_flag);
+}
+
+void APU::dmc_restart_sample()
+{
+    dmc.current_address = dmc.sample_address;
+    dmc.bytes_remaining = dmc.sample_length;
+}
+
+void APU::dmc_fill_sample_buffer()
+{
+    if (dmc.sample_buffer_filled || dmc.bytes_remaining == 0) {
+        return;
+    }
+
+    // No CPU stall here - see DeltaModulation's comment. The read goes through
+    // the bus because samples live in PRG-ROM at $8000-$FFFF, where a read has
+    // no side effect; this must never be pointed at $2000-$401F, where it
+    // would.
+    dmc.sample_buffer = bus->read(dmc.current_address);
+    dmc.sample_buffer_filled = true;
+
+    // "The address is incremented; if it exceeds $FFFF, it is wrapped around to
+    // $8000" - the sample window is the cartridge's, so it wraps to $8000 and
+    // not to zero.
+    //
+    // NOT VERIFIED BY ANY ORACLE HERE. Wrapping to $0000 instead passes all of
+    // apu_test, apu_reset and blargg_apu_2005, because their samples are a
+    // 33-byte block that never reaches $FFFF. Taken from the NESdev wiki, and
+    // the first ROM that plays a sample off the end of the address space is
+    // what will confirm or refute it.
+    dmc.current_address = (dmc.current_address == 0xFFFF) ? 0x8000 : static_cast<uint16_t>(dmc.current_address + 1);
+    --dmc.bytes_remaining;
+
+    if (dmc.bytes_remaining == 0) {
+        if (dmc.loop) {
+            dmc_restart_sample();
+        } else if (dmc.irq_enabled) {
+            set_dmc_irq(true);
+        }
+    }
+}
+
+void APU::clock_dmc()
+{
+    // A period of 0 means no rate has been selected yet, and must not free-run.
+    if (dmc.timer_period == 0) {
+        return;
+    }
+
+    if (dmc.timer > 0) {
+        --dmc.timer;
+        return;
+    }
+
+    // period - 1, not period. Counting down from the period itself spends
+    // period+1 cycles between output changes, which 8-dmc_rates reported as
+    // "Rate 0's period is too long" - one cycle in 428, and it still saw it.
+    dmc.timer = static_cast<uint16_t>(dmc.timer_period - 1);
+
+    // The output unit. Silence still clocks the shift register and the counter -
+    // it only suppresses the level change - which is what keeps a silenced
+    // channel in step with the sample stream.
+    if (!dmc.silence) {
+        // Clamped rather than wrapped: the level is 7 bits and hardware simply
+        // does not step past either end.
+        //
+        // ALSO NOT VERIFIED HERE. Removing the upper clamp passes every APU ROM
+        // in this repo - the output level is an analogue quantity and none of
+        // them read it back, so only something that renders audio can catch it.
+        // From the wiki, and pinned here in a comment rather than by a test
+        // because there is nothing to assert against yet.
+        if ((dmc.shift_register & 0x01) != 0) {
+            if (dmc.output_level <= 125) {
+                dmc.output_level = static_cast<uint8_t>(dmc.output_level + 2);
+            }
+        } else if (dmc.output_level >= 2) {
+            dmc.output_level = static_cast<uint8_t>(dmc.output_level - 2);
+        }
+    }
+
+    dmc.shift_register >>= 1;
+
+    if (dmc.bits_remaining > 0) {
+        --dmc.bits_remaining;
+    }
+
+    if (dmc.bits_remaining == 0) {
+        dmc.bits_remaining = 8;
+        if (dmc.sample_buffer_filled) {
+            dmc.silence = false;
+            dmc.shift_register = dmc.sample_buffer;
+            dmc.sample_buffer_filled = false;
+        } else {
+            dmc.silence = true;
+        }
+    }
+
+    dmc_fill_sample_buffer();
+}
+
 void APU::set_frame_irq(const bool asserted)
 {
     frame_irq_flag = asserted;
@@ -152,6 +272,11 @@ void APU::clock()
 {
     ++apu_cycles;
 
+    // Clocked every CPU cycle because the rate table is in CPU cycles, and
+    // independently of the frame counter - the DMC has its own divider and does
+    // not take part in the 4/5-step sequence at all.
+    clock_dmc();
+
     // A pending $4017 write takes effect here rather than at the write, having
     // been delayed 3 or 4 CPU cycles.
     if (reset_countdown > 0) {
@@ -245,6 +370,62 @@ void APU::write(const uint16_t addr, const uint8_t data)
                 lengths[channel].value = 0;
             }
         }
+
+        // Bit 4 is the DMC, and it does not behave like the other four. It does
+        // not load a length: enabling starts the sample only if none is already
+        // playing, so a program can write $4015 repeatedly without restarting
+        // it, and disabling silences it by zeroing bytes-remaining.
+        // The acknowledge comes FIRST, and the order is load-bearing. Clearing
+        // afterwards also wipes an interrupt the restart below has just raised,
+        // which is 7-dmc_basics #19: a one-byte sample is fetched immediately,
+        // so it ends inside this very write and must leave $4015 reading $80 -
+        // IRQ set, bytes-remaining clear.
+        //
+        // Unlike the frame interrupt, which a $4015 write deliberately leaves
+        // alone.
+        set_dmc_irq(false);
+
+        dmc.enabled = (data & 0x10) != 0;
+        if (!dmc.enabled) {
+            dmc.bytes_remaining = 0;
+        } else if (dmc.bytes_remaining == 0) {
+            dmc_restart_sample();
+
+            // "A one-byte buffer that's filled immediately if empty" - not on
+            // the next timer tick. With a one-byte sample the fetch drains it
+            // here, so bytes-remaining is already zero when the CPU's next
+            // instruction reads $4015.
+            dmc_fill_sample_buffer();
+        }
+        break;
+
+    // The DMC's four registers.
+    case 0x4010:
+        dmc.irq_enabled = (data & 0x80) != 0;
+        dmc.loop = (data & 0x40) != 0;
+        dmc.timer_period = kDmcRates[data & 0x0F];
+
+        // "If clear, the interrupt flag is cleared" - clearing the enable is
+        // one of the two ways software acknowledges a DMC interrupt, the other
+        // being a $4015 write.
+        if (!dmc.irq_enabled) {
+            set_dmc_irq(false);
+        }
+        break;
+
+    case 0x4011:
+        // Seven bits, loaded straight into the output level. Writable at any
+        // time and by design: this is the register games hammer from a timed
+        // loop to play PCM without using the sample machinery at all.
+        dmc.output_level = data & 0x7F;
+        break;
+
+    case 0x4012:
+        dmc.sample_address = static_cast<uint16_t>(0xC000 + (static_cast<uint16_t>(data) * 64));
+        break;
+
+    case 0x4013:
+        dmc.sample_length = static_cast<uint16_t>((static_cast<uint16_t>(data) * 16) + 1);
         break;
 
     // The halt bits. Same bit position on both pulses and the noise, and a
@@ -340,6 +521,16 @@ uint8_t APU::read(const uint16_t addr)
         if (lengths[channel].value > 0) {
             status |= static_cast<uint8_t>(1 << channel);
         }
+    }
+
+    // Bit 4 is BYTES REMAINING, not an enable - it reports whether the sample
+    // is still playing, which is how a program waits for one to finish. Bit 7
+    // is the DMC interrupt, and unlike bit 6 it is NOT cleared by this read.
+    if (dmc.bytes_remaining > 0) {
+        status |= 0x10;
+    }
+    if (dmc.irq_flag) {
+        status |= 0x80;
     }
 
     // Reading acknowledges: the flag clears and the line is released.

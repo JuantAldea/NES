@@ -11,12 +11,10 @@ check for regressions with `tests/test_counts.sh --check`.
 |---|---:|---|
 | `AllOpcodes/SingleStepBusTrace` | 256 | no |
 | `AllOpcodes/SingleStepVectors` | 256 | no |
-| `ApuReset/ApuResetRoms` | 5 | yes |
+| `ApuReset/ApuResetRoms` | 6 | yes |
 | `apuResetHarness` | 1 | yes |
-| `apuResetRomQueue` | 1 | yes |
 | `apuResetRoms` | 1 | yes |
-| `apuRomQueue` | 2 | yes |
-| `ApuTest/ApuRomsThatPass` | 6 | yes |
+| `ApuTest/ApuRomsThatPass` | 8 | yes |
 | `blargg2005Harness` | 1 | yes |
 | `Blargg2005Ppu/Blargg2005PpuRoms` | 3 | yes |
 | `BlarggApu2005/BlarggApu2005RomsThatPass` | 11 | yes |
