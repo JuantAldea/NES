@@ -128,12 +128,38 @@ private:
         uint8_t value = 0;
         bool halt = false;
         bool enabled = false;
+
+        // A halt write does not reach the counter on the cycle it is made.
+        // blargg's 10.len_halt_timing states the rule as "changes to length
+        // counter halt occur after clocking length, not before", and pins it
+        // one cycle wide: halting at 14914 stops the clock, halting at 14915
+        // does not. Applying it at the store put our boundary a cycle early.
+        //
+        // Moving the CLOCK instead was tried and is wrong - it fixes this ROM
+        // and breaks 05/06 with "first length is clocked too soon", which is
+        // how we know the sequencer's own timing was never the problem.
+        bool pending_halt = false;
+        bool halt_write_pending = false;
+
+        // A length load is deferred the same way, and for the same reason, but
+        // it also carries a CONDITION. 11.len_reload_timing: "write to length
+        // counter reload should be ignored when made during length counter
+        // clocking and the length counter is not zero" - honoured at zero,
+        // suppressed otherwise. The decision uses the value the counter held
+        // BEFORE that clock, because on hardware both reach the unit together
+        // and the decrement is what suppresses the reload.
+        uint8_t pending_load = 0;
+        bool load_write_pending = false;
+        bool clocked_this_cycle = false;
+        uint8_t value_before_clock = 0;
     };
 
     // Shared by power_on() and reset(), which differ only in the value written.
     void restart_frame_counter(uint8_t value_written_to_4017);
 
     void clock_sequencer();
+    void apply_pending_halts();
+    void apply_pending_loads();
     void clock_quarter_frame();
     void clock_half_frame();
     void set_frame_irq(bool asserted);

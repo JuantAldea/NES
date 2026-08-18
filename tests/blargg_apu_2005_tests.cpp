@@ -9,15 +9,15 @@
 // So everything after this point needs a different kind of verification. See
 // fetch_blargg_apu_2005.sh.
 //
-// NINE OF ELEVEN PASSED ON FIRST CONTACT. The one worth naming is
-// 09.reset_timing - "after reset or power-up, APU acts as if $4017 were written
-// with $00 from 9 to 12 clocks before first instruction begins" - which is
-// APU::power_on() and APU::reset() confirmed by a suite that had no part in
-// building them.
+// ALL ELEVEN PASS. Nine did on first contact, 09.reset_timing among them -
+// "after reset or power-up, APU acts as if $4017 were written with $00 from 9
+// to 12 clocks before first instruction begins" - which is APU::power_on() and
+// APU::reset() confirmed by a suite that had no part in building them.
 //
-// THE TWO FAILURES ARE ONE SUBJECT: write-versus-clock ordering in the length
-// counter, one cycle wide, in code that already exists. They are pinned rather
-// than skipped, so finishing either announces itself.
+// The other two were one subject, write-versus-clock ordering in the length
+// counter, and are fixed: see LengthCounter::pending_halt and
+// APU::apply_pending_loads. They were pinned to their exact codes until then,
+// and announced themselves by failing those pins rather than by being noticed.
 //
 // THESE ROMs REPORT ON SCREEN, NOT THROUGH $6000. They predate that protocol,
 // so blargg_rom_harness.h cannot read them and nametable_screen.h does. Two
@@ -124,9 +124,11 @@ TEST_P(BlarggApu2005RomsThatPass, reports_code_01)
            "  An empty or all-blank screen means the ROM never ran, not that it failed.";
 }
 
-// Nine of the eleven. 09.reset_timing is in this list because APU::power_on and
-// APU::reset were already right, which is the whole reason the suite was worth
-// fetching.
+// All eleven. Nine passed on first contact - 09.reset_timing among them, which
+// is why the suite was worth fetching at all. The last two arrived when the
+// length counter learned that a halt or a reload written on the cycle before a
+// length clock lands AFTER it; both were pinned to their exact codes until
+// then, and both announced themselves by failing those pins.
 INSTANTIATE_TEST_SUITE_P(BlarggApu2005,
                          BlarggApu2005RomsThatPass,
                          ::testing::Values("01.len_ctr",
@@ -137,7 +139,9 @@ INSTANTIATE_TEST_SUITE_P(BlarggApu2005,
                                            "06.len_timing_mode1",
                                            "07.irq_flag_timing",
                                            "08.irq_timing",
-                                           "09.reset_timing"),
+                                           "09.reset_timing",
+                                           "10.len_halt_timing",
+                                           "11.len_reload_timing"),
                          [](const ::testing::TestParamInfo<const char*>& info) {
                              std::string name = info.param;
                              for (char& c : name) {
@@ -147,47 +151,6 @@ INSTANTIATE_TEST_SUITE_P(BlarggApu2005,
                              }
                              return name;
                          });
-
-// --- the queue ---------------------------------------------------------------
-//
-// Pinned to their exact codes. When either is fixed the assertion fails and its
-// message says to promote the ROM - the same pattern as apu_rom_tests.cpp, and
-// the reason not to write these as skips.
-
-namespace
-{
-
-void expect_pinned_code(const std::string& name, const std::string& expected_code, const std::string& meaning)
-{
-    uint64_t frame = 0;
-    const std::string screen = run_until_settled(name, frame);
-
-    EXPECT_EQ(expected_code, reported_code(screen))
-        << name << " changed its code. If it now reports $01, the behaviour is fixed:\n"
-        << "  delete this pin and move the ROM into the passing list above.\n"
-        << "  Pinned code " << expected_code << " means: " << meaning << "\n"
-        << "  Settled at frame " << frame << " on screen: [" << screen << "]";
-}
-
-}  // namespace
-
-// A halt-bit write landing ON the length clock must take effect AFTER it.
-// APU::write sets lengths[].halt the moment the store happens, so the clock at
-// 14915 sees the new value where hardware still sees the old one.
-GTEST_TEST(blarggApu2005Queue, halt_takes_effect_after_the_length_clock_not_before)
-{
-    REQUIRE_APU2005_ROM("10.len_halt_timing");
-    expect_pinned_code("10.len_halt_timing", "$03", "Length should be clocked when halted at 14915");
-}
-
-// A length reload landing ON the length clock is ignored when the counter is
-// non-zero, and honoured when it is zero. APU::load_length reloads
-// unconditionally, so it gets the ctr = 0 case wrong.
-GTEST_TEST(blarggApu2005Queue, a_reload_on_the_length_clock_depends_on_whether_the_counter_is_zero)
-{
-    REQUIRE_APU2005_ROM("11.len_reload_timing");
-    expect_pinned_code("11.len_reload_timing", "$04", "Reload during length clock when ctr = 0 should work normally");
-}
 
 // Guards the reader rather than the emulator. If the nametable path regressed,
 // every test above would fail identically with an empty screen, and it would not

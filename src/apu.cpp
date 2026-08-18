@@ -41,6 +41,11 @@ void APU::clock_quarter_frame() {}
 void APU::clock_half_frame()
 {
     for (LengthCounter& counter : lengths) {
+        // Recorded for apply_pending_loads, which must decide on the value as
+        // it was when the clock arrived, not as it is afterwards.
+        counter.clocked_this_cycle = true;
+        counter.value_before_clock = counter.value;
+
         // Halt suspends the countdown without clearing it, so a halted channel
         // resumes from where it stopped rather than restarting - blargg's
         // 1-len_ctr #8. The counter stops AT zero rather than wrapping; zero is
@@ -112,6 +117,37 @@ void APU::reset()
     restart_frame_counter(last_4017_write);
 }
 
+// Applied at the END of a clock, after the sequencer has run, so a halt stored
+// on cycle N is not visible to the length clock until cycle N+1 has already
+// clocked. That one cycle is the whole of 10.len_halt_timing.
+void APU::apply_pending_halts()
+{
+    for (LengthCounter& counter : lengths) {
+        if (counter.halt_write_pending) {
+            counter.halt = counter.pending_halt;
+            counter.halt_write_pending = false;
+        }
+    }
+}
+
+// The counterpart, and the reason clock_half_frame records value_before_clock:
+// a load stored on cycle N lands after cycle N+1 has clocked, and if that clock
+// found the counter non-zero the load is dropped. At zero it is honoured, which
+// is what lets a program restart a finished note on the clock edge.
+void APU::apply_pending_loads()
+{
+    for (int channel = 0; channel < length_channels; ++channel) {
+        LengthCounter& counter = lengths[channel];
+        if (counter.load_write_pending) {
+            if (!(counter.clocked_this_cycle && counter.value_before_clock != 0)) {
+                load_length(channel, counter.pending_load);
+            }
+            counter.load_write_pending = false;
+        }
+        counter.clocked_this_cycle = false;
+    }
+}
+
 void APU::clock()
 {
     ++apu_cycles;
@@ -137,12 +173,16 @@ void APU::clock()
                 clock_quarter_frame();
                 clock_half_frame();
             }
+            apply_pending_halts();
+            apply_pending_loads();
             return;
         }
     }
 
     ++frame_cycle;
     clock_sequencer();
+    apply_pending_halts();
+    apply_pending_loads();
 }
 
 void APU::clock_sequencer()
@@ -212,30 +252,38 @@ void APU::write(const uint16_t addr, const uint8_t data)
     // linear counter's control flag - one flag, two jobs, which is the
     // hardware's doing and not a simplification here.
     case 0x4000:
-        lengths[pulse1].halt = (data & 0x20) != 0;
+        lengths[pulse1].pending_halt = (data & 0x20) != 0;
+        lengths[pulse1].halt_write_pending = true;
         break;
     case 0x4004:
-        lengths[pulse2].halt = (data & 0x20) != 0;
+        lengths[pulse2].pending_halt = (data & 0x20) != 0;
+        lengths[pulse2].halt_write_pending = true;
         break;
     case 0x4008:
-        lengths[triangle].halt = (data & 0x80) != 0;
+        lengths[triangle].pending_halt = (data & 0x80) != 0;
+        lengths[triangle].halt_write_pending = true;
         break;
     case 0x400C:
-        lengths[noise].halt = (data & 0x20) != 0;
+        lengths[noise].pending_halt = (data & 0x20) != 0;
+        lengths[noise].halt_write_pending = true;
         break;
 
     // The length loads.
     case 0x4003:
-        load_length(pulse1, data);
+        lengths[pulse1].pending_load = data;
+        lengths[pulse1].load_write_pending = true;
         break;
     case 0x4007:
-        load_length(pulse2, data);
+        lengths[pulse2].pending_load = data;
+        lengths[pulse2].load_write_pending = true;
         break;
     case 0x400B:
-        load_length(triangle, data);
+        lengths[triangle].pending_load = data;
+        lengths[triangle].load_write_pending = true;
         break;
     case 0x400F:
-        load_length(noise, data);
+        lengths[noise].pending_load = data;
+        lengths[noise].load_write_pending = true;
         break;
 
     case FRAMECOUNTER: {

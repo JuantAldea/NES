@@ -22,7 +22,7 @@ still no audio.
 | Sprites | Secondary OAM, per-dot evaluation, 8-per-line, the overflow search bug, priority, 8x16, flip. Passes blargg's 5 `sprite_overflow` and 11 `sprite_hit` ROMs |
 | Cartridge | iNES, NROM (0), UNROM (2), CNROM (3) and MMC3 (4), CHR-ROM and CHR-RAM |
 | MMC3 IRQ | A12-filtered scanline counter driving `/IRQ`, clocked on the right dot. Passes 5 of blargg's 6 `mmc3_test_2` ROMs; the sixth tests the other chip revision, see below |
-| APU | Frame counter, `/IRQ`, length counters, and the power-on/RESET state. Passes 5 of blargg's 6 `apu_reset` and 9 of his 11 `blargg_apu_2005` ROMs. No audio yet. |
+| APU | Frame counter, `/IRQ`, length counters, and the power-on/RESET state. Passes 5 of blargg's 6 `apu_reset` and **all 11** `blargg_apu_2005` ROMs. No audio yet. |
 | Display | SDL2 + Dear ImGui: the screen and the debugger in one window |
 | Controllers | Both ports at `$4016`/`$4017`, keyboard-driven. Passes blargg's `read_joy3` `test_buttons` |
 
@@ -213,22 +213,26 @@ few thousand frames, and every mapper beyond 0, 2, 3 and 4.
         blargg's six `apu_reset` ROMs. `Bus::reset()` deliberately leaves the
         PPU alone; nothing measures a PPU reset yet.
     *   Audited against blargg's 2005 frame-counter suite, which reaches
-        further than `apu_test` into length-counter timing: 9 of its 11 pass,
-        including `09.reset_timing`, an independent check of the power-on and
-        RESET work above. Those ROMs predate the `$6000` protocol and report on
+        further than `apu_test` into length-counter timing: **all 11 pass**.
+        Nine did on first contact, including `09.reset_timing`, an independent
+        check of the power-on and RESET work above. Those ROMs predate the `$6000` protocol and report on
         screen, so they are read out of the nametable by
         `tests/nametable_screen.h` - and there `$01` means passed, not `0`.
+    *   A write to the halt bit or to a length reload does not reach the
+        counter on the cycle it is made: it lands after the *next* length
+        clock. A reload arriving that way is dropped when the counter is
+        non-zero and honoured when it is zero. Both come from
+        `10.len_halt_timing` and `11.len_reload_timing`, which were pinned to
+        their exact failure codes until the behaviour landed and then announced
+        it by failing those pins. Moving the frame counter's own timing instead
+        was tried and rejected - it fixes those two and breaks `05`/`06` with
+        "first length is clocked too soon".
     *   **Still no audio.** No envelope, sweep or linear counter, no channel
-        output, no mixer and no DMC. Five ROMs are pinned to their current
-        failures so that finishing any of them is announced by a test rather
-        than noticed by hand: `7-dmc_basics` and `8-dmc_rates`
-        (`tests/apu_rom_tests.cpp`), `works_immediately`
-        (`tests/apu_reset_rom_tests.cpp`), and `10.len_halt_timing` and
-        `11.len_reload_timing` (`tests/blargg_apu_2005_tests.cpp`).
-    *   The last two are the nearest work, and they are one subject:
-        write-versus-clock ordering in the length counter, one cycle wide. A
-        halt-bit write landing *on* the length clock must take effect after it,
-        and a reload landing on it is ignored when the counter is non-zero.
+        output, no mixer and no DMC. Three ROMs remain pinned to their current
+        failures so that finishing them is announced by a test rather than
+        noticed by hand: `7-dmc_basics` and `8-dmc_rates`
+        (`tests/apu_rom_tests.cpp`) and `works_immediately`
+        (`tests/apu_reset_rom_tests.cpp`). All three want the DMC.
     *   **There is no oracle for the envelope, sweep or linear counter, and
         that is not a gap in this repo's fixtures.** blargg's own `tests.txt`
         states his suite "does not test clocking of the envelope, sweep, or

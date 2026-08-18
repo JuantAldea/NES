@@ -434,5 +434,88 @@ GTEST_TEST(testAPU, a_held_irq_line_is_taken_again_after_every_handler)
                                      << static_cast<int>(mem.memory[0x0010]) << " time(s)";
 }
 
+// The one part of the reload rule that NO ROM distinguishes, pinned here so it
+// is at least stated.
+//
+// 11.len_reload_timing establishes that a load coinciding with a length clock
+// is dropped when the counter is not zero and honoured when it is. It does not
+// pin WHICH value that test uses - the counter before the clock, or after it.
+// The two differ in exactly one case, a counter of 1 being decremented to 0,
+// and the ROM never exercises it: replacing value_before_clock with the
+// post-clock value passes all eleven of blargg_apu_2005, all of apu_test and
+// all of apu_reset.
+//
+// So this assertion is REASONED, not measured, and the reasoning is that on
+// hardware the write and the clock reach the length counter together - the
+// value it holds at that moment is the one before the decrement, and it is the
+// decrement itself that suppresses the reload. If an oracle ever contradicts
+// this, believe the oracle: nothing here outranks a ROM.
+GTEST_TEST(testAPU, a_reload_coinciding_with_the_clock_uses_the_pre_clock_counter_value)
+{
+    // Replays one identical sequence: bring pulse1's length counter to 1, then
+    // switch mode again to fire another half-frame clock. `load_at` places a
+    // $4003 store immediately after the given clock of that final phase, or
+    // nowhere when negative. Returns the clock on which the counter changed and
+    // the value it ended on.
+    //
+    // Written as a replay rather than with a hard-coded delay because a $4017
+    // write takes effect 3 or 4 cycles later depending on the parity of the
+    // cycle it lands on, so the figure differs between the two writes here.
+    // Assuming one delay for both is what made the first version of this test
+    // fail against a correct implementation.
+    struct Run {
+        int changed_on = -1;
+        int final_value = -1;
+    };
+    const auto replay = [](int load_at) {
+        Bus console;
+        APU& apu = console.apu;
+        apu.write(0x4015, 0x01);  // enable pulse1
+        apu.write(0x4000, 0x00);  // halt clear
+        apu.write(0x4003, 0x18);  // table[3] = 2
+        apu.clock();              // let the deferred load land
+
+        // Down to 1: switch mode, which clocks a half-frame when it takes
+        // effect. Clocked until the counter actually moves, so no delay is
+        // assumed.
+        apu.write(0x4017, 0x80);
+        for (int c = 0; c < 16 && apu.length_counter(APU::pulse1) != 1; ++c) {
+            apu.clock();
+        }
+
+        Run run;
+        const uint8_t before = apu.length_counter(APU::pulse1);
+        apu.write(0x4017, 0x80);
+        for (int c = 1; c <= 16; ++c) {
+            apu.clock();
+            // After the clock, never before: Bus::clock ticks the APU and only
+            // then runs the CPU's store, so a store "on cycle N" always reaches
+            // an APU that has already clocked for N.
+            if (c == load_at) {
+                apu.write(0x4003, 0x18);
+            }
+            if (run.changed_on < 0 && apu.length_counter(APU::pulse1) != before) {
+                run.changed_on = c;
+            }
+        }
+        run.final_value = apu.length_counter(APU::pulse1);
+        return run;
+    };
+
+    const Run undisturbed = replay(-1);
+    ASSERT_EQ(1, undisturbed.changed_on > 0 ? 1 : 0) << "the mode switch never clocked a half-frame";
+    ASSERT_EQ(0, undisturbed.final_value) << "a counter of 1 should have been clocked to 0";
+
+    // The store must be pending when that clock arrives, so it goes one cycle
+    // earlier.
+    const Run coinciding = replay(undisturbed.changed_on - 1);
+
+    EXPECT_EQ(0, coinciding.final_value)
+        << "the counter held 1 when the clock and the reload arrived together, so the\n"
+           "  reload should have been dropped and the decrement should have taken it to 0.\n"
+           "  Reading 2 means the post-clock value was used to decide instead - see\n"
+           "  LengthCounter::value_before_clock.";
+}
+
 }  // namespace apu
 }  // namespace tests

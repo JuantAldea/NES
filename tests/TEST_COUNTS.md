@@ -19,9 +19,8 @@ check for regressions with `tests/test_counts.sh --check`.
 | `ApuTest/ApuRomsThatPass` | 6 | yes |
 | `blargg2005Harness` | 1 | yes |
 | `Blargg2005Ppu/Blargg2005PpuRoms` | 3 | yes |
-| `BlarggApu2005/BlarggApu2005RomsThatPass` | 9 | yes |
+| `BlarggApu2005/BlarggApu2005RomsThatPass` | 11 | yes |
 | `blarggApu2005Harness` | 1 | yes |
-| `blarggApu2005Queue` | 2 | yes |
 | `blarggHarness` | 1 | yes |
 | `commercialRom` | 5 | no |
 | `controllerRom` | 1 | yes |
@@ -61,7 +60,7 @@ check for regressions with `tests/test_counts.sh --check`.
 | `PpuVblNmi/BlarggPpuVblNmi` | 10 | yes |
 | `SpriteHit/SpriteHitRoms` | 11 | yes |
 | `SpriteOverflow/SpriteOverflowRoms` | 5 | yes |
-| `testAPU` | 14 | yes |
+| `testAPU` | 15 | yes |
 | `testBusRunFrame` | 3 | yes |
 | `testCPU` | 2 | yes |
 | `testDMA` | 3 | yes |
@@ -78,9 +77,9 @@ check for regressions with `tests/test_counts.sh --check`.
 
 | | Cases |
 |---|---:|
-| Registered | 927 |
+| Registered | 928 |
 | Skipped in CI | 517 |
-| **Executed in CI** | **410** |
+| **Executed in CI** | **411** |
 
 Skipped in CI: the 512 per-opcode SingleStepTests need 1.1 GB of vectors CI
 does not fetch, and `commercialRom` needs a cartridge dump nothing here will
