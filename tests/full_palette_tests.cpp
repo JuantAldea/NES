@@ -47,7 +47,7 @@ using tests::fixture::distinct_pixels;
 
 std::string rom_path(const std::string& name) { return std::string(NES_TEST_FILES_DIR) + "/full_palette/" + name; }
 
-constexpr const char* kFetch = "Run tests/test_files/fetch_full_palette.sh to fetch it.";
+constexpr const char* kFetch = "run tests/test_files/fetch_full_palette.sh";
 
 // Frames measured as sufficient in fetch_full_palette.sh: the count is stable
 // at 60, 300 and 900, so 300 is well past settling without being slow. The ROM
@@ -57,9 +57,9 @@ constexpr int kFrames = 300;
 // Named for what it does. This used to hide behind a macro called
 // SKIP_IF_ABSENT, so six tests emulated ~2,100 frames between them and the call
 // sites read as a file check. The load is asserted rather than returning a
-// bool: presence is already established by SKIP_IF_ROM_ABSENT, so a failure
-// here means the file exists and will not parse, which is a broken fixture
-// rather than a missing one and should stop the test.
+// bool: presence is already established by REQUIRE_ROM, so a failure here means
+// the file exists and will not parse, which is a broken fixture rather than a
+// missing one and should stop the test.
 void load_and_run(Bus& console, const std::string& name, int frames = kFrames)
 {
     ASSERT_TRUE(console.load_cartridge(rom_path(name))) << "the ROM is present but did not load: " << rom_path(name);
@@ -79,7 +79,7 @@ void load_and_run(Bus& console, const std::string& name, int frames = kFrames)
 GTEST_TEST(fullPalette, the_rom_runs_to_a_picture)
 {
     Bus console;
-    SKIP_IF_ROM_ABSENT(rom_path("full_palette.nes"), kFetch);
+    REQUIRE_ROM(rom_path("full_palette.nes"), kFetch);
     load_and_run(console, "full_palette.nes");
 
     EXPECT_GT(console.ppu.frame, 0u) << "the PPU never completed a frame";
@@ -94,7 +94,7 @@ GTEST_TEST(fullPalette, two_runs_produce_the_same_picture)
 {
     Bus a;
     Bus b;
-    SKIP_IF_ROM_ABSENT(rom_path("full_palette.nes"), kFetch);
+    REQUIRE_ROM(rom_path("full_palette.nes"), kFetch);
     load_and_run(a, "full_palette.nes");
     load_and_run(b, "full_palette.nes");
 
@@ -126,7 +126,7 @@ GTEST_TEST(fullPalette, two_runs_produce_the_same_picture)
 GTEST_TEST(fullPalette, the_whole_grid_is_drawn_through_the_forced_backdrop)
 {
     Bus console;
-    SKIP_IF_ROM_ABSENT(rom_path("full_palette.nes"), kFetch);
+    REQUIRE_ROM(rom_path("full_palette.nes"), kFetch);
     load_and_run(console, "full_palette.nes");
 
     EXPECT_EQ(57, distinct_indices(console.ppu))
@@ -138,7 +138,7 @@ GTEST_TEST(fullPalette, the_whole_grid_is_drawn_through_the_forced_backdrop)
 GTEST_TEST(fullPalette, the_smooth_variant_draws_the_same_grid)
 {
     Bus console;
-    SKIP_IF_ROM_ABSENT(rom_path("full_palette_smooth.nes"), kFetch);
+    REQUIRE_ROM(rom_path("full_palette_smooth.nes"), kFetch);
     load_and_run(console, "full_palette_smooth.nes");
     EXPECT_EQ(57, distinct_indices(console.ppu)) << "see the_whole_grid_is_drawn_through_the_forced_backdrop";
 }
@@ -150,7 +150,7 @@ GTEST_TEST(fullPalette, the_smooth_variant_draws_the_same_grid)
 GTEST_TEST(fullPalette, the_flowing_variant_animates_through_the_palette)
 {
     Bus console;
-    SKIP_IF_ROM_ABSENT(rom_path("flowing_palette.nes"), kFetch);
+    REQUIRE_ROM(rom_path("flowing_palette.nes"), kFetch);
     load_and_run(console, "flowing_palette.nes");
     EXPECT_GT(distinct_indices(console.ppu), 40) << "see the_whole_grid_is_drawn_through_the_forced_backdrop";
 }
@@ -181,7 +181,7 @@ GTEST_TEST(fullPalette, the_flowing_variant_animates_through_the_palette)
 GTEST_TEST(fullPalette, every_emphasis_state_reaches_the_framebuffer)
 {
     Bus console;
-    SKIP_IF_ROM_ABSENT(rom_path("full_palette.nes"), kFetch);
+    REQUIRE_ROM(rom_path("full_palette.nes"), kFetch);
     load_and_run(console, "full_palette.nes");
 
     EXPECT_EQ(57 * 8, distinct_pixels(console.ppu))
@@ -197,7 +197,7 @@ GTEST_TEST(fullPalette, every_emphasis_state_reaches_the_framebuffer)
 GTEST_TEST(fullPalette, emphasis_varies_within_a_single_frame)
 {
     Bus console;
-    SKIP_IF_ROM_ABSENT(rom_path("full_palette.nes"), kFetch);
+    REQUIRE_ROM(rom_path("full_palette.nes"), kFetch);
     load_and_run(console, "full_palette.nes");
 
     bool seen[8] = {false};

@@ -46,7 +46,7 @@ std::string rom_path(const std::string& name) { return std::string(NES_TEST_FILE
 // a tight budget would turn progress into a timeout.
 constexpr uint64_t kMaxFrames = 600;
 
-constexpr const char* kFetch = "Run tests/test_files/fetch_apu_test.sh to fetch it.";
+constexpr const char* kFetch = "run tests/test_files/fetch_apu_test.sh";
 
 blargg::RomResult run(const std::string& name) { return blargg::run_rom(rom_path(name), kMaxFrames); }
 
@@ -61,7 +61,7 @@ class ApuRomsThatPass : public ::testing::TestWithParam<const char*>
 TEST_P(ApuRomsThatPass, reports_pass)
 {
     const std::string name = GetParam();
-    SKIP_IF_ROM_ABSENT(rom_path(name), kFetch);
+    REQUIRE_ROM(rom_path(name), kFetch);
 
     const blargg::RomResult result = run(name);
 
@@ -124,13 +124,13 @@ void expect_pinned_failure(const std::string& name, const uint8_t expected_statu
 // the cycle-exact bus is the most heavily verified thing in this project.
 GTEST_TEST(apuRomQueue, the_dmc_is_not_implemented)
 {
-    SKIP_IF_ROM_ABSENT(rom_path("7-dmc_basics"), kFetch);
+    REQUIRE_ROM(rom_path("7-dmc_basics"), kFetch);
     expect_pinned_failure("7-dmc_basics", 2, "DMC isn't working well enough to test further");
 }
 
 GTEST_TEST(apuRomQueue, the_dmc_rate_table_is_not_implemented)
 {
-    SKIP_IF_ROM_ABSENT(rom_path("8-dmc_rates"), kFetch);
+    REQUIRE_ROM(rom_path("8-dmc_rates"), kFetch);
     expect_pinned_failure("8-dmc_rates", 2, "Rate 0's period is too short");
 }
 

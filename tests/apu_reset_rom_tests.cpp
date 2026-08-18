@@ -54,15 +54,6 @@ constexpr uint64_t kMaxFrames = 600;
 
 constexpr const char* kFetch = "run tests/test_files/fetch_apu_reset.sh";
 
-// Fails rather than skips, and names the script. See the header.
-#define REQUIRE_ROM(path)                                               \
-    do {                                                                \
-        const std::string required = (path);                            \
-        if (!tests::fixture::rom_present(required)) {                   \
-            FAIL() << "could not load " << required << " - " << kFetch; \
-        }                                                               \
-    } while (0)
-
 blargg::RomResult run(const std::string& name) { return blargg::run_rom(rom_path(name), kMaxFrames); }
 
 }  // namespace
@@ -76,7 +67,7 @@ class ApuResetRoms : public ::testing::TestWithParam<const char*>
 TEST_P(ApuResetRoms, reports_pass)
 {
     const std::string name = GetParam();
-    REQUIRE_ROM(rom_path(name));
+    REQUIRE_ROM(rom_path(name), kFetch);
 
     const blargg::RomResult result = run(name);
 
@@ -110,7 +101,7 @@ INSTANTIATE_TEST_SUITE_P(
 GTEST_TEST(apuResetHarness, every_passing_rom_needed_a_reset_driven)
 {
     for (const char* name : {"4015_cleared", "irq_flag_cleared", "len_ctrs_enabled", "4017_written", "4017_timing"}) {
-        REQUIRE_ROM(rom_path(name));
+        REQUIRE_ROM(rom_path(name), kFetch);
         const blargg::RomResult result = run(name);
         EXPECT_GT(result.resets_driven, 0u) << name << " reached its verdict without a reset being driven";
     }
@@ -122,7 +113,7 @@ GTEST_TEST(apuResetHarness, every_passing_rom_needed_a_reset_driven)
 // Asserted against the constant so the two cannot drift apart unnoticed.
 GTEST_TEST(apuResetRoms, reports_the_4017_delay_we_implement)
 {
-    REQUIRE_ROM(rom_path("4017_timing"));
+    REQUIRE_ROM(rom_path("4017_timing"), kFetch);
 
     const blargg::RomResult result = run("4017_timing");
     const std::string expected = "Delay after effective $4017 write: " + std::to_string(APU::power_on_delay);
@@ -143,7 +134,7 @@ GTEST_TEST(apuResetRoms, reports_the_4017_delay_we_implement)
 // header. When the DMC lands this fails, and the message says to promote it.
 GTEST_TEST(apuResetRomQueue, works_immediately_is_blocked_on_the_dmc)
 {
-    REQUIRE_ROM(rom_path("works_immediately"));
+    REQUIRE_ROM(rom_path("works_immediately"), kFetch);
 
     const blargg::RomResult result = run("works_immediately");
 
