@@ -13,6 +13,11 @@ Bus::Bus()
     // Bus::clock places the interrupt sample one PPU dot after the CPU's bus
     // access, which the CPU cannot do for itself.
     cpu.external_interrupt_sampling = true;
+
+    // Before cpu.reset(), and that order is the point: the APU's power-on
+    // sequence is defined as running BEFORE execution begins at the reset
+    // vector, and it leaves the frame counter mid-sequence rather than at zero.
+    apu.power_on();
     cpu.reset();
 }
 

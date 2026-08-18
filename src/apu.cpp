@@ -74,6 +74,20 @@ void APU::load_length(const int channel, const uint8_t data)
     lengths[channel].value = table[data >> 3];
 }
 
+// The write goes through the normal $4017 path rather than assigning the state
+// directly, so the divider reset takes its usual 3-4 cycle delay and resolves
+// partway through the loop below - which is what leaves frame_cycle at a small
+// non-zero value when the CPU's first instruction runs, exactly as on hardware.
+// Assigning the fields here instead would start the sequence at 0 and lose the
+// delay this function exists to model.
+void APU::power_on()
+{
+    write(FRAMECOUNTER, 0x00);
+    for (int i = 0; i < power_on_delay; ++i) {
+        clock();
+    }
+}
+
 void APU::clock()
 {
     ++apu_cycles;

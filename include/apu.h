@@ -29,6 +29,35 @@ public:
     // on half-cycles and integer CPU cycles are the honest unit.
     void clock();
 
+    // Power-on is not the same as reset, and is not "everything zero". Blargg's
+    // apu_reset readme states it exactly: at power it is as if $00 were written
+    // to $4017, then a 9-12 clock delay, then execution from the reset vector.
+    // Without this the frame IRQ arrives far too early - apu_reset/4017_timing
+    // measured 4 against hardware's 9-12 - and $4017/$4015 are not usable from
+    // the first instruction.
+    void power_on();
+
+    // Why 10, and not the 9 that blargg's readme calls typical.
+    //
+    // 4017_timing PRINTS the delay it measures and accepts the whole 9-12
+    // window, so it does not choose between them: 9, 10 and 12 all take it to
+    // $81. What does choose is cpu_interrupts_v2/4-irq_and_dma, and it is
+    // unambiguous - measured across 8, 9, 10, 11 and 12, every EVEN delay
+    // passes and every odd one fails.
+    //
+    // The mechanism is parity, not magnitude. apu_cycles counts CPU cycles from
+    // power-on and its low bit selects write_delay_odd/even_cycle for every
+    // later $4017 write, so an odd-length power-on delay inverts the CPU/APU
+    // phase for the rest of the run and shifts each divider reset by a cycle.
+    // 4-irq_and_dma is an IRQ-timing ROM driven by this very counter, so it
+    // sees that directly. Three testAPU cases fail on an odd delay for the same
+    // reason - they were not encoding a stale power-on assumption, they were
+    // detecting the phase inversion.
+    //
+    // So the admissible values are the even ones inside blargg's window, 10 and
+    // 12, and 10 is the nearer to 9.
+    static constexpr int power_on_delay = 10;
+
     enum RegisterMMap : uint16_t {
         APUSTATUS = 0x4015,
         FRAMECOUNTER = 0x4017,
