@@ -75,9 +75,11 @@ struct RomResult {
 
 // Runs a $6000-protocol ROM, DRIVING A SOFT RESET whenever it asks for one.
 //
-// No other harness here does that - blargg_ppu_tests fails outright on status
-// $81 with "harness does not drive one" - and these two ROMs consist of nothing
-// else.
+// This used to be the only harness that did, which is why it is a local copy.
+// blargg_rom_harness.h now drives resets too, so this exists only for the
+// power_on() below - these two ROMs are the reason CPU::power_on and CPU::reset
+// are separate, and the shared harness resets rather than powers on. Folding
+// the two together needs that difference kept, not smoothed over.
 RomResult run_with_resets(const std::string& name)
 {
     RomResult result;
@@ -106,7 +108,7 @@ RomResult run_with_resets(const std::string& name)
             for (int w = 0; w < kFramesBeforeReset; ++w) {
                 run_one_frame(console);
             }
-            console.cpu.reset();
+            console.reset();
             ++result.resets;
             continue;
         }

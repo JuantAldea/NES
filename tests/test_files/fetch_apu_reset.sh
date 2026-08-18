@@ -57,9 +57,28 @@
 # reports as 0, so the ROM is blocked on the DMC (Phase 3) and no amount of
 # power-on work will move it. tests/apu_reset_rom_tests.cpp pins it there.
 #
-# So the split is now 5 blocked on the harness, 1 blocked on the DMC, 0 on
+# So the split was then 5 blocked on the harness, 1 blocked on the DMC, 0 on
 # power-on state. The delay is 10 rather than the readme's typical 9 because
 # cpu_interrupts_v2/4-irq_and_dma requires an even one - see APU::power_on_delay.
+#
+# ---------------------------------------------------------------------------
+# THEN RESOLVED AGAIN, by Bus::reset() and the harness pressing RESET. The five
+# that were only ever blocked on the button now run their second half:
+#
+#   4015_cleared      PASSED (1 reset)
+#   irq_flag_cleared  PASSED (1 reset)
+#   len_ctrs_enabled  PASSED (1 reset)
+#   4017_written      PASSED (2 resets)
+#   4017_timing       PASSED (1 reset), prints delay 10 at reset too
+#   works_immediately still 2 @ frame 20, and still the DMC - it fails at the
+#                     POWER stage, before ever asking for a reset
+#
+# 5 of 6 pass. The last one is Phase 3 work, not reset work.
+#
+# Driving the reset needed APU::reset() as well as the button: with a CPU-only
+# reset these reported, in order, Failed #3 "$4015 should be cleared", #3 "flag
+# should be clear", PASSED, #3 "$4017 should be rewritten with last value" and
+# #2 with a measured delay of 14. That list was the work queue for APU::reset.
 #
 # All six BOOT AND REPORT rather than hanging, which is what makes them usable.
 # The frame numbers are a FLOOR and will rise as ROMs get further.

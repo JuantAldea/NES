@@ -1,30 +1,29 @@
 // blargg's apu_reset suite - the machine's APU state at power, and after a
 // soft RESET.
 //
-// This suite is what drove APU::power_on(). Before it existed the APU came up
-// with everything zeroed, which is NOT the hardware's power-on state: blargg's
-// readme specifies it as "$00 written to $4017, then a 9-12 clock delay, then
-// execution from the reset vector". Four of these six ROMs failed on that
-// alone, and now do not. See the comment on APU::power_on_delay for why the
-// delay is 10 and not the 9 the readme calls typical - cpu_interrupts_v2's
-// 4-irq_and_dma pins the CPU/APU phase, and an odd delay inverts it.
+// This suite drove two features, in order. APU::power_on() first: the APU used
+// to come up with everything zeroed, which is not the hardware's power-on state
+// ("$00 written to $4017, then a 9-12 clock delay, then execution from the
+// reset vector"), and four of these six failed on that alone. Then Bus::reset()
+// and the harness pressing RESET, without which the other half of every ROM
+// here was unreachable.
 //
-// NONE OF THE SIX CAN FULLY PASS TODAY, for two unrelated reasons, and keeping
-// them apart is the whole point of this file:
+// FIVE OF SIX PASS. The sixth, works_immediately, is filed under power-on by
+// its name and by this suite's own baseline, and that is wrong. Its source
+// configures all five channels - including $4010/$4013 and $4015 bit 4 - then
+// reads $4015 four times and compares the log. Bit 4 is the DMC's
+// bytes-remaining, which this APU always reports as 0. It never even reaches
+// the reset half; no amount of reset work will move it, and the DMC will.
 //
-//   FIVE ARE BLOCKED ON THE HARNESS. They report $81 - blargg's "needs reset" -
-//   meaning they passed every power-on check and are waiting for a soft RESET
-//   to run the second half. blargg_rom_harness.h records that in
-//   RomResult::needs_reset and does not drive one. So $81 here is a PASS of
-//   everything reachable, not a failure, and asserting it is how the suite
-//   notices when driving a reset becomes possible.
+// What each ROM checks, from blargg's readme - the reset column is the half
+// that only became testable when the harness learned to press the button:
 //
-//   ONE IS BLOCKED ON THE DMC. works_immediately is filed under power-on by its
-//   name and by this suite's own baseline, and that turned out to be wrong. Its
-//   source sets up all five channels - including $4010/$4013 and $4015 bit 4 -
-//   then reads $4015 four times and compares the log. Bit 4 is the DMC's
-//   bytes-remaining, which this APU always reports as 0. No amount of power-on
-//   work will move it; the DMC will.
+//   4015_cleared      at power and reset, $4015 is cleared
+//   irq_flag_cleared  at power and reset, the frame IRQ flag is clear
+//   len_ctrs_enabled  at power and reset, length counters are enabled
+//   4017_written      at reset $4017 is rewritten with the last value written
+//   4017_timing       the 9-12 clock delay, at power and at reset; it PRINTS
+//                     the figure it measures
 //
 // The ROMs are fetched, not committed, and a missing one FAILS rather than
 // skips - CI fetches them, so absence means the fetch step broke, and a skip
@@ -47,9 +46,10 @@ std::string rom_path(const std::string& name)
     return std::string(NES_TEST_FILES_DIR) + "/apu_reset/" + name + ".nes";
 }
 
-// Measured: the six report between frames 10 and 20. 600 is far above that on
-// purpose - these are a FLOOR and rise as ROMs get further, so a tight budget
-// would turn progress into a timeout.
+// Measured: the six report between frames 20 and 51, the later ones because a
+// run now includes the reset delay and the second half of the ROM. 600 is far
+// above that on purpose - these are a FLOOR and rise as ROMs get further, so a
+// tight budget would turn progress into a timeout.
 constexpr uint64_t kMaxFrames = 600;
 
 constexpr const char* kFetch = "run tests/test_files/fetch_apu_reset.sh";
@@ -67,33 +67,30 @@ blargg::RomResult run(const std::string& name) { return blargg::run_rom(rom_path
 
 }  // namespace
 
-// --- passing everything reachable without a soft RESET ------------------------
+// --- what passes -------------------------------------------------------------
 
-class ApuResetRomsAwaitingReset : public ::testing::TestWithParam<const char*>
+class ApuResetRoms : public ::testing::TestWithParam<const char*>
 {
 };
 
-TEST_P(ApuResetRomsAwaitingReset, clears_the_power_on_half_and_asks_for_reset)
+TEST_P(ApuResetRoms, reports_pass)
 {
     const std::string name = GetParam();
     REQUIRE_ROM(rom_path(name));
 
     const blargg::RomResult result = run(name);
 
-    // A real failure code is the interesting outcome here, so report the ROM's
-    // own message rather than just the number.
-    EXPECT_TRUE(result.needs_reset) << name << " no longer stops at $81 (needs reset). It reported status "
-                                    << static_cast<int>(result.status)
-                                    << ".\n"
-                                       "  If the harness has gained the ability to drive a soft RESET, this\n"
-                                       "  expectation is what is now stale - assert the real verdict instead.\n"
-                                       "  Otherwise a power-on check regressed. Full message:\n"
-                                    << result.message;
+    ASSERT_FALSE(result.needs_reset) << name << " asked for more than " << blargg::kMaxResets
+                                     << " resets, which is a defect rather than a verdict";
+    ASSERT_TRUE(result.completed) << name << ": no verdict within " << kMaxFrames << " frames";
+
+    EXPECT_EQ(0, result.status) << name << " failed with code " << static_cast<int>(result.status) << " after "
+                                << result.resets_driven << " reset(s):\n  " << result.message;
 }
 
 INSTANTIATE_TEST_SUITE_P(
     ApuReset,
-    ApuResetRomsAwaitingReset,
+    ApuResetRoms,
     ::testing::Values("4015_cleared", "irq_flag_cleared", "len_ctrs_enabled", "4017_written", "4017_timing"),
     [](const ::testing::TestParamInfo<const char*>& info) {
         std::string name = info.param;
@@ -105,12 +102,25 @@ INSTANTIATE_TEST_SUITE_P(
         return name;
     });
 
+// Every one of these needs the RESET button. Asserting that the harness really
+// pressed it stops the suite from quietly reverting to testing only the power-on
+// half: if run_rom stopped driving resets, the ROMs above would still report
+// $81, `completed` would be false, and the failure would read as a timeout
+// rather than as the missing feature it is.
+GTEST_TEST(apuResetHarness, every_passing_rom_needed_a_reset_driven)
+{
+    for (const char* name : {"4015_cleared", "irq_flag_cleared", "len_ctrs_enabled", "4017_written", "4017_timing"}) {
+        REQUIRE_ROM(rom_path(name));
+        const blargg::RomResult result = run(name);
+        EXPECT_GT(result.resets_driven, 0u) << name << " reached its verdict without a reset being driven";
+    }
+}
+
 // 4017_timing does not merely pass or fail - it PRINTS the delay it measured,
-// which is the single most useful number in the suite and the one that chose
-// power_on_delay. It accepts the whole 9-12 window, so this asserts the figure
-// we actually feed it: if power_on_delay changes without this being reconsidered,
-// this fails and says so.
-GTEST_TEST(apuResetRoms, reports_the_power_on_4017_delay_we_implement)
+// and that number chose power_on_delay. blargg accepts the whole 9-12 window,
+// so a passing verdict alone would not notice the constant changing within it.
+// Asserted against the constant so the two cannot drift apart unnoticed.
+GTEST_TEST(apuResetRoms, reports_the_4017_delay_we_implement)
 {
     REQUIRE_ROM(rom_path("4017_timing"));
 
@@ -149,6 +159,11 @@ GTEST_TEST(apuResetRomQueue, works_immediately_is_blocked_on_the_dmc)
            "  recorded - check blargg's source for the new number.\n"
            "  Full message:\n"
         << result.message;
+
+    // It fails before ever asking for a reset, which is the evidence that this
+    // is a power-stage failure and not a reset-stage one.
+    EXPECT_EQ(0u, result.resets_driven) << "works_immediately now reaches the reset half - re-read which subtest\n"
+                                           "  it is failing, because the DMC diagnosis above may no longer hold.";
 }
 
 }  // namespace apu_reset_rom

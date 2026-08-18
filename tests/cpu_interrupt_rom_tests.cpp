@@ -95,7 +95,9 @@ TEST_P(CpuInterruptRoms, reports_pass)
     }
 
     if (result.needs_reset) {
-        FAIL() << name << ": ROM requested a soft reset, which this harness does not drive yet";
+        FAIL() << name << ": ROM asked for more than " << kMaxResets
+               << " soft resets. The harness does drive them, so this is a ROM stuck\n"
+                  "  in a reset loop rather than one waiting on a feature.";
     }
 
     EXPECT_EQ(0, result.status) << name << " failed with code " << static_cast<int>(result.status) << ":\n  "

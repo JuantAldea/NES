@@ -66,8 +66,11 @@ constexpr uint8_t kStatusNeedsReset = 0x81;
 constexpr uint64_t kMaxFrames = 400;
 
 struct BlarggResult {
-    bool completed = false;    // signature appeared and status left the running state
-    bool needs_reset = false;  // ROM asked for a soft reset (we do not drive one)
+    bool completed = false;  // signature appeared and status left the running state
+    // ROM asked for a soft reset, which THIS harness does not drive. The shared
+    // one in blargg_rom_harness.h does; no ROM in this suite asks, which is the
+    // only reason the difference has never shown.
+    bool needs_reset = false;
     bool saw_signature = false;
     uint8_t status = 0xFF;
     uint8_t last_status = 0xFF;  // last $6000 seen while the signature was valid

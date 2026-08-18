@@ -11,7 +11,8 @@ check for regressions with `tests/test_counts.sh --check`.
 |---|---:|---|
 | `AllOpcodes/SingleStepBusTrace` | 256 | no |
 | `AllOpcodes/SingleStepVectors` | 256 | no |
-| `ApuReset/ApuResetRomsAwaitingReset` | 5 | yes |
+| `ApuReset/ApuResetRoms` | 5 | yes |
+| `apuResetHarness` | 1 | yes |
 | `apuResetRomQueue` | 1 | yes |
 | `apuResetRoms` | 1 | yes |
 | `apuRomQueue` | 2 | yes |
@@ -74,9 +75,9 @@ check for regressions with `tests/test_counts.sh --check`.
 
 | | Cases |
 |---|---:|
-| Registered | 914 |
+| Registered | 915 |
 | Skipped in CI | 517 |
-| **Executed in CI** | **397** |
+| **Executed in CI** | **398** |
 
 Skipped in CI: the 512 per-opcode SingleStepTests need 1.1 GB of vectors CI
 does not fetch, and `commercialRom` needs a cartridge dump nothing here will
