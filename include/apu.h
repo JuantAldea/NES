@@ -37,6 +37,19 @@ public:
     // the first instruction.
     void power_on();
 
+    // RESET is the same shape as power-on, with two differences the apu_reset
+    // readme spells out:
+    //
+    //   "At reset, same as above, except last value written to $4017 is written
+    //    again, rather than $00."
+    //   "At power and reset, $4015 is cleared" / "IRQ flag is clear".
+    //
+    // So the mode survives a reset while the divider does not, which is why
+    // last_4017_write exists at all. Everything else the channels hold - the
+    // halt bits, the timers - is deliberately untouched: the readme lists what
+    // reset clears, and it is a short list.
+    void reset();
+
     // Why 10, and not the 9 that blargg's readme calls typical.
     //
     // 4017_timing PRINTS the delay it measures and accepts the whole 9-12
@@ -117,6 +130,9 @@ private:
         bool enabled = false;
     };
 
+    // Shared by power_on() and reset(), which differ only in the value written.
+    void restart_frame_counter(uint8_t value_written_to_4017);
+
     void clock_sequencer();
     void clock_quarter_frame();
     void clock_half_frame();
@@ -139,4 +155,11 @@ private:
 
     int8_t reset_countdown = -1;
     bool pending_five_step_mode = false;
+
+    // The last value the CPU stored to $4017, replayed by reset(). Not derivable
+    // from five_step_mode and irq_inhibit: those are what the write MEANT, and a
+    // reset re-writes the byte, so the two would drift the moment a bit that is
+    // not yet decoded starts mattering. $00 at power, which is the value
+    // power_on() writes anyway.
+    uint8_t last_4017_write = 0x00;
 };

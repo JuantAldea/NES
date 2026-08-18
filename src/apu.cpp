@@ -80,12 +80,36 @@ void APU::load_length(const int channel, const uint8_t data)
 // non-zero value when the CPU's first instruction runs, exactly as on hardware.
 // Assigning the fields here instead would start the sequence at 0 and lose the
 // delay this function exists to model.
-void APU::power_on()
+//
+// The loop length is even (see power_on_delay), so this preserves the parity of
+// apu_cycles and cannot invert the CPU/APU phase. That matters on RESET, which
+// can happen at any point in a run: an odd-length restart would silently shift
+// every subsequent $4017 write by a cycle from that moment on.
+void APU::restart_frame_counter(const uint8_t value_written_to_4017)
 {
-    write(FRAMECOUNTER, 0x00);
+    write(FRAMECOUNTER, value_written_to_4017);
     for (int i = 0; i < power_on_delay; ++i) {
         clock();
     }
+}
+
+void APU::power_on() { restart_frame_counter(0x00); }
+
+void APU::reset()
+{
+    // Order matters. $4015 first, because the $4017 replay can re-arm the frame
+    // IRQ, and clearing the flag afterwards would then hide a legitimate one.
+    //
+    // Written through the register rather than by zeroing the array, so a
+    // disabled channel also has its counter cleared and blocked from reloading
+    // exactly as a $4015 write does - that behaviour lives in one place.
+    write(APUSTATUS, 0x00);
+    set_frame_irq(false);
+
+    // "the last value written to $4017 is written again, rather than $00". Note
+    // that this re-applies its inhibit bit, which is what the readme means by
+    // the flag being "sometimes" cleared at reset: it depends on the byte.
+    restart_frame_counter(last_4017_write);
 }
 
 void APU::clock()
@@ -215,6 +239,7 @@ void APU::write(const uint16_t addr, const uint8_t data)
         break;
 
     case FRAMECOUNTER: {
+        last_4017_write = data;
         pending_five_step_mode = (data & 0x80) != 0;
         irq_inhibit = (data & 0x40) != 0;
 

@@ -15,6 +15,15 @@ public:
     void write_ram(const uint16_t start_addr, const size_t n_bytes, const uint8_t* bytes);
     uint8_t read(const uint16_t addr);
     bool load_cartridge(const std::string& path);
+
+    // The RESET button: what the whole machine does, as distinct from
+    // CPU::reset(), which is only the processor's share of it.
+    //
+    // RAM, PRG-RAM, VRAM and OAM all survive - blargg's ROMs count their own
+    // resets in RAM across one, so a reset that cleared memory would look like
+    // a power cycle and the second half of every apu_reset ROM would never run.
+    void reset();
+
     uint64_t total_cycles = 0;
 
     // CPU cycles elapsed, counting the ones OAM DMA steals - which CPU::clock

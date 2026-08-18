@@ -21,6 +21,21 @@ Bus::Bus()
     cpu.reset();
 }
 
+// The APU goes first for the same reason it does at power-on: its restart
+// re-writes $4017 and burns the 9-12 cycle delay, and that has to be settled
+// before the CPU fetches from the reset vector.
+//
+// The PPU is deliberately NOT reset here. Hardware does clear PPUCTRL, PPUMASK
+// and the write latch, but nothing in this repo measures it: the apu_reset ROMs
+// re-initialise the PPU themselves, and len_ctrs_enabled passes across a reset
+// without it. Adding it unmeasured would be a guess sitting underneath every
+// rendering test. It belongs with the first oracle that actually demands it.
+void Bus::reset()
+{
+    apu.reset();
+    cpu.reset();
+}
+
 bool Bus::load_cartridge(const std::string& path) { return rom.load(path); }
 
 // Single address decode used by both read() and write(). This is the only
