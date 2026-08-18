@@ -190,17 +190,31 @@ message rather than as a ROM everyone has learned to ignore.
 
 `blargg_rom_harness.h` implements the shared PRG-RAM reporting protocol —
 signature at `$6001`, status at `$6000`, ASCII message at `$6004` — and drives
-a soft RESET via `Bus::reset()` when a ROM reports `$81`. Every suite that
-speaks the protocol goes through it, and a new one must too.
+a soft RESET via `Bus::reset()` when a ROM reports `$81`. A new suite must go
+through it, and **three existing ones still do not**:
 
-There is no longer a second copy. `blargg_ppu_tests.cpp` and
-`cpu_behaviour_tests.cpp` each kept one until they were folded in, and the two
-had already drifted apart in ways that mattered: the ppu one drove no resets at
-all, and the cpu one lacked the stale-`$6000` guard below and paid for it with
-a 15-frame reset delay that masked a spurious extra reset rather than fixing
-one. A suite that needs `CPU::power_on()` instead of `reset()` — which the
-cpu_reset ROMs genuinely do, and nothing else does — passes
-`blargg::Start::PowerOn` rather than forking the loop.
+| Still private | What its copy gets wrong |
+|---|---|
+| `cpu_exec_space_tests.cpp` | no `$81` handling |
+| `instr_test_roms.cpp` | no `$81` handling |
+| `mmc3_rom_tests.cpp` | no `$81` handling |
+
+None of the three mentions `$81` at all, so a ROM asking for a reset is
+reported as "failed with code 129" — a request misread as a verdict. That is a
+worse failure than the one already fixed, and it is latent only because no ROM
+in those three suites currently asks.
+
+`blargg_ppu_tests.cpp` and `cpu_behaviour_tests.cpp` were folded in first. They
+had drifted in ways that mattered: the ppu one drove no resets at all, and the
+cpu one lacked the stale-`$6000` guard below and paid for it with a 15-frame
+reset delay that masked a spurious extra reset rather than fixing one. A suite
+needing `CPU::power_on()` instead of `reset()` passes `blargg::Start::PowerOn`
+rather than forking the loop — which removes the blocker for the three above,
+since two of them fork it for exactly that reason.
+
+This section briefly claimed "there is no longer a second copy". That was
+written after folding two of five without grepping for `$DE $B0 $61` to check.
+Count the copies before claiming there is one.
 
 Per-suite *diagnostics* still belong in the suite: what to suspect when a ROM
 times out is different for each, and those messages are the reason a red run is

@@ -13,9 +13,9 @@
 #include <cstdint>
 #include <string>
 
-#include "../include/bus.h"
+#include "blargg_rom_harness.h"
 #include "gtest/gtest.h"
-#include "nametable_screen.h"
+#include "rom_fixture.h"
 
 namespace tests
 {
@@ -24,66 +24,32 @@ namespace instr_test
 namespace
 {
 
-using nametable_screen::run_one_frame;
-
-constexpr uint16_t kStatusAddr = 0x6000;
-constexpr uint16_t kSignatureAddr = 0x6001;
-constexpr uint16_t kMessageAddr = 0x6004;
-constexpr uint8_t kStatusRunning = 0x80;
-
 // Measured: every one of these reports within a handful of frames; the slowest
 // observed was well under 100. The cap exists so a hang fails with a diagnosis
 // rather than stalling the suite.
-constexpr int kMaxFrames = 600;
+constexpr uint64_t kMaxFrames = 600;
 
-struct Result {
-    bool completed = false;
-    uint8_t status = 0xFF;
-    std::string message;
-};
+constexpr const char* kFetch = "run tests/test_files/fetch_instr_test.sh";
 
-Result run_rom(const std::string& name)
+std::string rom_path(const std::string& name)
 {
-    Result result;
-
-    Bus console;
-    const std::string path = std::string(NES_TEST_FILES_DIR) + "/instr_test/" + name + ".nes";
-    if (!console.load_cartridge(path)) {
-        ADD_FAILURE() << "could not load " << path << " - run tests/test_files/fetch_instr_test.sh";
-        return result;
-    }
-
-    // power_on(), not reset(): Bus's constructor already reset this CPU before a
-    // cartridge was mapped, and a reset subtracts 3 from S rather than
-    // reloading it.
-    console.cpu.power_on();
-
-    for (int frame = 0; frame < kMaxFrames; ++frame) {
-        run_one_frame(console);
-
-        if (console.read(kSignatureAddr) != 0xDE || console.read(static_cast<uint16_t>(kSignatureAddr + 1)) != 0xB0 ||
-            console.read(static_cast<uint16_t>(kSignatureAddr + 2)) != 0x61) {
-            continue;
-        }
-
-        const uint8_t status = console.read(kStatusAddr);
-        if (status == kStatusRunning) {
-            continue;
-        }
-
-        result.completed = true;
-        result.status = status;
-        for (uint16_t i = 0; i < 256; ++i) {
-            const uint8_t c = console.read(static_cast<uint16_t>(kMessageAddr + i));
-            if (c == 0x00) {
-                break;
-            }
-            result.message.push_back(static_cast<char>(c));
-        }
-        return result;
-    }
-    return result;
+    return std::string(NES_TEST_FILES_DIR) + "/instr_test/" + name + ".nes";
 }
+
+// Start::PowerOn, not the default reset: Bus's constructor already reset this
+// CPU before a cartridge was mapped, and a reset subtracts 3 from S rather than
+// reloading it.
+//
+// This used to be a private copy of the $6000 loop. It handled every status
+// except $81, so a ROM asking for a reset would have been reported as "failed
+// with code 129" - a request misread as a verdict. None of these sixteen asks
+// today, which is the only reason that never showed.
+blargg::RomResult run_rom(const std::string& name)
+{
+    return blargg::run_rom(rom_path(name), kMaxFrames, blargg::Start::PowerOn);
+}
+
+using Result = blargg::RomResult;
 
 }  // namespace
 
@@ -95,6 +61,8 @@ class InstrTestRoms : public ::testing::TestWithParam<std::string>
 TEST_P(InstrTestRoms, reports_pass)
 {
     const std::string name = GetParam();
+    REQUIRE_ROM(rom_path(name), kFetch);
+
     const Result result = run_rom(name);
 
     ASSERT_TRUE(result.completed) << name << ": no verdict within " << kMaxFrames << " frames";
@@ -155,6 +123,8 @@ INSTANTIATE_TEST_SUITE_P(InstrTest,
 // catching, since everything else in that ROM does pass today.
 GTEST_TEST(instrTest, immediate_fails_only_on_the_unstable_ATX_opcode)
 {
+    REQUIRE_ROM(rom_path("03-immediate"), kFetch);
+
     const Result result = run_rom("03-immediate");
 
     ASSERT_TRUE(result.completed) << "03-immediate: no verdict within " << kMaxFrames << " frames";

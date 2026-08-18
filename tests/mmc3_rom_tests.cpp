@@ -15,9 +15,9 @@
 #include <cstdio>
 #include <string>
 
-#include "../include/bus.h"
+#include "blargg_rom_harness.h"
 #include "gtest/gtest.h"
-#include "nametable_screen.h"
+#include "rom_fixture.h"
 
 namespace tests
 {
@@ -25,13 +25,6 @@ namespace mmc3_rom
 {
 namespace
 {
-
-using nametable_screen::run_one_frame;
-
-constexpr uint16_t kStatusAddr = 0x6000;
-constexpr uint16_t kSignatureAddr = 0x6001;
-constexpr uint16_t kMessageAddr = 0x6004;
-constexpr uint8_t kStatusRunning = 0x80;
 
 // MEASURED, not guessed. Every ROM was run with the frame of its verdict
 // printed:
@@ -50,58 +43,27 @@ constexpr uint8_t kStatusRunning = 0x80;
 // absorb a change that makes the emulator slower per frame, not one that
 // unlocks more work. A hang therefore costs ~1s (measured: 1.6ms/frame) and
 // fails with a diagnosis instead of stalling the suite.
-constexpr int kMaxFrames = 600;
+constexpr uint64_t kMaxFrames = 600;
 
-struct Result {
-    bool completed = false;
-    uint8_t status = 0xFF;
-    std::string message;
-    int frames = 0;
-};
+constexpr const char* kFetch = "run tests/test_files/fetch_mmc3.sh";
 
-Result run_rom(const std::string& name)
+std::string rom_path(const std::string& name) { return std::string(NES_TEST_FILES_DIR) + "/mmc3/" + name + ".nes"; }
+
+// Start::PowerOn, not the default reset: Bus's constructor already reset this
+// CPU before a cartridge was mapped, and a reset subtracts 3 from S rather than
+// reloading it.
+//
+// This used to be a private copy of the $6000 loop that handled every status
+// except $81, so a ROM asking for a reset would have been reported as "failed
+// with code 129" - a request misread as a verdict. None of these six asks
+// today, which is the only reason that never showed. It also carried a `frames`
+// field that nothing ever read; the shared RomResult::frames_run replaces it.
+blargg::RomResult run_rom(const std::string& name)
 {
-    Result result;
-
-    Bus console;
-    const std::string path = std::string(NES_TEST_FILES_DIR) + "/mmc3/" + name + ".nes";
-    if (!console.load_cartridge(path)) {
-        ADD_FAILURE() << "could not load " << path << " - run tests/test_files/fetch_mmc3.sh";
-        return result;
-    }
-
-    // power_on(), not reset(): Bus's constructor already reset this CPU before a
-    // cartridge was mapped, and a reset subtracts 3 from S rather than
-    // reloading it.
-    console.cpu.power_on();
-
-    for (int frame = 0; frame < kMaxFrames; ++frame) {
-        run_one_frame(console);
-
-        if (console.read(kSignatureAddr) != 0xDE || console.read(static_cast<uint16_t>(kSignatureAddr + 1)) != 0xB0 ||
-            console.read(static_cast<uint16_t>(kSignatureAddr + 2)) != 0x61) {
-            continue;
-        }
-
-        const uint8_t status = console.read(kStatusAddr);
-        if (status == kStatusRunning) {
-            continue;
-        }
-
-        result.completed = true;
-        result.status = status;
-        result.frames = frame;
-        for (uint16_t i = 0; i < 256; ++i) {
-            const uint8_t c = console.read(static_cast<uint16_t>(kMessageAddr + i));
-            if (c == 0x00) {
-                break;
-            }
-            result.message.push_back(static_cast<char>(c));
-        }
-        return result;
-    }
-    return result;
+    return blargg::run_rom(rom_path(name), kMaxFrames, blargg::Start::PowerOn);
 }
+
+using Result = blargg::RomResult;
 
 }  // namespace
 
@@ -132,6 +94,8 @@ class Mmc3IrqRoms : public ::testing::TestWithParam<std::string>
 TEST_P(Mmc3IrqRoms, reports_pass)
 {
     const std::string name = GetParam();
+    REQUIRE_ROM(rom_path(name), kFetch);
+
     const Result result = run_rom(name);
 
     ASSERT_TRUE(result.completed) << name << ": no verdict within " << kMaxFrames << " frames";
@@ -179,6 +143,8 @@ INSTANTIATE_TEST_SUITE_P(Mmc3Irq,
 // it up to this point does pass today.
 GTEST_TEST(mmc3Irq, alt_revision_fails_only_on_the_reload_to_zero_divergence)
 {
+    REQUIRE_ROM(rom_path("6-MMC3_alt"), kFetch);
+
     const Result result = run_rom("6-MMC3_alt");
 
     ASSERT_TRUE(result.completed) << "6-MMC3_alt: no verdict within " << kMaxFrames << " frames";

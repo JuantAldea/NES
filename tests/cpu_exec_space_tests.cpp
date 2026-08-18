@@ -21,9 +21,9 @@
 #include <cstdint>
 #include <string>
 
-#include "../include/bus.h"
+#include "blargg_rom_harness.h"
 #include "gtest/gtest.h"
-#include "nametable_screen.h"
+#include "rom_fixture.h"
 
 namespace tests
 {
@@ -32,63 +32,31 @@ namespace cpu_exec_space
 namespace
 {
 
-using nametable_screen::run_one_frame;
-
-constexpr uint16_t kStatusAddr = 0x6000;
-constexpr uint16_t kSignatureAddr = 0x6001;
-constexpr uint16_t kMessageAddr = 0x6004;
-constexpr uint8_t kStatusRunning = 0x80;
-
 // Measured: both report within a few frames. The cap only exists so a hang
 // fails with a diagnosis instead of stalling the suite.
-constexpr int kMaxFrames = 600;
+constexpr uint64_t kMaxFrames = 600;
 
-struct Result {
-    bool completed = false;
-    uint8_t status = 0xFF;
-    std::string message;
-};
+constexpr const char* kFetch = "run tests/test_files/fetch_cpu_exec_space.sh";
 
-Result run_rom(const std::string& name)
+std::string rom_path(const std::string& name)
 {
-    Result result;
-
-    Bus console;
-    const std::string path = std::string(NES_TEST_FILES_DIR) + "/cpu_exec_space/" + name + ".nes";
-    if (!console.load_cartridge(path)) {
-        ADD_FAILURE() << "could not load " << path << " - run tests/test_files/fetch_cpu_exec_space.sh";
-        return result;
-    }
-    console.cpu.power_on();
-
-    for (int frame = 0; frame < kMaxFrames; ++frame) {
-        run_one_frame(console);
-
-        if (console.read(kSignatureAddr) != 0xDE || console.read(static_cast<uint16_t>(kSignatureAddr + 1)) != 0xB0 ||
-            console.read(static_cast<uint16_t>(kSignatureAddr + 2)) != 0x61) {
-            continue;
-        }
-
-        const uint8_t status = console.read(kStatusAddr);
-        if (status == kStatusRunning) {
-            continue;
-        }
-
-        result.completed = true;
-        result.status = status;
-        // These ROMs print ANSI colour codes into the message; kept verbatim so
-        // a failure report is exactly what the ROM said.
-        for (uint16_t i = 0; i < 600; ++i) {
-            const uint8_t c = console.read(static_cast<uint16_t>(kMessageAddr + i));
-            if (c == 0x00) {
-                break;
-            }
-            result.message.push_back(static_cast<char>(c));
-        }
-        return result;
-    }
-    return result;
+    return std::string(NES_TEST_FILES_DIR) + "/cpu_exec_space/" + name + ".nes";
 }
+
+// Start::PowerOn, not the default reset: Bus's constructor already reset this
+// CPU before a cartridge was mapped, and a reset subtracts 3 from S rather than
+// reloading it.
+//
+// This used to be a private copy of the $6000 loop that handled every status
+// except $81, so a ROM asking for a reset would have been reported as "failed
+// with code 129" - a request misread as a verdict. Neither of these two asks
+// today, which is the only reason that never showed.
+blargg::RomResult run_rom(const std::string& name)
+{
+    return blargg::run_rom(rom_path(name), kMaxFrames, blargg::Start::PowerOn);
+}
+
+using Result = blargg::RomResult;
 
 }  // namespace
 
@@ -99,6 +67,8 @@ class CpuExecSpaceRoms : public ::testing::TestWithParam<std::string>
 TEST_P(CpuExecSpaceRoms, reports_pass)
 {
     const std::string name = GetParam();
+    REQUIRE_ROM(rom_path(name), kFetch);
+
     const Result result = run_rom(name);
 
     ASSERT_TRUE(result.completed) << name << ": no verdict within " << kMaxFrames << " frames";
