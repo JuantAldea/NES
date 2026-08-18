@@ -198,6 +198,14 @@ Two suites still carry their own copy from before that was true:
 `cpu_behaviour_tests.cpp` (drives them, but starts with `CPU::power_on()`
 rather than `reset()`, which its ROMs genuinely require). Do not add a third.
 
+**Blargg's 2005-era suites predate `$6000` and report on screen.** They are not
+unusable headlessly: `tests/nametable_screen.h` reads the result straight out of
+the nametable, because the ROMs write ASCII-mapped tile indices. Three suites go
+through it — the 2005 PPU ROMs, `sprite_hit`, and `blargg_apu_2005`. **In those,
+`$01` means passed, not `0`** — a reader that treated `0` as success would score
+an unwritten nametable, i.e. a ROM that never ran, as a pass. Let the screen
+settle too: intermediate codes are printed while the ROM works.
+
 **`$6000` survives a reset, because PRG-RAM does.** So the status read straight
 after one is the value from *before* it, and trusting it schedules a second
 reset the ROM never asked for. The harness waits for the ROM to republish `$80`

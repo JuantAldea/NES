@@ -84,6 +84,10 @@ tests/test_files/apu_test
 # blargg's apu_reset suite, fetched by tests/test_files/fetch_apu_reset.sh
 tests/test_files/apu_reset
 
+# blargg's 2005 APU frame-counter suite, fetched by
+# tests/test_files/fetch_blargg_apu_2005.sh
+tests/test_files/blargg_apu_2005
+
 # Blargg CPU reset / dummy-access ROMs, fetched by tests/test_files/fetch_cpu_behaviour.sh
 tests/test_files/cpu_behaviour
 
