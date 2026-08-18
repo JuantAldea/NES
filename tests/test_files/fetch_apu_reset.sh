@@ -42,6 +42,25 @@
 #     blargg's readme says hardware after a minute powered off is "usually 9",
 #     with 9-12 the accepted range. That is a concrete target, not a verdict.
 #
+# ---------------------------------------------------------------------------
+# SINCE RESOLVED, by APU::power_on(). Two of those three moved, and the third
+# turned out to have been filed wrong:
+#
+#   4017_written        now $81 @ frame 13   (was 2)
+#   4017_timing         now $81 @ frame 19   (was 3; now prints delay 10)
+#   works_immediately   still 2 @ frame 20 - and NOT a power-on failure.
+#
+# The last one is the finding worth keeping. Its name and the grouping above
+# both say power-on; its source says otherwise. It configures all five channels
+# - including $4010/$4013 and $4015 bit 4 - then reads $4015 four times and
+# compares the log. Bit 4 is the DMC's bytes-remaining, which this APU always
+# reports as 0, so the ROM is blocked on the DMC (Phase 3) and no amount of
+# power-on work will move it. tests/apu_reset_rom_tests.cpp pins it there.
+#
+# So the split is now 5 blocked on the harness, 1 blocked on the DMC, 0 on
+# power-on state. The delay is 10 rather than the readme's typical 9 because
+# cpu_interrupts_v2/4-irq_and_dma requires an even one - see APU::power_on_delay.
+#
 # All six BOOT AND REPORT rather than hanging, which is what makes them usable.
 # The frame numbers are a FLOOR and will rise as ROMs get further.
 #
