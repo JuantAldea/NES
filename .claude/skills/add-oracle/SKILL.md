@@ -109,10 +109,16 @@ counters landed.
 
 **Not every non-zero status is a failure.** Blargg's `$81` means "needs reset":
 the ROM finished one half and is waiting for a soft RESET to run the other.
-`blargg_rom_harness.h` reports that as `RomResult::needs_reset` and does not
-drive one, so such a ROM is neither passing nor failing — it is *blocked on a
-harness feature*. Say so in the baseline rather than recording it as a failure,
-or a later "3 of 6 pass" will read as progress it is not.
+`blargg_rom_harness.h` now drives that reset, so `$81` should not survive to
+the end of a run — `RomResult::needs_reset` is set only when a ROM asked for
+more than `kMaxResets`, which means a reset loop rather than a verdict.
+
+This paragraph used to say the harness did *not* drive one, and that a `$81`
+ROM was "blocked on a harness feature". That was true, and writing it down as a
+distinct category from a real failure is what made it obvious the feature was
+worth building — five `apu_reset` ROMs went straight to passing once it
+existed. Keep that habit: a baseline that records *why* something is stuck, not
+just that it is, tells you what to build next.
 
 ## Finally
 

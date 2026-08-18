@@ -16,9 +16,10 @@ captures it in `RomResult`:
 - `saw_signature` — did `$6001-$6003` ever read back `$DE $B0 $61`? If not, the
   ROM never reached its own init code. That is a load/mapper/reset problem, not
   a problem with whatever the ROM tests.
-- `status` — `$80` still running, `$81` wants a soft reset (the harness does not
-  drive one; if a ROM needs it, that is the finding), anything else is the
-  final code with `0` meaning pass.
+- `status` — `$80` still running, `$81` wants a soft reset, anything else is
+  the final code with `0` meaning pass. The harness drives the reset after
+  `kResetDelayFrames`, so a returned `$81` means the ROM blew past `kMaxResets`
+  — a reset loop, not a verdict. `resets_driven` says how many it took.
 - `message` — the NUL-terminated ASCII at `$6004`. Blargg's messages are
   specific and usually name the exact behaviour. Quote it verbatim; do not
   paraphrase it into the commit message.

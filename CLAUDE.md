@@ -189,8 +189,21 @@ message rather than as a ROM everyone has learned to ignore.
 | `tests/test_files/` | Fetch scripts and their (ignored) output directories |
 
 `blargg_rom_harness.h` implements the shared PRG-RAM reporting protocol —
-signature at `$6001`, status at `$6000`, ASCII message at `$6004`. Any new
-blargg suite should go through it rather than reimplementing the protocol.
+signature at `$6001`, status at `$6000`, ASCII message at `$6004` — and drives
+a soft RESET via `Bus::reset()` when a ROM reports `$81`. Any new blargg suite
+should go through it rather than reimplementing the protocol.
+
+Two suites still carry their own copy from before that was true:
+`blargg_ppu_tests.cpp` (does not drive resets at all) and
+`cpu_behaviour_tests.cpp` (drives them, but starts with `CPU::power_on()`
+rather than `reset()`, which its ROMs genuinely require). Do not add a third.
+
+**`$6000` survives a reset, because PRG-RAM does.** So the status read straight
+after one is the value from *before* it, and trusting it schedules a second
+reset the ROM never asked for. The harness waits for the ROM to republish `$80`
+first. This cost real time to find, because raising the reset delay made the
+symptom disappear without fixing anything — if `kResetDelayFrames` ever starts
+mattering again, that guard is where the bug is.
 
 ## Working style
 

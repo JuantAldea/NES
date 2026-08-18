@@ -22,7 +22,7 @@ still no audio.
 | Sprites | Secondary OAM, per-dot evaluation, 8-per-line, the overflow search bug, priority, 8x16, flip. Passes blargg's 5 `sprite_overflow` and 11 `sprite_hit` ROMs |
 | Cartridge | iNES, NROM (0), UNROM (2), CNROM (3) and MMC3 (4), CHR-ROM and CHR-RAM |
 | MMC3 IRQ | A12-filtered scanline counter driving `/IRQ`, clocked on the right dot. Passes 5 of blargg's 6 `mmc3_test_2` ROMs; the sixth tests the other chip revision, see below |
-| APU | Frame counter, `/IRQ`, and length counters. No audio yet. |
+| APU | Frame counter, `/IRQ`, length counters, and the power-on/RESET state. Passes 5 of blargg's 6 `apu_reset` ROMs. No audio yet. |
 | Display | SDL2 + Dear ImGui: the screen and the debugger in one window |
 | Controllers | Both ports at `$4016`/`$4017`, keyboard-driven. Passes blargg's `read_joy3` `test_buttons` |
 
@@ -204,10 +204,21 @@ few thousand frames, and every mapper beyond 0, 2, 3 and 4.
         channels, clears a counter when it disables one, refuses a reload while
         disabled, and reports each counter's status on read. Passes six of
         blargg's eight `apu_test` ROMs.
+    *   The state at power and at RESET, which is not "everything zero": at
+        power it is as if `$00` were written to `$4017` followed by a 9-12
+        cycle delay, and a RESET clears `$4015` and the frame interrupt then
+        replays the last byte written to `$4017`. The delay is 10 rather than
+        the 9 blargg calls typical, because it must be EVEN - an odd one
+        inverts the CPU/APU phase and breaks `4-irq_and_dma`. Passes five of
+        blargg's six `apu_reset` ROMs. `Bus::reset()` deliberately leaves the
+        PPU alone; nothing measures a PPU reset yet.
     *   **Still no audio.** No envelope, sweep or linear counter, no channel
-        output, no mixer and no DMC - `7-dmc_basics` and `8-dmc_rates` are
-        pinned to their current failures in `tests/apu_rom_tests.cpp` so that
-        finishing them is announced by a test rather than noticed by hand.
+        output, no mixer and no DMC. Three ROMs are pinned to their current
+        failures - `7-dmc_basics` and `8-dmc_rates` in
+        `tests/apu_rom_tests.cpp`, and `works_immediately` in
+        `tests/apu_reset_rom_tests.cpp` - so that finishing them is announced
+        by a test rather than noticed by hand. All three want the DMC, which is
+        the next piece with an oracle already waiting for it.
 
 ### Frontend and debugger (`nes_frontend`)
 An SDL2 window hosting Dear ImGui panels:
