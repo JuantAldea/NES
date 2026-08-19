@@ -24,6 +24,15 @@ public:
     // a power cycle and the second half of every apu_reset ROM would never run.
     void reset();
 
+    // Whether the CPU cycle that just ran performed a WRITE. The DMC's DMA halt
+    // is refused on a write cycle and retried, so its state machine needs this;
+    // nothing else does yet.
+    //
+    // Reads back meaningfully only immediately after a CPU cycle. It is watched
+    // at Bus::write rather than reported by the CPU, which has no notion of it -
+    // see the comment in Bus::clock.
+    bool cpu_wrote_this_cycle = false;
+
     uint64_t total_cycles = 0;
 
     // CPU cycles elapsed, counting the ones OAM DMA steals - which CPU::clock
@@ -58,6 +67,10 @@ public:
     bool clock();
     bool clock_CPU();
     void clock_PPU();
+
+    // Set for the duration of clock_CPU() only, so Bus::write can tell a CPU
+    // write cycle from every other caller of the same public function.
+    bool watching_cpu_access = false;
 
     // Passed to CPU::clock, which prints one line per instruction to stdout.
     // Off by default so the headless harnesses stay silent; the frontend's

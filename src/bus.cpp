@@ -117,6 +117,12 @@ Bus::DecodedAddress Bus::decode(const uint16_t addr, const Access access)
 
 void Bus::write(const uint16_t addr, const uint8_t data)
 {
+    // See Bus::clock. True only while the CPU is executing a cycle, so the
+    // cartridge loader, tests and the debugger do not register as write cycles.
+    if (watching_cpu_access) {
+        cpu_wrote_this_cycle = true;
+    }
+
     // The value sits on the data bus whether or not anything latches it, so a
     // write refreshes open bus even at an address no device backs.
     cpu_open_bus = data;
@@ -222,7 +228,24 @@ bool Bus::clock()
 
     bool completed_instruction = false;
     if (cpu_cycle) {
+        // Watched, not asked. DMC DMA needs to know whether the cycle the CPU
+        // just ran was a read or a write - "the CPU only allows this on read
+        // cycles. If the CPU is writing, it ignores the halt...repeating until
+        // successful" - and the CPU has no notion of that itself.
+        //
+        // Rather than thread a flag through all 79 operations and every
+        // addressing mode, this observes the one place every access already
+        // passes through. The CPU is cycle-stepped at exactly one bus access
+        // per cycle, so whether Bus::write was reached during clock_CPU() is
+        // the whole answer.
+        //
+        // Gated on `watching_cpu_access` because Bus::write is public: tests,
+        // the cartridge loader and the debugger all use it, and none of those
+        // are a CPU write cycle.
+        cpu_wrote_this_cycle = false;
+        watching_cpu_access = true;
         completed_instruction = clock_CPU();
+        watching_cpu_access = false;
     } else if (cpu_tick) {
         ppu.perform_OAM_DMA_cycle();
     }
