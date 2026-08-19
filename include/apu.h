@@ -98,6 +98,18 @@ public:
         return lengths[channel].value;
     }
 
+    // Non-destructive, for tests, and for the same reason length_counter() is:
+    // $4015 reports bytes-remaining in bit 4, but reading it also acknowledges
+    // the frame interrupt, so an observer using that would swallow an IRQ the
+    // program was waiting for.
+    //
+    // The buffer's occupancy is not reported by any register at all, and it is
+    // the thing that decides whether a $4015 write schedules a load DMA or a
+    // reload - two fetches that cost different numbers of cycles. That makes it
+    // worth being able to assert on directly rather than only through timing.
+    uint16_t dmc_bytes_remaining() const { return dmc.bytes_remaining; }
+    bool dmc_sample_buffer_filled() const { return dmc.sample_buffer_filled; }
+
     // Sequence lengths in CPU cycles. Mode 0 asserts /IRQ across its last three
     // cycles - not on one of them - which is why a read of $4015 placed
     // anywhere in that window sees the flag.
