@@ -246,6 +246,24 @@ SingleStepTests runs), not for deciding.
 When an agent worktree is involved: it branches from `origin`, not `HEAD`, so
 fast-forward it before starting or unpushed commits go missing.
 
+**A worktree also gets none of the test ROMs**, because they are gitignored, and
+linking them in is easy to get wrong in a way nothing reports. An unresolved
+fixture *skips*, and a skip exits 0 — so the suite still says "0 failed" while
+quietly executing fewer cases. A review agent run this way reported that all
+seven commits on a branch overclaimed their executed count by exactly 5:
+constant offset, reproducible, evidence attached, and entirely its own rig. The
+setup had created a `local` directory and symlinked the real one *inside* it, so
+the ROM sat at `test_files/local/local/smb.nes` while the test asked for
+`test_files/local/smb.nes`, and the five `commercialRom` cases skipped in every
+worktree and in none of the main-tree runs. Acting on it would have rewritten
+seven correct commit messages into wrong ones.
+
+So make any count from a worktree carry its *skipped* number next to the
+executed one — `tests/run_tests.sh` prints both, and the pair is what makes the
+artifact visible — then cross-check the total against a main-tree run before
+believing it. A constant offset is evidence about the instrument until proven
+otherwise.
+
 ### Which model does what
 
 The emulation work itself runs on the largest available model, and is not
