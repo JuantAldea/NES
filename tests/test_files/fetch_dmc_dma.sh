@@ -37,14 +37,73 @@
 # THE BLANK ONES ARE NOT HUNG, which is worth recording because "blank screen"
 # and "crashed" look identical from outside. Measured over 300 frames each: the
 # CPU runs 8.9M cycles and the PC oscillates over two or three addresses around
-# $E066, i.e. a tight wait loop. They are waiting for something that never
-# happens, and the obvious candidate is the DMA behaviour this suite exists to
-# test. Do not treat them as fixtures that failed to load.
+# $E066, i.e. a tight wait loop. Do not treat them as fixtures that failed to
+# load.
+#
+# WHAT THEY ARE WAITING FOR IS NOW KNOWN, and it is not the stall: they test
+# PHANTOM READS. While the CPU is halted for a DMA it repeatedly reads whatever
+# address is on the bus - with $4016/$4017 triggering only on the halt cycle and
+# other registers on every no-op cycle. erspicu/AprNes names "$4016 phantom read
+# not implemented" as the cause of dma_4016_read specifically.
+#
+# double_2007_read is a PPU bug rather than a DMC one, and the evidence is
+# exact: the D84F6815 above is the same CRC AprNes reported before fixing a
+# missing ~6-dot cooldown after a $2007 read, during which a second read returns
+# open bus without swapping the buffer or incrementing the VRAM address. Its
+# expected CRCs are 85CFD627, F018C287, 440EF923 or E52F41A5 - four, because
+# CPU/PPU sync varies.
+#
+# THE FULL SET OF ACCEPTED CRCs is catalogued in erspicu/AprNes'
+# unittest/run_tests.py, per ROM:
+#
+#   dma_2007_read      159A7A8F or 5E3DF9C4
+#   double_2007_read   85CFD627, F018C287, 440EF923 or E52F41A5
+#
+# Ours prints D84F6815, in neither set - the value that emulator reported before
+# fixing the $2007 cooldown. christopherpow/nes-test-roms' status.txt carries
+# the same 5E3DF9C4 and confirms these ROMs never print "Passed".
+#
+# dma_2007_write, dma_4016_read and read_write_2007 carry NO crc list there,
+# because they do print a verdict. sprdma_and_dmc_dma carries none either: it
+# self-checks with check_crc $FBADA48D internally and prints Passed on its own.
+# So no expected table for it is published anywhere, which is exactly why
+# recovering one from the checksum was worth attempting.
+#
+# The four dmc_tests ROMs are absent from that catalogue entirely, and
+# nes-test-roms' status.txt marks them "???? Not sure yet" - so an emulator
+# sitting at 174/174 does not run them either. Leaving them unfetched here turns
+# out to be the same call, independently made.
 #
 # SO THE USABLE ORACLE IS sprdma_and_dmc_dma. It self-checks by CRC over its own
 # printed output and prints Passed or Failed, it fails today, and the numbers it
 # prints say why. read_write_2007 passes and is asserted to keep passing, which
 # guards against a stall implementation that breaks what already works.
+#
+# WHAT sprdma_and_dmc_dma ACTUALLY DOES, and what it expects. Its source is NOT
+# in this mirror; it is in koute/pinky at
+# nes-testsuite/roms/sprdma_and_dmc_dma/source/, together with the common/
+# dma_timing.inc that drives it. Worth knowing before attempting the stall,
+# because the printed column is easy to misread:
+#
+#   The timed code is  lda #$07 / sta $4014 / sta $100 / rts  - so the number is
+#   how long that SEQUENCE took, including any cycles a DMA stole from it, and
+#   not the length of the OAM DMA on its own. The baseline 512/513 is that
+#   sequence with no DMC DMA in it.
+#
+#   Each of the 16 iterations moves the DMC DMA one cycle closer to the start of
+#   the OAM DMA: the first five happen before it, the rest inside it. A DMC DMA
+#   costs 4 cycles normally and only 2 when it collides, because "DMA units
+#   don't interfere with each other unless they're both trying to access on the
+#   same cycle, in which case DMC DMA wins". So the expected table is around
+#   515-517, not the 783 a wrong implementation produced.
+#
+#   It self-checks with check_crc $FBADA48D, so the whole table has to be right;
+#   there is no partial credit and no need to guess which row is wrong.
+#
+#   dma_timing.inc delays 3424 cycles between events, which is 8 x 428 - one
+#   byte at rate index 0, the slowest. That is the intended DMA frequency and a
+#   useful sanity check on any implementation: roughly one DMA per 3424 cycles
+#   through the timed section, not one per few hundred.
 #
 # The frame numbers are a FLOOR and will rise as ROMs get further.
 #
