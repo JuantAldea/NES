@@ -94,6 +94,10 @@ tests/test_files/dmc_dma
 # CPU instruction-timing ROMs, fetched by tests/test_files/fetch_cpu_timing.sh
 tests/test_files/cpu_timing
 
+# vblank/NMI and branch timing ROMs, fetched by
+# tests/test_files/fetch_vbl_branch_timing.sh
+tests/test_files/vbl_branch_timing
+
 # Blargg CPU reset / dummy-access ROMs, fetched by tests/test_files/fetch_cpu_behaviour.sh
 tests/test_files/cpu_behaviour
 

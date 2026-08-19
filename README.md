@@ -362,6 +362,7 @@ tests/test_files/fetch_sprite_overflow.sh     #  ~104 KB  sprite overflow ROMs
 tests/test_files/fetch_mmc3.sh                #  ~268 KB  MMC3 scanline IRQ ROMs
 tests/test_files/fetch_dmc_dma.sh             #  ~272 KB  DMC DMA versus the CPU
 tests/test_files/fetch_cpu_timing.sh          #  ~112 KB  instruction and branch timing
+tests/test_files/fetch_vbl_branch_timing.sh   #  ~204 KB  vblank/NMI and branch ROMs
 tests/test_files/fetch_read_joy3.sh           #   ~48 KB  controller ROM
 tests/test_files/fetch_visual_roms.sh         #  ~100 KB  homebrew visual checks
 tests/test_files/fetch_single_step_tests.sh   #   1.1 GB  SingleStepTests vectors

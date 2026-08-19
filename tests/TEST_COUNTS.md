@@ -20,6 +20,8 @@ check for regressions with `tests/test_counts.sh --check`.
 | `BlarggApu2005/BlarggApu2005RomsThatPass` | 11 | yes |
 | `blarggApu2005Harness` | 1 | yes |
 | `blarggHarness` | 1 | yes |
+| `BranchTiming/BranchTimingRoms` | 3 | yes |
+| `busWriteCycle` | 4 | yes |
 | `commercialRom` | 5 | no |
 | `controllerRom` | 1 | yes |
 | `controllers` | 9 | yes |
@@ -37,6 +39,11 @@ check for regressions with `tests/test_counts.sh --check`.
 | `cpuReset` | 3 | yes |
 | `CpuReset` | 1 | yes |
 | `CpuReset/CpuResetRoms` | 2 | yes |
+| `cpuTiming` | 1 | yes |
+| `CpuTiming/InstrTimingRoms` | 2 | yes |
+| `dmcBuffer` | 4 | yes |
+| `dmcDma` | 1 | yes |
+| `DmcDma/SprdmaAndDmcDma` | 2 | yes |
 | `frameDump` | 6 | yes |
 | `frameDumpEmphasis` | 6 | yes |
 | `frontendController` | 3 | yes |
@@ -52,6 +59,7 @@ check for regressions with `tests/test_counts.sh --check`.
 | `mmc3Irq` | 1 | yes |
 | `Mmc3Irq/Mmc3IrqRoms` | 5 | yes |
 | `nestestDiffer` | 20 | yes |
+| `oamDmaTiming` | 2 | yes |
 | `ppuAddressSpaceHarness` | 1 | yes |
 | `PpuAddressSpace/PpuAddressSpaceRoms` | 3 | yes |
 | `ppuReadBuffer` | 1 | yes |
@@ -71,13 +79,14 @@ check for regressions with `tests/test_counts.sh --check`.
 | `testSprite0Hit` | 23 | yes |
 | `testSprites` | 24 | yes |
 | `unrom` | 9 | yes |
+| `VblNmiTiming/VblNmiTimingRoms` | 7 | yes |
 | `visualRoms` | 4 | yes |
 
 | | Cases |
 |---|---:|
-| Registered | 928 |
+| Registered | 954 |
 | Skipped in CI | 517 |
-| **Executed in CI** | **411** |
+| **Executed in CI** | **437** |
 
 Skipped in CI: the 512 per-opcode SingleStepTests need 1.1 GB of vectors CI
 does not fetch, and `commercialRom` needs a cartridge dump nothing here will
