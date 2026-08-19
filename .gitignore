@@ -88,6 +88,9 @@ tests/test_files/apu_reset
 # tests/test_files/fetch_blargg_apu_2005.sh
 tests/test_files/blargg_apu_2005
 
+# The DMC-DMA-versus-CPU suites, fetched by tests/test_files/fetch_dmc_dma.sh
+tests/test_files/dmc_dma
+
 # Blargg CPU reset / dummy-access ROMs, fetched by tests/test_files/fetch_cpu_behaviour.sh
 tests/test_files/cpu_behaviour
 

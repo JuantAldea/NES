@@ -51,6 +51,7 @@ jobs:
           tests/test_files/fetch_apu_test.sh
           tests/test_files/fetch_apu_reset.sh
           tests/test_files/fetch_blargg_apu_2005.sh
+          tests/test_files/fetch_dmc_dma.sh
 
       # The default build type is Checked (-O3 -g, asserts live). The suite
       # spends nearly all its time emulating, so an unoptimised build is about
@@ -139,6 +140,7 @@ jobs:
           tests/test_files/fetch_apu_test.sh
           tests/test_files/fetch_apu_reset.sh
           tests/test_files/fetch_blargg_apu_2005.sh
+          tests/test_files/fetch_dmc_dma.sh
 
       # NES_SANITIZE keeps the default build type (Checked: -O3 -g, asserts
       # live) and adds instrumentation on top. Asserts staying live matters
