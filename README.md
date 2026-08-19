@@ -363,6 +363,10 @@ tests/test_files/fetch_mmc3.sh                #  ~268 KB  MMC3 scanline IRQ ROMs
 tests/test_files/fetch_dmc_dma.sh             #  ~272 KB  DMC DMA versus the CPU
 tests/test_files/fetch_cpu_timing.sh          #  ~112 KB  instruction and branch timing
 tests/test_files/fetch_vbl_branch_timing.sh   #  ~204 KB  vblank/NMI and branch ROMs
+tests/test_files/fetch_apu_test.sh            #  ~356 KB  APU frame counter and length
+tests/test_files/fetch_apu_reset.sh           #  ~268 KB  APU state at power and reset
+tests/test_files/fetch_blargg_apu_2005.sh     #  ~224 KB  2005 APU frame-counter suite
+tests/test_files/fetch_full_palette.sh        #  ~136 KB  full palette rendering
 tests/test_files/fetch_read_joy3.sh           #   ~48 KB  controller ROM
 tests/test_files/fetch_visual_roms.sh         #  ~100 KB  homebrew visual checks
 tests/test_files/fetch_single_step_tests.sh   #   1.1 GB  SingleStepTests vectors
@@ -372,9 +376,10 @@ Each verifies a pinned SHA256 (the vectors are validated structurally instead,
 since upstream regenerates them wholesale) and skips anything already present,
 so re-running is cheap.
 
-That is all fifteen, and the list has to stay complete to be useful: everything
-except the last one hard-fails when its ROMs are absent, so a partial list reads
-like a working setup and then fails in several places at once.
+That is all twenty-two, and the list has to stay complete to be useful:
+everything except the last one hard-fails when its ROMs are absent, so a partial
+list reads like a working setup and then fails in several places at once. It had
+drifted to fifteen, and following it left sixteen tests failing.
 
 **A green run does not mean the suite verified everything**, and the headline
 count actively hides this. The two per-opcode suites call `GTEST_SKIP` when the

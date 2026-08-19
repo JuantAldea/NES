@@ -121,7 +121,7 @@ jobs:
 
       # Same fixtures as the `test` job, and same omission of
       # fetch_single_step_tests.sh - see the comment there. Those 512 tests
-      # skip, so this job executes 390 of them.
+      # skip, so this job executes 437 of them.
       - name: Fetch test fixtures
         run: |
           tests/test_files/fetch_nestest.sh
