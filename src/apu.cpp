@@ -48,9 +48,20 @@ void APU::dmc_restart_sample()
     dmc.bytes_remaining = dmc.sample_length;
 }
 
-void APU::dmc_fill_sample_buffer()
+// Requests a fetch, if one is actually due. Mesen2's StartDmcTransfer.
+void APU::dmc_start_transfer(const bool is_load)
 {
-    if (dmc.sample_buffer_filled || dmc.bytes_remaining == 0) {
+    if (!dmc.sample_buffer_filled && dmc.bytes_remaining > 0) {
+        dmc.transfer_requested = true;
+        dmc.transfer_is_load = is_load;
+    }
+}
+
+// Called by the Bus on the get cycle of a DMC DMA, with the byte it read.
+void APU::dmc_deliver_sample_byte(const uint8_t data)
+{
+    dmc.transfer_requested = false;
+    if (dmc.bytes_remaining == 0) {
         return;
     }
 
@@ -58,7 +69,7 @@ void APU::dmc_fill_sample_buffer()
     // the bus because samples live in PRG-ROM at $8000-$FFFF, where a read has
     // no side effect; this must never be pointed at $2000-$401F, where it
     // would.
-    dmc.sample_buffer = bus->read(dmc.current_address);
+    dmc.sample_buffer = data;
     dmc.sample_buffer_filled = true;
 
     // "The address is incremented; if it exceeds $FFFF, it is wrapped around to
@@ -84,6 +95,17 @@ void APU::dmc_fill_sample_buffer()
 
 void APU::clock_dmc()
 {
+    // Mesen2's ProcessClock. A disable that expires clears bytes-remaining and
+    // aborts any transfer that has not yet been performed; an expiring start
+    // delay is what finally requests the fetch a $4015 enable asked for.
+    if (dmc.disable_delay != 0 && --dmc.disable_delay == 0) {
+        dmc.bytes_remaining = 0;
+        dmc.transfer_requested = false;
+    }
+    if (dmc.transfer_start_delay != 0 && --dmc.transfer_start_delay == 0) {
+        dmc_start_transfer(true);  // scheduled by the $4015 write
+    }
+
     // A period of 0 means no rate has been selected yet, and must not free-run.
     if (dmc.timer_period == 0) {
         return;
@@ -132,12 +154,17 @@ void APU::clock_dmc()
             dmc.silence = false;
             dmc.shift_register = dmc.sample_buffer;
             dmc.sample_buffer_filled = false;
+
+            // Immediately - this is a reload, and only a LOAD is delayed. The
+            // guard is Mesen2's: "don't trigger the DMA if the channel was just
+            // enabled by a 4015 write", because that one is already scheduled.
+            if (dmc.transfer_start_delay == 0) {
+                dmc_start_transfer(false);  // the buffer emptied: a reload
+            }
         } else {
             dmc.silence = true;
         }
     }
-
-    dmc_fill_sample_buffer();
 }
 
 void APU::set_frame_irq(const bool asserted)
@@ -387,15 +414,19 @@ void APU::write(const uint16_t addr, const uint8_t data)
 
         dmc.enabled = (data & 0x10) != 0;
         if (!dmc.enabled) {
-            dmc.bytes_remaining = 0;
+            // Disabling takes effect 2 or 3 cycles later, and a transfer that
+            // starts inside that window is cancelled - though the CPU has still
+            // been halted for it.
+            if (dmc.disable_delay == 0) {
+                dmc.disable_delay = (apu_cycles % 2 == 0) ? 2 : 3;
+            }
         } else if (dmc.bytes_remaining == 0) {
             dmc_restart_sample();
 
-            // "A one-byte buffer that's filled immediately if empty" - not on
-            // the next timer tick. With a one-byte sample the fetch drains it
-            // here, so bytes-remaining is already zero when the CPU's next
-            // instruction reads $4015.
-            dmc_fill_sample_buffer();
+            // Scheduled, not performed. The 2-or-3 cycle delay is what
+            // dmc_dma_start_test measures, and it is the one mechanism this
+            // implementation was missing entirely.
+            dmc.transfer_start_delay = (apu_cycles % 2 == 0) ? 2 : 3;
         }
         break;
 

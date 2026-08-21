@@ -198,7 +198,10 @@ bool Bus::clock()
     // runs at the CPU's rate, not the PPU's - it is stealing the CPU's cycles,
     // one transfer every other one. Driving it from PPU::clock instead made the
     // whole transfer take ~171 CPU cycles rather than 513.
-    const bool dma_holds_the_bus = ppu.dma_in_progress();
+    // DMC DMA outranks OAM DMA: "when accesses collide, DMC DMA is allowed to
+    // run and OAM DMA is paused". Checking it first, and skipping
+    // perform_OAM_DMA_cycle below while it holds the bus, is that rule.
+    const bool dma_holds_the_bus = ppu.dma_in_progress() || dmc_dma_holds_the_bus();
     const bool cpu_cycle = cpu_tick && !dma_holds_the_bus;
 
     // The frame counter divides the CPU clock and keeps running while DMA holds
@@ -226,6 +229,14 @@ bool Bus::clock()
         apu.clock();
     }
 
+    // Cleared on every CPU tick, not just the ones the CPU runs. While OAM DMA
+    // holds the bus the CPU executes nothing, and a value left over from before
+    // the DMA started would answer "is the CPU writing?" with ancient news - a
+    // stale true made a DMC halt spin for the length of the whole OAM DMA.
+    if (cpu_tick) {
+        cpu_wrote_this_cycle = false;
+    }
+
     bool completed_instruction = false;
     if (cpu_cycle) {
         // Watched, not asked. DMC DMA needs to know whether the cycle the CPU
@@ -242,12 +253,19 @@ bool Bus::clock()
         // Gated on `watching_cpu_access` because Bus::write is public: tests,
         // the cartridge loader and the debugger all use it, and none of those
         // are a CPU write cycle.
-        cpu_wrote_this_cycle = false;
         watching_cpu_access = true;
         completed_instruction = clock_CPU();
         watching_cpu_access = false;
-    } else if (cpu_tick) {
+    } else if (cpu_tick && dmc_dma == DmcDma::Get) {
+        // The one cycle of the sequence that touches memory. Samples live in
+        // PRG-ROM, where a read has no side effect.
+        apu.dmc_deliver_sample_byte(read(apu.dmc_sample_address()));
+    } else if (cpu_tick && ppu.dma_in_progress() && !dmc_dma_holds_the_bus()) {
         ppu.perform_OAM_DMA_cycle();
+    }
+
+    if (cpu_tick) {
+        advance_dmc_dma();
     }
 
     clock_PPU();
@@ -277,6 +295,80 @@ void Bus::clock_PPU()
 // dma_in_progress() itself, which meant the CPU tick and its interrupt sample
 // were guarded by two copies of the same condition - editing one would have
 // desynchronised them silently.
+// Runs after the cycle it describes, because two of its transitions depend on
+// what that cycle turned out to be: whether the CPU wrote (Halting), and which
+// half of the APU clock the next cycle falls on (Dummy).
+void Bus::advance_dmc_dma()
+{
+    switch (dmc_dma) {
+    case DmcDma::Idle:
+        // The wait for a read cycle happens HERE, before anything is stolen. A
+        // halt refused on a write cycle costs the CPU nothing; only once it is
+        // accepted does the four-cycle sequence begin.
+        if (apu.dmc_wants_sample_byte()) {
+            // The halt lands on a specific PHASE, and the 3-or-4 cycle length
+            // falls out of it: a load halts on a get, so its dummy lands on a
+            // put and the following get needs no alignment; a reload halts on a
+            // put, so its dummy lands on a get and one alignment cycle is spent
+            // before the read.
+            //
+            // advance_dmc_dma runs at the END of a cycle and sets the state for
+            // the next one, so "the next cycle is a get" is cpu_cycles being
+            // odd here.
+            const bool next_is_get = (cpu_cycles % 2) != 0;
+            if (next_is_get != apu.dmc_transfer_is_load()) {
+                break;  // wrong phase - wait for the right one
+            }
+            // A halt is refused on a write cycle and retried. NESdev's DMA
+            // page: "the CPU only allows this on read cycles. If the CPU is
+            // writing, it ignores the halt...repeating until successful". That
+            // bounds the delay at 3 cycles - a read-modify-write has two
+            // consecutive writes, an interrupt has three.
+            //
+            // A longer comment here used to assert the opposite: that a write
+            // makes the DMA cheaper rather than later, and that the rule
+            // inverts between loads and reloads. It contradicted both the line
+            // below it and the paragraph in bus.h, and it was wrong. What this
+            // state machine produces - 3 or 4 cycles standalone, 2 during an
+            // OAM DMA - is measured correct, and so is the placement: the sync
+            // loops in sprdma_and_dmc_dma run at blargg's designed 433 and 3423
+            // cycles, which they only can if the DMA lands where this puts it.
+            if (cpu_wrote_this_cycle) {
+                break;
+            }
+
+            // Half price during an OAM DMA. The halt and dummy cycles exist to
+            // stop the CPU and give it time to let go of the bus - and the CPU
+            // is already stopped, so there is nothing to halt. Only the access
+            // itself collides: "DMA units don't interfere with each other
+            // unless they're both trying to access on the same cycle, in which
+            // case DMC DMA wins", which costs the OAM DMA 2 cycles, not 4.
+            dmc_dma = ppu.dma_in_progress() ? DmcDma::Align : DmcDma::Halt;
+        }
+        break;
+
+    case DmcDma::Halt:
+        dmc_dma = DmcDma::Dummy;
+        break;
+
+    case DmcDma::Dummy:
+        // "Get and put cycles are aligned to the first and second halves of the
+        // APU clock." cpu_cycles is that divider - the same one OAM DMA and the
+        // frame counter align to - so its low bit is the phase, and a cycle is
+        // spent on alignment only when the next one is not a get.
+        dmc_dma = (cpu_cycles % 2 != 0) ? DmcDma::Get : DmcDma::Align;
+        break;
+
+    case DmcDma::Align:
+        dmc_dma = DmcDma::Get;
+        break;
+
+    case DmcDma::Get:
+        dmc_dma = DmcDma::Idle;
+        break;
+    }
+}
+
 bool Bus::clock_CPU() { return cpu.clock(trace_cpu); }
 
 // The cap is not defensive padding. Two things genuinely never finish: a jammed

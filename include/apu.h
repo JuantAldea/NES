@@ -108,6 +108,24 @@ public:
     // reload - two fetches that cost different numbers of cycles. That makes it
     // worth being able to assert on directly rather than only through timing.
     uint16_t dmc_bytes_remaining() const { return dmc.bytes_remaining; }
+
+    // The memory reader, driven by the Bus: only the Bus can halt the CPU.
+    //
+    // A transfer is REQUESTED rather than inferred from the buffer being empty.
+    // A $4015 enable does not start one on the spot - it schedules it 2 or 3
+    // cycles later depending on cycle parity - while the output unit emptying
+    // the buffer starts one at once. Mesen2 calls the first _transferStartDelay
+    // and matches dmc_dma_start_test with it.
+    bool dmc_wants_sample_byte() const { return dmc.transfer_requested; }
+    uint16_t dmc_sample_address() const { return dmc.current_address; }
+    void dmc_deliver_sample_byte(uint8_t data);
+    void dmc_cancel_transfer() { dmc.transfer_requested = false; }
+
+    // Which kind is pending. A load halts on a GET cycle and so takes 3 cycles;
+    // a reload halts on a PUT and takes 4, because its dummy then lands on a
+    // get and an alignment cycle is needed before the read. The count is a
+    // consequence of the phase, not a separate rule.
+    bool dmc_transfer_is_load() const { return dmc.transfer_is_load; }
     bool dmc_sample_buffer_filled() const { return dmc.sample_buffer_filled; }
 
     // Sequence lengths in CPU cycles. Mode 0 asserts /IRQ across its last three
@@ -204,11 +222,21 @@ private:
 
         bool irq_flag = false;
         bool enabled = false;
+
+        // A requested-but-not-yet-performed fetch.
+        bool transfer_requested = false;
+        bool transfer_is_load = false;
+
+        // Cycles until a $4015 enable actually schedules its transfer, and
+        // until a $4015 disable actually takes effect. Both are 2 or 3 by cycle
+        // parity. A disable landing on a pending transfer cancels it.
+        uint8_t transfer_start_delay = 0;
+        uint8_t disable_delay = 0;
     };
 
     void clock_dmc();
     void dmc_restart_sample();
-    void dmc_fill_sample_buffer();
+    void dmc_start_transfer(bool is_load);
     void set_dmc_irq(bool asserted);
 
     DeltaModulation dmc;

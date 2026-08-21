@@ -72,6 +72,33 @@ public:
     // write cycle from every other caller of the same public function.
     bool watching_cpu_access = false;
 
+    // DMC DMA, as four cycles rather than one. NESdev: "DMC DMA normally takes
+    // 3 or 4 cycles, depending on whether alignment is needed."
+    //
+    //   Halt    the CPU is stopped. This cycle IS stolen - an earlier version
+    //           let the CPU run through it, which made a DMA cost 2-3 cycles
+    //           where hardware costs 4, and sprdma_and_dmc_dma printed 783
+    //           where the reference table reads 527. (That "expected ~515" this
+    //           line used to cite was an estimate, and wrong - see the header of
+    //           tests/test_files/fetch_dmc_dma.sh.)
+    //   Dummy   always spent, no work done.
+    //   Align   spent only "if the next cycle is not a get cycle".
+    //   Get     the read itself.
+    //
+    // All four are stolen from the CPU, which is what makes the total the
+    // documented 4 cycles, or 3 when alignment is not needed.
+    //
+    // The halt is not ENTERED on a write cycle: "the CPU only allows this on
+    // read cycles. If the CPU is writing, it ignores the halt...repeating until
+    // successful". So the wait happens in Idle, before any cycle is stolen,
+    // rather than as a Halting state that burns cycles while it retries.
+    enum class DmcDma { Idle, Halt, Dummy, Align, Get };
+    DmcDma dmc_dma = DmcDma::Idle;
+
+    bool dmc_dma_holds_the_bus() const { return dmc_dma != DmcDma::Idle; }
+
+    void advance_dmc_dma();
+
     // Passed to CPU::clock, which prints one line per instruction to stdout.
     // Off by default so the headless harnesses stay silent; the frontend's
     // Trace checkbox is the only thing that sets it.
