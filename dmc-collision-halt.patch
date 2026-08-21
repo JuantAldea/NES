@@ -1,0 +1,902 @@
+DMC/OAM DMA collision investigation - parked work
+=================================================
+
+APPLIES TO   master at 2f029cd or later
+PARKED       2026-08-20, regenerated 2026-08-22
+
+    git apply dmc-collision-halt.patch
+
+REGENERATED, and the reason matters if you have an older copy. This patch
+originally said it applied to 4099919 on branch wip/dmc-stall. That commit no
+longer exists in master's history - it was one of six squashed into 7e02411
+before pushing - so the old copy named a base that a fresh clone cannot check
+out. It also carried tools/mesen_cycle_trace.cpp, tools/mesen_event_dump.cpp and
+tools/run_mesen_dump.sh as new files; those are committed to master now
+(a0d84a7), so those hunks would fail against an existing file, and git apply is
+atomic, which meant the WHOLE patch failed. Both are fixed here: the tools are
+dropped and the base is current master. include/bus.h and src/bus.cpp are
+byte-identical to what 4099919 had, so the diffs themselves are unchanged.
+
+Nothing else is needed to reproduce any number below except the test ROMs, which
+are fetched, never committed:
+
+    tests/test_files/fetch_dmc_dma.sh
+
+
+WHAT IS IN HERE
+---------------
+
+Two things with very different standing. Read the standing before the diff.
+
+1. src/bus.cpp, include/bus.h - TWO changes to Bus::advance_dmc_dma, BOTH
+   UNVERIFIED BY ANY ORACLE:
+
+     a. CollisionHalt/CollisionDummy - a DMC DMA that begins during an OAM DMA
+        spends its halt and dummy as free cycles (the CPU is already stopped)
+        before Align/Get, matching Mesen's processCycle (NesCpu.cpp:384).
+     b. the write-cycle halt refusal is skipped while an OAM DMA holds the bus,
+        because Mesen shares ONE halt between the two DMAs - _needHalt is set
+        both by the $4014 write (NesCpu.cpp:524) and by StartDmcTransfer (:531).
+
+   Together they make the diagnostic's sweep monotonic and identical to Mesen
+   on all ten collision rows. They change the ROM's verdict by NOTHING. Do not
+   commit either as a fix.
+
+2. tests/dmc_sweep_diag.cpp - a temporary diagnostic, not a test. It asserts
+   almost nothing and prints a table. Its header carries thirteen numbered findings
+   and is the real content of this patch. It adds 1 to the suite count, so
+   delete it before any squash.
+
+The Mesen-side instruments are no longer in this patch because they are in the
+tree. Use tools/mesen_cycle_trace.cpp - cycle-stepped, via StepType::CpuCycleStep -
+for anything compared against our trace, never the event dump beside it, which is
+lossy and kept only as a record of how it failed:
+
+    tools/run_mesen_dump.sh --cycles ROM FROM COUNT
+
+
+THE OPEN BUG, and how far it is narrowed
+----------------------------------------
+
+sprdma_and_dmc_dma disagrees with Mesen2 b9fa69d on exactly one row of sixteen:
+
+    row      00  01  02  03  04 | 05 | 06  07  08  09  0A  0B  0C  0D  0E  0F
+    Mesen   527 528 527 528 527  526  525 526 525 526 525 526 525 526 525 526
+    ours    527 528 527 528 527  528  525 526 525 526 525 526 525 526 525 526
+
+That is the FIRST ROM only. sprdma_and_dmc_dma_512 diverges on SIX rows - 04,
+05, 06, 07, 0A and 0B - and Mesen emits 524 at row 04, a value this
+implementation never produces anywhere. Both reference tables are in the header
+of tests/test_files/fetch_dmc_dma.sh. The second ROM is the harder alignment
+case and is where the remaining work is, not in row 05 of the first.
+
+ALL MESEN POSITIONAL DATA IS DISCARDED. tools/mesen_event_dump.cpp samples
+frames on a wall clock and loses rows (20s caught 12 of 16, 60s caught 13), so
+every offset ever quoted from it is unsafe. Two sources are cycle-exact and
+hole-free: this patch's tests/dmc_sweep_diag.cpp, and the ROM's own printed
+table on both sides.
+
+The bridge between them is established on OUR SIDE ALONE. The diagnostic reports
+span 510 and no DMC inside for rows 0-5, span 512 and a collision for rows 6-15;
+our ROM prints 527,528,527,528,527,528 then 525,526,... So 527/528 is the
+UNCOLLIDED pair and 525/526 the COLLIDED one. Applying that to both tables:
+
+    ours   ...527 528 | 525 526 ...      6 uncollided, 10 collided
+    Mesen  ...527     | 526 525 ...      5 uncollided, 11 collided
+
+OUR FIRST COLLISION IS ONE ITERATION LATE. Rows 06-0F are identical on both
+sides; row 05 is uncollided for us, collided for Mesen.
+
+At cycle resolution, in our own run, row 05 is:
+
+    2064792  HALT  req1 load0            halt accepted
+    2064793  dumy
+    2064794  algn
+    2064795  GET                         the read happens at 2064796
+    2064797  idle req0 buf1 wrote1 oam1  sta $4014
+
+The DMC DMA occupies 2064793-2064796 and the $4014 write lands at 2064797. IT
+MISSES THE TRANSFER BY ONE CYCLE. The four cycles are individually correct - a
+reload halts on a put, dummy on a get, one alignment cycle, read on a get - so
+the fault is WHEN the sequence starts relative to the CPU reaching $4014, not
+what it does once started.
+
+First thing to explain: the three preceding DMC reads are 432 cycles apart
+(2060881, 2061313, 2061745) and this one jumps 3050 to 2064796. That is neither
+432 nor the 3424 of rate $00.
+
+A LEAD FOUND AFTER PARKING, worth spending first
+------------------------------------------------
+
+The DMC start-delay parity table at apu.cpp:429 is currently REDUNDANT. The halt
+cannot begin until the next get cycle (bus.cpp:318), so a 2-cycle delay lands on
+the wrong phase and waits one while a 3-cycle delay does not - and both put the
+halt on the SAME cycle. Measured by inverting the table to `? 3 : 2` and
+rebuilding: every figure in tests/dmc_buffer_tests.cpp was unchanged and both
+7-dmc_basics and 8-dmc_rates still passed.
+
+So two mechanisms are performing one mechanism's alignment, and the phase gate
+is the one that decides. Given that the symptom above is an entry that is ONE
+CYCLE LATE, this is the first place to look. Found while widening the dmcBuffer
+tests (2f029cd), not while working on this bug.
+
+THE TWO NEGATIVE RESULTS, which are why this is parked
+------------------------------------------------------
+
+Both changes in (1) were built, measured, and kept only as evidence.
+
+The first made the sweep monotonic - row 7 went -2 -> +2, span 510 -> 512, and
+the table reached +10,+10 instead of stopping at +8,+8. The second removed the
+last 2 cycles of entry delay at the crossing. Together the ten collision rows
+now match Mesen exactly. The ROM still prints 05 528. Verified by stashing and
+re-running, not assumed.
+
+The reason was in the diagnostic's own output all along: THE `length` COLUMN
+NEVER MOVED. 515,516,515,516... throughout. Only `span` and the offsets moved.
+The ROM measures the LENGTH of the stall; the monotonicity argument measures
+WHERE THE DMC LANDS INSIDE IT. Different quantities, and a change can fix one
+while leaving the other untouched. Twice now.
+
+
+IF YOU PICK THIS UP
+-------------------
+
+Explain the 3050-cycle gap first. Then decide between the only two branches
+left: the DMC sequence started 2 cycles early, or the CPU reached $4014 2 cycles
+late. Both are decidable inside our own cycle-stepped run. The apu.cpp:429 lead
+above is the cheapest thing to eliminate before either.
+
+DO NOT ADD ANOTHER FRAME-SAMPLED COMPARISON. The dump cost more than time: its
+holes caused a TRUE finding to be discarded and a false refutation written down
+(finding 11 "refuting" finding 9). If Mesen state is ever needed at cycle
+resolution, drive it with the Step API instead of polling snapshots.
+
+Standing of the findings in dmc_sweep_diag.cpp, after re-measuring frame-free:
+
+    hold        1 (our half), 4, 7, 8, 12, 13
+    conclusion  9 - true, but by finding 13's argument, not its own table
+    no weight   2, 5, 10, 11 and 9's supporting table - all dump-derived
+
+Finding 4 in particular records why a req/entry split CANNOT bisect this: the
+ROM times itself with the DMC, so `req` moves when the DMA moves, and there is
+no upstream in a closed loop.
+
+Suite state. Master without this patch is 954 executed, 0 skipped, 2 failed -
+the two SprdmaAndDmcDma rows above. Applying this adds the one diagnostic case,
+so expect 955 / 0 / 2. NOT RE-MEASURED since the regeneration; the old header
+said 955 / 0 / 5, and the three extra were the dmcBuffer tests, which were
+over-strict rather than broken and have since been widened in 2f029cd. The same
+failures occur with and without these changes. No regressions either way.
+
+Sanitizers and scan-build were NOT run against these changes - they are not
+candidates for commit, so analysing them would learn nothing.
+
+-- 8< -- patch follows -- 8< --
+diff --git a/include/bus.h b/include/bus.h
+index 44821bc..0008c8d 100644
+--- a/include/bus.h
++++ b/include/bus.h
+@@ -92,10 +92,19 @@ public:
+     // read cycles. If the CPU is writing, it ignores the halt...repeating until
+     // successful". So the wait happens in Idle, before any cycle is stolen,
+     // rather than as a Halting state that burns cycles while it retries.
+-    enum class DmcDma { Idle, Halt, Dummy, Align, Get };
++    // CollisionHalt/CollisionDummy are the halt and dummy of a DMC DMA that
++    // began while an OAM DMA was already running. They exist as states, but they
++    // do NOT hold the bus: the CPU is already stopped by the OAM DMA, so there
++    // is nothing left for them to halt, and the sprite transfer keeps running
++    // through them. Only the Align and Get that follow are stolen, which is what
++    // keeps the collision costing the OAM DMA 2 cycles.
++    enum class DmcDma { Idle, Halt, Dummy, Align, Get, CollisionHalt, CollisionDummy };
+     DmcDma dmc_dma = DmcDma::Idle;
+ 
+-    bool dmc_dma_holds_the_bus() const { return dmc_dma != DmcDma::Idle; }
++    bool dmc_dma_holds_the_bus() const
++    {
++        return dmc_dma != DmcDma::Idle && dmc_dma != DmcDma::CollisionHalt && dmc_dma != DmcDma::CollisionDummy;
++    }
+ 
+     void advance_dmc_dma();
+ 
+diff --git a/src/bus.cpp b/src/bus.cpp
+index 89cb377..10853e6 100644
+--- a/src/bus.cpp
++++ b/src/bus.cpp
+@@ -333,7 +333,15 @@ void Bus::advance_dmc_dma()
+             // OAM DMA - is measured correct, and so is the placement: the sync
+             // loops in sprdma_and_dmc_dma run at blargg's designed 433 and 3423
+             // cycles, which they only can if the DMA lands where this puts it.
+-            if (cpu_wrote_this_cycle) {
++            //
++            // Refused only while the CPU still HAS the bus. Once an OAM DMA
++            // holds it the CPU is already stopped, so there is nothing left to
++            // halt and nothing to refuse - Mesen shares ONE halt between the two
++            // DMAs, _needHalt being set both by the $4014 write (NesCpu.cpp:524)
++            // and by StartDmcTransfer (:531), with ProcessPendingDma spending it
++            // once. The cycle this matters on is the sta $4014 itself, which
++            // registers as a CPU write at the same moment it arms the DMA.
++            if (cpu_wrote_this_cycle && !ppu.dma_in_progress()) {
+                 break;
+             }
+ 
+@@ -343,7 +351,7 @@ void Bus::advance_dmc_dma()
+             // itself collides: "DMA units don't interfere with each other
+             // unless they're both trying to access on the same cycle, in which
+             // case DMC DMA wins", which costs the OAM DMA 2 cycles, not 4.
+-            dmc_dma = ppu.dma_in_progress() ? DmcDma::Align : DmcDma::Halt;
++            dmc_dma = ppu.dma_in_progress() ? DmcDma::CollisionHalt : DmcDma::Halt;
+         }
+         break;
+ 
+@@ -351,6 +359,20 @@ void Bus::advance_dmc_dma()
+         dmc_dma = DmcDma::Dummy;
+         break;
+ 
++    // The halt and dummy still HAPPEN during a collision - they are just free,
++    // because the CPU they exist to stop is already stopped. Mesen2 spends them
++    // as sprite-transfer cycles (NesCpu.cpp:384 processCycle, and the comment at
++    // :385) rather than skipping them, so the request-to-read latency is two
++    // cycles longer than going straight to Align. Two is even, so the read still
++    // lands on a get cycle.
++    case DmcDma::CollisionHalt:
++        dmc_dma = DmcDma::CollisionDummy;
++        break;
++
++    case DmcDma::CollisionDummy:
++        dmc_dma = DmcDma::Align;
++        break;
++
+     case DmcDma::Dummy:
+         // "Get and put cycles are aligned to the first and second halves of the
+         // APU clock." cpu_cycles is that divider - the same one OAM DMA and the
+diff --git a/tests/dmc_sweep_diag.cpp b/tests/dmc_sweep_diag.cpp
+new file mode 100644
+index 0000000..f1afb3c
+--- /dev/null
++++ b/tests/dmc_sweep_diag.cpp
+@@ -0,0 +1,645 @@
++// TEMPORARY DIAGNOSTIC. Not a test - it asserts almost nothing and prints a
++// table. Delete it before this branch is squashed; it exists to be compared
++// against Mesen2 b9fa69d and then thrown away.
++//
++// WHAT IT MEASURES, and why in exactly this form. tools/mesen_event_dump.cpp
++// reported, for sprdma_and_dmc_dma:
++//
++//   DMC at OAM-6, -4, -2   sprite-read span 510 cycles   outside
++//   DMC at OAM+2 ... +10   sprite-read span 512 cycles   inside
++//
++// so a DMC DMA landing inside a sprite DMA costs exactly TWO cycles, offsets
++// step by TWO, and the crossing sits between OAM-2 and OAM+2.
++//
++// Those Mesen offsets are measured from the sprite DMA's FIRST READ. This file
++// measures from the cycle the DMA becomes active, which is earlier by the halt
++// and any alignment cycle. The two reference points therefore differ by a
++// CONSTANT, and the absolute offsets here are NOT comparable to Mesen's.
++//
++// Comparing them anyway is exactly the mistake that made the "11-cycle phase
++// error" wrong enough to retract - a subtraction against a baseline taken under
++// different conditions. What IS comparable, because a constant offset cannot
++// change it:
++//
++//   * the STEP between consecutive offsets      Mesen: 2
++//   * the DELTA in DMA length when one collides Mesen: 2
++//   * how many iterations fall inside vs out    Mesen: 3 out, 10 in (of 13)
++//
++// WHAT IT FOUND, measured both sides from the first sprite read:
++//
++//   ours    six rows with no DMC inside, then
++//           +2, -2, +2, +2, +4, +4, +6, +6, +8, +8
++//   Mesen   -6, -4, -2, +2, +2, +4, +4, +6, +6, +8, +8, +10, +10
++//
++// 1. THE COLLISION DISCOUNT IS RIGHT. span 510 -> 512 on both sides: a DMC DMA
++//    inside a sprite DMA costs exactly 2 cycles. That is measured, not
++//    subtracted from a total, and it clears advance_dmc_dma's 2-cycle path.
++//
++// 2. MESEN'S SEQUENCE IS MONOTONIC AND OURS IS NOT. The ROM sweeps the DMC past
++//    the sprite DMA one step at a time, so the offsets must increase. Ours goes
++//    +2, then BACKWARDS to -2 (span 510, no collision), then forward again. A
++//    sweep cannot go backwards; that one row is the bug, and it is a far
++//    sharper target than "row 05 reads 528 instead of 526".
++//
++// 3. WE FINISH ONE PAIR SHORT, topping out at +8 where Mesen reaches +10 -
++//    consistent with the backwards row costing exactly one iteration.
++//
++// 4. WHERE THE ANOMALY SITS. Instrumenting the request (APU
++//    dmc.transfer_requested going true) and the entry (advance_dmc_dma leaving
++//    Idle) separately:
++//
++//      rows 0-5    req -12,-12,-10,-10, -8, -8    clean, +2 per pair
++//      rows 6-7    req  -2, -4                    jumps, then goes BACKWARDS
++//      rows 8-15   req  +0,+0,+2,+2,+4,+4,+6,+6   clean again, but +4 AHEAD
++//
++//    `entry` equals `req` on every row but one - row 6, where the entry phase
++//    gate holds the request off for 2 cycles. Row 6 is also the only anomalous
++//    row, and the first collision. The 4th pair should read -6,-6; it reads
++//    -2,-4, and every pair after it is a consistent +4 out - one whole DMC
++//    DMA's worth of cycles, gained once and never given back.
++//
++//    THIS DOES NOT LOCALISE THE FAULT, and an earlier draft of this comment
++//    claimed it did: "what moves is the REQUEST, which is the DMC timer's
++//    business and nothing to do with DMA - so do NOT go looking in
++//    Bus::advance_dmc_dma". That inference is invalid, and following it would
++//    have sent the next attempt to rewrite a correct file.
++//
++//    `req` is measured from the sprite DMA's first read, and the ROM reaches
++//    its $4014 write through a DMC-timed delay loop - so changing the DMA moves
++//    the very reference point `req` is measured against. MEASURED, not argued:
++//    deleting the entry phase gate in Bus::advance_dmc_dma moved row 6's `req`
++//    from -2 to -4 without touching src/apu.cpp at all.
++//
++//    There is no upstream here. `req` and `entry` sit in one closed loop, and
++//    splitting them cannot bisect it in either direction.
++//
++//    RULED OUT, by that same experiment: the entry phase gate is not simply
++//    spurious. With it deleted the sweep reports DMC at OAM -1 and entry -3 -
++//    ODD offsets, i.e. a read landing on a put cycle, which cannot happen. The
++//    gate is load-bearing for phase. Mesen has no equivalent (it starts the
++//    halt at the next read cycle and resolves phase inside the loop via
++//    getCycle, NesCpu.cpp:400), so the structural divergence is real, but the
++//    gate cannot just be removed - anything replacing it has to keep the read
++//    on a get cycle.
++//
++// 5. THE DISCONTINUITY IS OURS ALONE - settled, not assumed. This mattered,
++//    because sprdma_and_dmc_dma TIMES ITSELF WITH THE DMC (time_code_begin is
++//    begin_dmc_timer), so the stall is a term in its own cycle budget and the
++//    first collision changing it from 4 cycles to 2 legitimately moves the
++//    ROM's loop timing. A discontinuity at the crossing could have been
++//    correct. An earlier draft of this comment claimed a backwards sweep was
++//    self-evidently a bug; that was not a safe inference and it was wrong to
++//    write it before measuring.
++//
++//    Mesen, 15 of 16 rows, same ROM and the same 4->2 change at the same place:
++//
++//      -8, -6, -6, -4, -2, +2, +2, +4, +4, +6, +6, +8, +8, +10, +10
++//
++//    Strictly monotonic. It never goes backwards, so the self-timing does not
++//    produce this and ours is a defect. Mesen also reaches +10,+10 where we
++//    stop at +8,+8 - one pair short, the lost iteration - and splits 5 outside
++//    / 10 inside against our 7 / 9, which IS the row-05 disagreement.
++//
++// 13. RE-MEASURED WITHOUT FRAMES. Everything positional this file ever said
++//     about MESEN came from tools/mesen_event_dump.cpp, which samples frames on
++//     a wall clock and loses rows. Discard all of it. Exactly two sources are
++//     cycle-exact and hole-free:
++//
++//       a. this file's own run - cycle stepped, deterministic, all 16 rows
++//       b. the ROM's printed table, ours here and Mesen's recorded at b9fa69d
++//          in the header of tests/test_files/fetch_dmc_dma.sh
++//
++//     The bridge between them is established on OUR SIDE ALONE, so it needs no
++//     Mesen internals: this file reports span 510 and no DMC inside for rows
++//     0-5, and span 512 with a collision for rows 6-15; our ROM prints
++//     527,528,527,528,527,528 for rows 00-05 and 525,526,... for 06-0F.
++//     Therefore 527/528 IS THE UNCOLLIDED PAIR AND 525/526 THE COLLIDED ONE.
++//
++//     Applying that to both tables:
++//
++//       ours   527 528 527 528 527 528 | 525 526 525 526 525 526 525 526 525 526
++//       Mesen  527 528 527 528 527     | 526 525 526 525 526 525 526 525 526 525 526
++//                    6 uncollided             10 collided
++//                    5 uncollided             11 collided
++//
++//     OUR FIRST COLLISION IS ONE ITERATION LATE. Rows 06-0F are identical on
++//     both sides; row 05 is uncollided for us and collided for Mesen.
++//
++//     THAT REINSTATES FINDING 9 AND REFUTES FINDING 11. Finding 9 said exactly
++//     this and finding 11 threw it out - using the frame-sampled dump, where
++//     Mesen's "-2 row" showed inside 0. That row was very likely not the row I
++//     took it for, since the dump drops one member of each outside pair. So the
++//     bad instrument did not merely waste time: it caused a TRUE finding to be
++//     discarded and a false refutation to be written down. Finding 11's `pre`
++//     comparison (Mesen 1,2 vs ours 2,3) goes with it and is not evidence.
++//
++//     What survives, all frame-free: findings 1 (our half), 4, 7, 8, 12, and
++//     this one. Findings 2, 5, 9's supporting table, 10 and 11 are dump-derived
++//     and carry no weight, though 9's CONCLUSION is independently true by the
++//     argument above.
++//
++// 12. ROW 05 AT CYCLE RESOLUTION, ENTIRELY WITHIN OUR OWN RUN. No frames, no
++//     Mesen reconstruction - the ROM's two printed tables are the oracle and
++//     they say what happens: 527/528 is the uncollided pair, 525/526 the
++//     collided one, rows 06-0F are IDENTICAL on both sides, and at row 05
++//     Mesen collides (526) while we do not (528).
++//
++//     The trace of row 05 (state shown applies to the NEXT cycle):
++//
++//       2064792  HALT  req1 load0            halt accepted
++//       2064793  dumy
++//       2064794  algn
++//       2064795  GET                         the read happens at 2064796
++//       2064797  idle req0 buf1 wrote1 oam1  sta $4014
++//
++//     OUR DMC DMA OCCUPIES 2064793-2064796 AND THE $4014 WRITE IS AT 2064797.
++//     It misses the OAM DMA by exactly one cycle. That is row 05's 528.
++//
++//     The four cycles are individually correct: a reload (load0) halts on a put
++//     (2064793 odd), its dummy lands on a get, one alignment cycle is spent, and
++//     the read lands on a get cycle (2064796 even). Phase is right, length is
++//     right. What is unresolved is whether the sequence should have STARTED two
++//     cycles later - which would put the read at 2064798, inside the transfer -
++//     or whether the CPU should have reached $4014 two cycles sooner.
++//
++//     Those are the two remaining branches and they are both testable here,
++//     without Mesen: the DMC's start is decided by the request cycle and the
++//     entry gate in Bus::advance_dmc_dma, and the $4014 arrival is decided by
++//     how many cycles the preceding DMC DMAs stole from the ROM's delay loop.
++//     Note the previous three DMC reads are 432 cycles apart (2060881, 2061313,
++//     2061745) and then this one jumps 3050 to 2064796 - that gap is neither
++//     432 nor the 3424 of rate $00, and explaining it is the first thing to do.
++//
++// FINDINGS 9, 10 AND 11 ARE UNSAFE. READ THIS BEFORE THEM.
++//
++// Every one of them compares our side against tools/mesen_event_dump.cpp, and
++// that tool SAMPLES FRAMES ON A WALL CLOCK: Mesen's debug events are per-frame
++// (ClearFrameEvents on StartFrame, Debugger.cpp:596) and the tool polls every
++// 4ms, so any frame the core finishes faster than that is never snapshotted and
++// its row is gone. Measured: 20s caught 12 rows, 60s caught 13. Tripling the
++// run bought ONE row, so the loss is structural, not a short window.
++//
++// The rows it loses are not random. Inside rows survive in pairs (+2,+2 +4,+4
++// ...) while outside rows arrive as singletons (-6, -4, -2) where ours are
++// paired. So Mesen's "crossing pair is -4,-2" - which finding 9 built on and
++// finding 11 refuted it with - may be two members of DIFFERENT pairs with the
++// intervening row dropped. Both the claim and its refutation are alignment
++// arguments over a table with holes in it, and neither can be trusted.
++//
++// NOTHING IN THIS PROJECT NEEDS FRAME SAMPLING. Both emulators are cycle
++// stepped and deterministic, and the ROM prints its own complete 16-row table
++// on both sides - our run through this file, Mesen's recorded in the header of
++// tests/test_files/fetch_dmc_dma.sh. That pair of tables is the whole oracle,
++// it has no holes, and it is where row 05 is actually visible. Do not build
++// another comparison on sampled frames; if Mesen state is ever needed at cycle
++// resolution, drive it with its Step API rather than polling snapshots.
++//
++// 9. THE CROSSING, MEASURED ON BOTH SIDES. The `near` column exists for this:
++//    `dmcAbs` is only recorded while an OAM DMA is running, so the six rows
++//    where the DMC misses the transfer printed "no DMC inside" and nothing
++//    else - and those are the rows that decide where the crossing falls. `near`
++//    is the nearest DMC read to the first sprite read, recorded on every row.
++//
++//      ours   -8,-8  -6,-6  -4,-4  +2,+2  +4,+4  +6,+6  +8,+8  +10,+10
++//      Mesen  -8     -6,-6  -4,-2  +2,+2  +4,+4  +6,+6  +8,+8  +10,+10
++//
++//    The ROM tests each DMC delay at BOTH OAM DMA alignments, which is what
++//    makes the table pairs and what makes lengths alternate 513/514. Every pair
++//    is (x,x) on both sides EXCEPT ONE: Mesen's crossing pair is (-4,-2) where
++//    ours is (-4,-4). That second element is ROM row 05. Mesen's DMC steps to
++//    -2, collides, and prints 526; ours stays at -4, misses, and prints 528.
++//
++//    So the collision boundary sits between -4 and -2, and the defect is that
++//    the SECOND ALIGNMENT of the crossing pair does not move our DMC the 2
++//    cycles it moves Mesen's. Everything else about the sweep now agrees: with
++//    the two changes in this patch the ten collision rows match Mesen exactly.
++//
++//    That also explains why 15 of 16 rows have always matched and why every fix
++//    so far changed nothing. A defect that only appears when one alignment
++//    shifts the DMC across a boundary is invisible on every row except the one
++//    row where the boundary is.
++//
++// 10. THE ALIGNMENT MACHINERY IS NOT THE PROBLEM. `pre` (firstRead - dmaStart)
++//     reads 2,3,2,3... uniformly across all sixteen rows, crossing pair
++//     included. The two alignments really do differ by exactly one cycle of
++//     pre-read overhead, everywhere. So finding 9's "the second alignment does
++//     not move our DMC" is not a failure to alternate - the alternation is
++//     there; the DMC simply does not move with respect to it.
++//
++//     Re-expressed against the DMA START instead of the first read, which is
++//     the boundary that actually decides a collision:
++//
++//       firstRead and dmcAbs are both always on get cycles, so `near` is always
++//       EVEN and cannot express a 1-cycle shift. `start` alternates parity with
++//       `pre`. Our crossing pair therefore sits at start-2 and start-1 - both
++//       BEFORE the DMA begins, so neither collides, which is what prints 528.
++//
++//     Mesen's second crossing row reaches the start cycle and collides. The
++//     remaining unknown is Mesen's own `pre` for that pair: near -2 means
++//     dmcAbs = start with pre 2, but start-1 with pre 3, and only the former
++//     is a collision. GET THAT NUMBER BEFORE THEORISING FURTHER - it decides
++//     whether our DMC read is 1-2 cycles early or our DMA start is late, and
++//     those are different bugs in different files.
++//
++//     tools/mesen_event_dump.cpp does not currently report the DMA start, only
++//     the sprite reads. Adding it is the next instrument change, and note that
++//     its 20s sweep returns 15 of 16 rows and says so - the missing row is at
++//     the END (Mesen's ROM table is 5 long + 11 short, so its sweep runs one
++//     further than ours), so the crossing pair IS present in the 15.
++//
++// 11. THE NUMBER FINDING 10 ASKED FOR, and it refutes finding 9's reading.
++//     tools/mesen_event_dump.cpp now reports `pre` too. Mesen, at the crossing:
++//
++//       span 510 cyc  pre 1  nearest DMC OAM  -4  inside 0
++//       span 510 cyc  pre 1  nearest DMC OAM  -2  inside 0
++//       span 512 cyc  pre 1  nearest DMC OAM  +2  inside 1
++//
++//     MESEN'S -2 ROW DOES NOT COLLIDE. inside 0, span 510. Finding 9 asserted
++//     that row was the collision printing 526; it is not, and the whole "our
++//     first collision is one iteration late" framing rests on that assumption.
++//     Mesen's crossing pair is -4,-2 with BOTH rows outside the transfer, and
++//     ours is -4,-4 with both outside. Neither side collides there.
++//
++//     So the 2-cycle difference at ROM row 05 is NOT a collision discount. What
++//     differs is only WHERE the non-colliding DMC sits: Mesen 2 cycles later
++//     than ours on the second row of the pair. Why that changes the ROM's
++//     measured length by 2 when the DMC is outside the transfer either way is
++//     now the question, and it is a different question from every one asked so
++//     far in this file.
++//
++//     Also measured: Mesen's `pre` alternates 1,2 where ours alternates 2,3, a
++//     constant +1. PROBABLY AN INSTRUMENT DIFFERENCE, NOT A BUG - our `start`
++//     is where ppu.dma_in_progress() first goes true, and the cycle trace shows
++//     that flag already set on the sta $4014 cycle (2213320, wrote1 oam1),
++//     while Mesen's first DmaRead event is the halt one cycle later. Confirm it
++//     before either trusting or acting on it; a constant offset is evidence
++//     about the instrument until proven otherwise.
++//
++// TARGET, as of finding 9: why the two OAM DMA alignments do not shift the DMC
++// read relative to the first sprite read the way Mesen's do. Compare the two
++// rows of the crossing pair against each other, not against the rest of the
++// sweep. Measure `length`, not offset or span - findings 7 and 8. The
++// state below predates that and is kept because it is still true, but note that
++// findings 2, 5 and 6 all reason about position and so do not bear on the ROM.
++//
++// Nothing here is cleared, because finding 4 cannot clear anything - see it.
++// What IS known:
++//
++//   * the collision discount (finding 1) is right, on both sides
++//   * the sweep must be monotonic and ours is not (findings 2, 5)
++//   * row 6 is the single anomalous row, and the single row where the entry
++//     phase gate fires
++//   * the gate cannot merely be deleted (finding 4)
++//
++// The open question is whether that gate's rule - a LOAD halts on a get, a
++// RELOAD on a put, wait otherwise - is the right way to keep the read on a get
++// cycle. It is enforced as a WAIT, which is what makes row 6 cost 2 extra
++// cycles; Mesen never waits, and reaches the same phase by choosing inside the
++// loop. Those differ only when the timer delivers a request at the "wrong"
++// phase, which happens on exactly one row of this sweep: row 6.
++//
++// 6. WHAT THE CYCLE TRACE SHOWS. Row 6's two extra cycles are accounted for
++//    exactly, and neither is a bug on its own (state shown is what
++//    advance_dmc_dma set at the END of that cycle, so it applies on the next):
++//
++//      2213320 par0 idle req1 load0 wrote1 oam1   sta $4014 - halt refused,
++//                                                 the CPU is writing
++//      2213321 par1 idle req1 load0 wrote0 oam1   phase gate refuses:
++//                                                 next_is_get=1 != is_load=0
++//      2213322 par0 algn req1 load0 wrote0 oam1   accepted
++//      2213323 par1 GET
++//
++//    One cycle of write refusal, one of parity. Every clean row shows the
++//    undisturbed HALT/dumy/algn/GET with no wait at all, so the gate normally
++//    costs nothing and only bites when a request lands beside the $4014 write.
++//
++//    THE MECHANISM THIS SUGGESTS - derived from Mesen's loop, NOT yet measured,
++//    so treat it as the next experiment and not as a finding. During an OAM DMA
++//    Mesen absorbs the DMC's halt and dummy into two sprite cycles
++//    (NesCpu.cpp:384 processCycle, and the comment at :385 "Sprite DMA cycles
++//    count as halt/dummy cycles for the DMC DMA when both run at the same
++//    time"), then reads at the next get cycle. We instead go straight to Align
++//    and read one cycle later. Both extend the OAM DMA by 2 - which is why
++//    finding 1 measures the discount as correct on both sides - but the LATENCY
++//    from request to read differs. Writing C for the cycle the request is first
++//    accepted-or-refused:
++//
++//      C even   ours reads at C+2   Mesen reads at C+4    <- differs by 2
++//      C odd    ours reads at C+3   Mesen reads at C+3       agrees
++//
++//    A difference that appears on one parity only is the right shape for a
++//    defect that fires on exactly one row of a sweep that steps the DMC past
++//    the sprite DMA two cycles at a time.
++//
++//    To test it, the collision path has to spend two cycles being halted before
++//    the read WITHOUT stealing them from the OAM DMA - the halt and dummy are
++//    free precisely because the CPU is already stopped. That is a restructure
++//    of the Align branch, not a parity tweak, and it must keep the read on a get
++//    cycle (see finding 4) and keep the span at 512 (finding 1).
++//
++// 7. THAT RESTRUCTURE WAS BUILT AND MEASURED, and it changes the ROM's verdict
++//    by NOTHING. CollisionHalt/CollisionDummy in Bus::advance_dmc_dma made this
++//    sweep monotonic - row 7 went -2 -> +2, its span 510 -> 512, and the table
++//    reaches +10,+10 where it used to stop at +8,+8, matching Mesen's endpoint
++//    and its ten collision rows. The ROM still prints 05 528 against Mesen's
++//    05 526, byte for byte the same sixteen numbers as without it. Verified by
++//    stashing the change and re-running, not assumed.
++//
++//    WHY, and this invalidates the target in finding 6 and most of this file's
++//    reasoning: THE `length` COLUMN NEVER MOVED. It reads 515,516,515,516...
++//    with and without the restructure. Only `span` and the offsets moved. The
++//    ROM measures the LENGTH of the stall; this file's monotonicity argument
++//    measures WHERE the DMC lands inside it. Those are different quantities,
++//    and a change can fix one while leaving the other untouched - which is
++//    precisely what happened.
++//
++//    So "the sweep must be monotonic" was never a route to row 05. It is a real
++//    property and ours really did violate it, but it is not the ROM's verdict
++//    and fixing it does not move the ROM. Three of this file's five findings
++//    were reasoning about position while the oracle was reporting duration.
++//
++// 8. THE ACTUAL SHAPE OF THE DEFECT, from the two tables side by side:
++//
++//      Mesen  527 528 527 528 527 | 526 525 526 525 526 525 526 525 526 525 526
++//      ours   527 528 527 528 527   528 | 525 526 525 526 525 526 525 526 525 526
++//
++//    Both are a run of LONG rows followed by a run of SHORT ones. Mesen crosses
++//    after 5 long rows; we cross after 6. Our first collision happens one
++//    iteration LATE, and row 05 is long for us and short for Mesen because of
++//    it. Everything after the crossing already agrees, which is why 15 of 16
++//    rows match and always have.
++//
++//    That is a question about WHEN the DMC first collides - i.e. about the DMC
++//    timer's phase relative to the ROM's $4014 write, one iteration before the
++//    crossing - and NOT about what a collision costs once it happens, which
++//    finding 1 measured correct on both sides and which finding 7 has now shown
++//    is insensitive to the whole Align/Collision restructure.
++#include <gtest/gtest.h>
++
++#include <cstdio>
++#include <string>
++#include <vector>
++
++#include "bus.h"
++
++namespace
++{
++// Enough sprite DMAs to see the crossing; Mesen showed it after three.
++constexpr size_t kWantedSamples = 24;
++
++// A ceiling, not a budget. Mesen saw the first sprite DMA around 48 frames in;
++// this is far above that so a ROM that gets further does not silently truncate.
++constexpr uint64_t kMaxMasterTicks = 400ULL * 341 * 262 * 4;
++
++struct Sample {
++    uint64_t length = 0;  // CPU cycles the OAM DMA held the bus
++    long dmcOffset = -1;  // CPU cycles from the FIRST SPRITE READ to the DMC get
++    bool sawDmc = false;
++
++    // First and last sprite read, so the span is measured exactly as Mesen's is.
++    //
++    // Measuring from DMA START instead confounds the comparison: the gap from
++    // start to first read is the halt plus an OPTIONAL alignment cycle, so it is
++    // itself parity-dependent - and our lengths alternate 515/516, so that gap
++    // alternates too. An offset measured from the start then steps by 1 even if
++    // the DMC is moving by 2. That artifact has exactly the shape of the bug
++    // being hunted, so it cannot be left in the instrument.
++    uint64_t firstRead = 0;
++    uint64_t lastRead = 0;
++    bool sawRead = false;
++    uint64_t dmcAbs = 0;  // absolute cycle of the DMC get, resolved at DMA end
++
++    // The two points UPSTREAM of the get, which bisect the bug:
++    //
++    //   request  APU::dmc.transfer_requested goes true - the DMC timer's doing,
++    //            nothing to do with the DMA state machine
++    //   entry    advance_dmc_dma leaves Idle - the halt is finally accepted,
++    //            after the parity gate and the write-cycle refusal
++    //
++    // The ROM walks the sprite DMA past the DMC one cycle per row, so BOTH must
++    // move monotonically across the sweep. Whichever one jumps is the culprit:
++    // a non-monotonic request means the DMC timer is being perturbed upstream,
++    // and a monotonic request with a non-monotonic entry means the fault is in
++    // advance_dmc_dma's entry conditions.
++    // Nearest DMC read to the first sprite read, recorded on EVERY row
++    // including the ones where the DMC misses the transfer. Finding 8.
++    // Absolute cycle the OAM DMA became active, so the pre-read overhead
++    // (firstRead - start) can be compared between the two alignments of a
++    // pair. Finding 9 asks what differs between them; this is the difference.
++    uint64_t start = 0;
++    bool haveNear = false;
++    long nearOffset = 0;
++    long reqOffset = 0;
++    long entryOffset = 0;
++    bool haveReq = false;
++    bool haveEntry = false;
++};
++
++// Nearest recorded cycle to `to`, so a request that fired before the DMA began
++// is still attributed to it. Returns false when nothing was recorded at all.
++bool nearest_to(const std::vector<uint64_t>& cycles, uint64_t to, long& out)
++{
++    bool found = false;
++    long best = 0;
++    for (const uint64_t c : cycles) {
++        const long d = static_cast<long>(c) - static_cast<long>(to);
++        if (!found || std::labs(d) < std::labs(best)) {
++            best = d;
++            found = true;
++        }
++    }
++    out = best;
++    return found;
++}
++}  // namespace
++
++GTEST_TEST(dmcSweepDiag, sprite_dma_length_and_dmc_offset)
++{
++    const std::string path = std::string(NES_TEST_FILES_DIR) + "/dmc_dma/sprdma_and_dmc_dma.nes";
++
++    Bus console;
++    ASSERT_TRUE(console.load_cartridge(path))
++        << "could not load " << path << " - run tests/test_files/fetch_dmc_dma.sh";
++    console.cpu.reset();  // without this the CPU never loads its reset vector and
++                          // the whole run is 143M ticks of nothing happening
++
++    std::vector<Sample> samples;
++    bool previouslyInDma = false;
++    uint64_t dmaStart = 0;
++    uint64_t lastDmcCycle = UINT64_MAX;
++    uint16_t previousSrcAddr = 0;
++    bool previousWanted = false;
++    bool previousDmcActive = false;
++    uint64_t lastTraceCycle = UINT64_MAX;
++    // EVERY DMC read, not just the ones landing inside an OAM DMA. `dmcAbs`
++    // below is only recorded during a DMA, so the six rows where the DMC misses
++    // the sprite transfer entirely print "no DMC inside" and nothing else - and
++    // those are precisely the rows that decide WHERE THE CROSSING IS, which is
++    // the open question (finding 8). Without this the instrument cannot see the
++    // thing being investigated.
++    std::vector<uint64_t> dmcGets;
++    std::vector<uint64_t> requests;
++    std::vector<uint64_t> entries;
++    Sample current;
++
++    for (uint64_t tick = 0; tick < kMaxMasterTicks && samples.size() < kWantedSamples; ++tick) {
++        console.clock();
++
++        // Bus::clock performs the DMC read on the CPU tick that ENTERS the Get
++        // state (bus.cpp:259) and advance_dmc_dma then returns it to Idle, so
++        // from out here Get is observed on the cycle BEFORE the read. That is a
++        // constant, and constants do not affect step or delta - see the header.
++        // Deduplicated on cpu_cycles because one CPU cycle spans several master
++        // ticks and would otherwise be counted repeatedly.
++        if (console.dmc_dma == Bus::DmcDma::Get && console.cpu_cycles != lastDmcCycle) {
++            lastDmcCycle = console.cpu_cycles;
++            dmcGets.push_back(console.cpu_cycles + 1);  // same +1 as below
++            if (previouslyInDma) {
++                // +1: the READ happens on the cycle AFTER this observation.
++                // Bus::clock performs it when dmc_dma is already Get on entry
++                // (bus.cpp:259) and advance_dmc_dma returns it to Idle before
++                // clock() returns, so Get is only ever visible from out here on
++                // the preceding cycle.
++                //
++                // Without this the offsets come out ODD where Mesen's are EVEN,
++                // which reads as our DMC get landing on the opposite phase to
++                // the sprite reads - a wrong-phase bug that does not exist, and
++                // a fix to the parity gate that would have broken working code.
++                current.dmcAbs = console.cpu_cycles + 1;
++                current.sawDmc = true;
++            }
++        }
++
++        // Rising edges only, so a level that stays true for several cycles is
++        // recorded once - at the cycle it became true, which is the thing the
++        // sweep moves.
++        const bool wanted = console.apu.dmc_wants_sample_byte();
++        if (wanted && !previousWanted) {
++            requests.push_back(console.cpu_cycles);
++        }
++        previousWanted = wanted;
++
++        const bool dmcActive = console.dmc_dma != Bus::DmcDma::Idle;
++        if (dmcActive && !previousDmcActive) {
++            entries.push_back(console.cpu_cycles);
++        }
++        previousDmcActive = dmcActive;
++
++        // A sprite read is detected by the source address ADVANCING, which is
++        // what Mesen's page-marching reads are too. Watching remaining_dma_cycles
++        // instead would count halt and alignment cycles as reads.
++        const bool inDma = console.ppu.dma_in_progress();
++        if (inDma) {
++            const uint16_t src = console.ppu.dma_current_memory_source_addr;
++            if (src != previousSrcAddr) {
++                if (!current.sawRead) {
++                    current.firstRead = console.cpu_cycles;
++                    current.sawRead = true;
++                }
++                current.lastRead = console.cpu_cycles;
++                previousSrcAddr = src;
++            }
++        }
++
++        if (inDma && !previouslyInDma) {
++            dmaStart = console.cpu_cycles;
++            current = Sample{};
++            current.start = dmaStart;
++            previousSrcAddr = console.ppu.dma_current_memory_source_addr;
++        } else if (!inDma && previouslyInDma) {
++            current.length = console.cpu_cycles - dmaStart;
++            if (current.sawDmc && current.sawRead) {
++                current.dmcOffset = static_cast<long>(current.dmcAbs) - static_cast<long>(current.firstRead);
++            }
++            if (current.sawRead) {
++                current.haveNear = nearest_to(dmcGets, current.firstRead, current.nearOffset);
++                current.haveReq = nearest_to(requests, current.firstRead, current.reqOffset);
++                current.haveEntry = nearest_to(entries, current.firstRead, current.entryOffset);
++            }
++            samples.push_back(current);
++        }
++
++        // CYCLE TRACE across rows 6-7, the anomalous pair. Rows 0-5 are clean
++        // and row 8 onwards is clean-but-offset, so the whole defect is in this
++        // window. Enabled once six samples exist, which is after row 5's DMA
++        // ended and BEFORE row 6's request - the request is raised while the CPU
++        // is still executing, so a window starting at row 6's DMA would miss the
++        // very thing being measured.
++        //
++        // Printed only while a request is outstanding or the DMA is running,
++        // which is ~20 lines per row rather than the ~180,000 cycles between
++        // them. `wrote` is Bus::cpu_wrote_this_cycle, which is the halt refusal;
++        // `par` is the get/put phase advance_dmc_dma gates on.
++        if (samples.size() == 4 || samples.size() == 5) {
++            const bool interesting = wanted || dmcActive || (inDma && !current.sawRead);
++            if (interesting && console.cpu_cycles != lastTraceCycle) {
++                lastTraceCycle = console.cpu_cycles;
++                static const char* kState[] = {"idle", "HALT", "dumy", "algn", "GET ", "cHLT", "cDUM"};
++                std::printf("    trace %6llu par%d %s req%d load%d buf%d wrote%d oam%d%s\n",
++                            static_cast<unsigned long long>(console.cpu_cycles),
++                            static_cast<int>(console.cpu_cycles % 2), kState[static_cast<int>(console.dmc_dma)], wanted,
++                            console.apu.dmc_transfer_is_load(), console.apu.dmc_sample_buffer_filled(),
++                            console.cpu_wrote_this_cycle, inDma, (inDma && !current.sawRead) ? "  <- pre-read" : "");
++            }
++        }
++
++        previouslyInDma = inDma;
++    }
++
++    std::printf("\nours - one line per sprite DMA:\n");
++    long previousOffset = 0;
++    bool havePrevious = false;
++    uint64_t previousFirstRead = 0;
++    bool havePreviousRead = false;
++    for (const Sample& s : samples) {
++        // Cycles between consecutive sprite DMAs. KEPT ONLY AS A NEGATIVE
++        // RESULT - it does not discriminate anything, and the reasoning that
++        // added it was wrong.
++        //
++        // The idea was that the ROM's loop must shorten by exactly the change in
++        // stall cost, so ITER would fall by 2 at the crossing and a rise would
++        // convict. That assumed a tight loop. It is not one: iterations run
++        // ~178,000 cycles apart and vary by ~30,000 between neighbours, because
++        // they are dominated by vblank waits and by printing the previous row.
++        // A 2-cycle effect is far below that noise floor and always will be.
++        //
++        // Left in place so the next reader does not re-derive the same idea and
++        // re-measure it. If a per-iteration cycle budget is ever needed, it has
++        // to come from the ROM's own timer code, not from wall-to-wall spacing.
++        if (havePreviousRead) {
++            std::printf("  iter %5lld", static_cast<long long>(s.firstRead - previousFirstRead));
++        } else {
++            std::printf("  iter     -");
++        }
++        previousFirstRead = s.firstRead;
++        havePreviousRead = s.sawRead;
++
++        std::printf("  length %4llu  span %4lld  ", static_cast<unsigned long long>(s.length),
++                    static_cast<long long>(s.lastRead - s.firstRead));
++        if (s.sawDmc) {
++            std::printf("DMC at OAM%+5ld", s.dmcOffset);
++            if (havePrevious) {
++                std::printf("  step %+ld", s.dmcOffset - previousOffset);
++            }
++            previousOffset = s.dmcOffset;
++            havePrevious = true;
++        } else {
++            std::printf("no DMC inside       ");
++        }
++        if (s.haveReq) {
++            std::printf("  pre%2lld", static_cast<long long>(s.firstRead - s.start));
++            std::printf("  near%+5ld", s.haveNear ? s.nearOffset : 0);
++            std::printf("  req%+5ld", s.reqOffset);
++        }
++        if (s.haveEntry) {
++            std::printf("  entry%+5ld", s.entryOffset);
++        }
++        std::printf("\n");
++    }
++    std::printf("(%zu sprite DMAs observed)\n", samples.size());
++
++    // The only real assertion: that the diagnostic measured anything at all. A
++    // table of zero rows would otherwise read as "our emulator performs no
++    // sprite DMA", which is a claim this file is not entitled to make.
++    ASSERT_FALSE(samples.empty()) << "no sprite DMA observed in " << kMaxMasterTicks << " master ticks";
++}
