@@ -19,28 +19,41 @@
 // eight bits, so a byte lasts 428 x 8 = 3424 cycles - which is exactly the
 // dmc_timer_modulo that blargg's own dmc_timer.s is built around.
 //
-// THESE THREE WILL NEED RELAXING WHEN THE DMC DMA STALL LANDS, and the reason
-// is recorded here so it is not mistaken for a regression.
+// THREE OF THESE WERE WIDENED WHEN THE DMC DMA STALL LANDED. The prediction
+// that they would need it was written here first, before the change, and named
+// the three by name; it was right, and the record of it is worth keeping.
 //
 // Mesen2 does not perform a $4015 enable's fetch on the cycle of the write. It
 // schedules it 2 or 3 cycles later depending on cycle parity - _transferStartDelay,
 // which it says matches dmc_dma_start_test - and only the output unit emptying
-// the buffer starts one immediately. Implementing that here was tried: every
-// APU ROM in this repository still passed, and the only failures were
-// enabling_the_channel_fills_the_buffer_at_once,
-// bytes_remaining_empties_one_byte_before_playback_ends and
-// a_finished_sample_leaves_the_buffer_full_until_it_is_played, from this file.
+// the buffer starts one immediately. That is now what this emulator does, and
+// exactly the three tests predicted began failing: they asserted occupancy at
+// the instant of the write, which was the old inline fetch's behaviour rather
+// than a hardware requirement. blargg's 7-dmc_basics #19 requires only that the
+// byte arrive before the CPU's next INSTRUCTION reads $4015, and that ROM
+// passes - as does 8-dmc_rates.
 //
-// So these assert something stricter than the hardware does. blargg's
-// 7-dmc_basics #19 only requires the byte to have arrived before the CPU's next
-// INSTRUCTION reads $4015, which a 2-3 cycle delay satisfies; "on the same
-// cycle" is this implementation's behaviour, not a documented requirement.
+// The fourth test did not need widening and did not fail, which is the useful
+// control: it measures the steady-state byte period, so the start delay is
+// visible only at the enable and does not touch the rate.
 //
-// They are left strict for now because they are correct FOR THE CODE AS IT
-// STANDS, which fetches inline, and relaxing them to a fixed window was tried
-// and simply fails the other way round. Widen them in the same commit that adds
-// the delay, not before - and widen them to what the ROM requires rather than
-// to whatever the new code happens to do.
+// HOW THEY WERE WIDENED, because "relax until green" is the failure mode here.
+// Each now asserts BOTH edges of the window - that the buffer is NOT filled on
+// the write cycle, and that it IS filled on an exact later cycle. The first
+// edge is what keeps the test able to fail: a revert to inline fetching would
+// satisfy any assertion that merely waited long enough. The exact cycle is
+// derived from the model rather than measured off this code, and start_sample
+// pins the APU cycle parity so the figure can be exact instead of a range wide
+// enough to hide a one-cycle regression.
+//
+// Deriving it went wrong once, in the direction worth warning about: the first
+// derivation summed the two terms that are documented in prose - the scheduled
+// delay and the length of a load - got 5, and disagreed with the measured 6.
+// The missing term was a phase wait that only exists in the code. The right
+// response to that gap was to go and find the third term, not to change the 5
+// to a 6; had the assertion simply been fitted to the measurement, the fact
+// that the parity table below is currently redundant would never have surfaced.
+// See the comment on the first test for the full three-term derivation.
 #include <cstdint>
 
 #include "../include/bus.h"
@@ -64,16 +77,6 @@ void seed_spin_loop(Bus& console)
     console.cpu.cycles_left = 0;
 }
 
-// Starts the DMC at the slowest rate with a sample of `length_register` in
-// $4013's units - so (n * 16) + 1 bytes - and no looping or IRQ.
-void start_sample(Bus& console, const uint8_t length_register)
-{
-    console.write(0x4010, 0x00);  // rate index 0, no IRQ, no loop
-    console.write(0x4012, 0x00);  // sample at $C000
-    console.write(0x4013, length_register);
-    console.write(0x4015, 0x10);  // enable: starts the sample
-}
-
 void run_cpu_cycles(Bus& console, const int cycles)
 {
     for (int i = 0; i < cycles * 12; ++i) {
@@ -81,14 +84,80 @@ void run_cpu_cycles(Bus& console, const int cycles)
     }
 }
 
+// The $4015 enable schedules its fetch 2 cycles out on an even APU cycle and 3
+// on an odd one (apu.cpp:429), so the arrival cycle is only a fixed number once
+// the parity is fixed. Pinning it to EVEN is what lets the tests below assert an
+// exact cycle instead of a range wide enough to hide a one-cycle regression.
+//
+// APU::apu_cycles is private, but Bus::cpu_cycles is an exact proxy: the only
+// call site of APU::clock() is `++cpu_cycles; apu.clock();` in Bus::clock_CPU
+// (bus.cpp:228-229), and both counters start at zero, so they are equal for the
+// whole life of the machine and therefore share a parity.
+void pin_even_apu_cycle(Bus& console)
+{
+    if (console.cpu_cycles % 2 != 0) {
+        run_cpu_cycles(console, 1);
+    }
+    ASSERT_EQ(0u, console.cpu_cycles % 2) << "parity pin failed, so every cycle count below is off by one";
+}
+
+// Starts the DMC at the slowest rate with a sample of `length_register` in
+// $4013's units - so (n * 16) + 1 bytes - and no looping or IRQ.
+//
+// The enable is placed on an even APU cycle deliberately - see pin_even_apu_cycle.
+void start_sample(Bus& console, const uint8_t length_register)
+{
+    console.write(0x4010, 0x00);  // rate index 0, no IRQ, no loop
+    console.write(0x4012, 0x00);  // sample at $C000
+    console.write(0x4013, length_register);
+    pin_even_apu_cycle(console);
+    console.write(0x4015, 0x10);  // enable: SCHEDULES the sample, does not fetch
+}
+
+// CPU cycles from the $4015 enable until the fetched byte is in the buffer, or
+// -1 if it never arrives. Bounded well above any documented figure so a hang is
+// reported as a number rather than as a timeout.
+int cycles_until_buffer_fills(Bus& console)
+{
+    for (int cycle = 1; cycle <= 32; ++cycle) {
+        run_cpu_cycles(console, 1);
+        if (console.apu.dmc_sample_buffer_filled()) {
+            return cycle;
+        }
+    }
+    return -1;
+}
+
 }  // namespace
 
-// The buffer is filled the moment the channel is enabled, not on the next timer
-// tick. blargg's 7-dmc_basics #19 states it from the other side - "there should
-// be a one-byte buffer that's filled immediately if empty" - and asserts that a
-// one-byte sample has therefore already finished by the time the next
-// instruction reads $4015.
-GTEST_TEST(dmcBuffer, enabling_the_channel_fills_the_buffer_at_once)
+// The buffer is filled BY the enable but not ON it: a $4015 write schedules the
+// fetch rather than performing it. blargg's 7-dmc_basics #19 - "there should be
+// a one-byte buffer that's filled immediately if empty" - is a claim about what
+// the CPU's next instruction can observe, not about the write cycle itself, and
+// that ROM passes with this delay in place.
+//
+// Six cycles, and the derivation has three terms, not two - the first attempt
+// at this comment said five by leaving the middle one out:
+//
+//   2   the enable SCHEDULES the transfer rather than performing it, 2 cycles
+//       out on an even APU cycle and 3 on an odd one (apu.cpp:429).
+//   1   the halt cannot begin until the next GET cycle (bus.cpp:318), and a
+//       request that lands on the wrong phase waits one cycle for it.
+//   3   halt, dummy, read - a LOAD halts on a get, so its dummy lands on a put
+//       and the following get needs no alignment cycle (apu.h:124).
+//
+// The middle term is why the parity of the enable does NOT reach this number.
+// Both delays land the halt on the same cycle: a 2 arrives on the wrong phase
+// and waits, a 3 arrives on the right one and does not. Measured by inverting
+// apu.cpp:429 to `? 3 : 2` and rebuilding - every figure in this file was
+// unchanged, and 7-dmc_basics and 8-dmc_rates still passed. So that parity
+// table is currently doing no work that the phase gate is not already doing.
+// Worth resolving, but it is not these tests' business: they pin the arrival
+// cycle, and the arrival cycle is 6 either way.
+//
+// start_sample pins the parity anyway, so that if the two mechanisms are ever
+// separated this test measures one thing rather than an average of two.
+GTEST_TEST(dmcBuffer, enabling_the_channel_schedules_the_fill_rather_than_performing_it)
 {
     Bus console;
     seed_spin_loop(console);
@@ -97,7 +166,15 @@ GTEST_TEST(dmcBuffer, enabling_the_channel_fills_the_buffer_at_once)
 
     start_sample(console, 0x01);  // 17 bytes
 
-    EXPECT_TRUE(console.apu.dmc_sample_buffer_filled()) << "the buffer must be filled by the enable itself";
+    // The lower edge of the window, and the reason this is a widening rather
+    // than a surrender: without it the test would pass just as well if the
+    // fetch reverted to happening inline, which is what it was widened away
+    // from.
+    EXPECT_FALSE(console.apu.dmc_sample_buffer_filled()) << "a $4015 enable must not fetch on the cycle of the write";
+    EXPECT_EQ(17, console.apu.dmc_bytes_remaining()) << "and must not have consumed a byte yet";
+
+    EXPECT_EQ(6, cycles_until_buffer_fills(console))
+        << "2 cycles of start delay, 1 waiting for a get cycle, then a 3-cycle load";
     EXPECT_EQ(16, console.apu.dmc_bytes_remaining()) << "and that fetch must have consumed one of the 17 bytes";
 }
 
@@ -111,7 +188,9 @@ GTEST_TEST(dmcBuffer, bytes_remaining_empties_one_byte_before_playback_ends)
     seed_spin_loop(console);
     start_sample(console, 0x00);  // exactly 1 byte
 
-    EXPECT_EQ(0, console.apu.dmc_bytes_remaining()) << "a one-byte sample is fully fetched by the enable";
+    ASSERT_EQ(6, cycles_until_buffer_fills(console)) << "the same scheduled load as the test above";
+
+    EXPECT_EQ(0, console.apu.dmc_bytes_remaining()) << "a one-byte sample is fully fetched by that load";
     EXPECT_TRUE(console.apu.dmc_sample_buffer_filled()) << "but the byte is still sitting in the buffer, unplayed";
 }
 
@@ -164,8 +243,9 @@ GTEST_TEST(dmcBuffer, a_finished_sample_leaves_the_buffer_full_until_it_is_playe
 {
     Bus console;
     seed_spin_loop(console);
-    start_sample(console, 0x00);  // 1 byte: fetched at once, none remaining
+    start_sample(console, 0x00);  // 1 byte: one scheduled load empties the count
 
+    ASSERT_EQ(6, cycles_until_buffer_fills(console));
     ASSERT_EQ(0, console.apu.dmc_bytes_remaining());
     ASSERT_TRUE(console.apu.dmc_sample_buffer_filled());
 
