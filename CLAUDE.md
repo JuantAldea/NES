@@ -191,30 +191,37 @@ message rather than as a ROM everyone has learned to ignore.
 `blargg_rom_harness.h` implements the shared PRG-RAM reporting protocol —
 signature at `$6001`, status at `$6000`, ASCII message at `$6004` — and drives
 a soft RESET via `Bus::reset()` when a ROM reports `$81`. A new suite must go
-through it, and **three existing ones still do not**:
+through it. **Eleven do, and none forks it any more.**
 
-| Still private | What its copy gets wrong |
-|---|---|
-| `cpu_exec_space_tests.cpp` | no `$81` handling |
-| `instr_test_roms.cpp` | no `$81` handling |
-| `mmc3_rom_tests.cpp` | no `$81` handling |
+The drift that made the folding worth doing is worth remembering, because it
+was never cosmetic. `blargg_ppu_tests.cpp` drove no resets at all.
+`cpu_behaviour_tests.cpp` lacked the stale-`$6000` guard below and paid for it
+with a 15-frame reset delay that masked a spurious extra reset rather than
+fixing one. `cpu_exec_space_tests.cpp`, `instr_test_roms.cpp` and
+`mmc3_rom_tests.cpp` handled every status *except* `$81`, and so reported a ROM
+asking for a reset as "failed with code 129" — a request misread as a verdict. A suite needing `CPU::power_on()` instead of `reset()` passes
+`blargg::Start::PowerOn`, which is what removed the last reason to fork.
 
-None of the three mentions `$81` at all, so a ROM asking for a reset is
-reported as "failed with code 129" — a request misread as a verdict. That is a
-worse failure than the one already fixed, and it is latent only because no ROM
-in those three suites currently asks.
+Three claims about the count have now been wrong here, each a different way:
+"there is no longer a second copy" (written after folding two of five); a table
+naming three suites as still private (left standing after they were folded, so
+it advertised a fixed bug as latent); and "eight", from grepping
+`blargg::run_rom` — which misses the suites that sit *inside* `namespace
+blargg` and call it unqualified. There are three of those, so the qualified
+grep undercounts by exactly them.
 
-`blargg_ppu_tests.cpp` and `cpu_behaviour_tests.cpp` were folded in first. They
-had drifted in ways that mattered: the ppu one drove no resets at all, and the
-cpu one lacked the stale-`$6000` guard below and paid for it with a 15-frame
-reset delay that masked a spurious extra reset rather than fixing one. A suite
-needing `CPU::power_on()` instead of `reset()` passes `blargg::Start::PowerOn`
-rather than forking the loop — which removes the blocker for the three above,
-since two of them fork it for exactly that reason.
+Enumerate users this way instead, and count the lines:
 
-This section briefly claimed "there is no longer a second copy". That was
-written after folding two of five without grepping for `$DE $B0 $61` to check.
-Count the copies before claiming there is one.
+```sh
+grep -rln "run_rom(" tests/          # 12 hits: the harness + 11 suites
+```
+
+A private copy is a suite that runs blargg ROMs and does *not* appear in that
+list. Do not grep for the `$DE $B0 $61` signature bytes to find one — `0xDE`
+and `0xB0` are also an opcode table, a `0xDEADBEEF` payload and a palette
+fixture, and the one real hit is `blargg_ppu_tests.cpp` *writing* the signature
+on purpose to prove the PRG-RAM window round-trips. Count the copies before
+claiming a number, and check the grep can see all of them first.
 
 Per-suite *diagnostics* still belong in the suite: what to suspect when a ROM
 times out is different for each, and those messages are the reason a red run is
