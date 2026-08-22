@@ -1,9 +1,11 @@
 #pragma once
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
 #include "device.h"
+#include "mapper.h"
 
 // iNES (.nes) cartridge loader for NROM (0), UNROM (2), CNROM (3) and MMC3 (4).
 //
@@ -153,6 +155,12 @@ public:
     // PPU::total_cycles, which is the only clock both sides share.
     void mmc3_observe_a12(const uint16_t ppu_addr, const uint64_t ppu_cycle);
 
+    // The board this cartridge is on, chosen by load() from the header's mapper
+    // id. Null until a cartridge is loaded, and every read/write path checks
+    // prg_rom/chr_rom emptiness before dereferencing it - loaded() is defined as
+    // "prg_rom is not empty", so the two cannot disagree.
+    std::unique_ptr<Mapper> mapper;
+
     // How many 8KB PRG banks and 1KB CHR banks the cartridge carries. MMC3
     // indexes in those units, unlike UNROM's 16KB and CNROM's 8KB.
     uint16_t prg_8k_bank_count = 0;
@@ -161,22 +169,13 @@ public:
     std::vector<uint8_t> prg_rom;
     std::vector<uint8_t> chr_rom;
 
-private:
-    // Which 1KB CHR bank the given PPU address currently reads through, and
-    // which 8KB PRG bank the given CPU address does. Split out because both are
-    // pure functions of the register file and the mode bits, and are far easier
-    // to test and to reason about than the same arithmetic inlined into
-    // chr_read()/read().
-    uint16_t mmc3_chr_bank_for(const uint16_t ppu_addr) const;
-    uint16_t mmc3_prg_bank_for(const uint16_t cpu_addr) const;
-
-    // One filtered rising edge of A12: reload or decrement, then decide whether
-    // to pull /IRQ low. Split out from mmc3_observe_a12 so the edge DETECTION
-    // and the counter SEMANTICS can be read - and mutated - independently.
-    void mmc3_clock_irq_counter();
-
     // Pushes mmc3_irq_asserted onto the CPU's cartridge /IRQ bit. Every path
     // that can change the assertion goes through here, so there is one place
     // where the wire is driven rather than four.
+    //
+    // Public rather than private because load() and Mmc3 both drive it, and
+    // because the alternative - friending Mmc3 to reach a private method - buys
+    // nothing: the Bus pointer it needs is Device's, so the encapsulation being
+    // protected here is not this class's to keep.
     void mmc3_update_irq_line();
 };

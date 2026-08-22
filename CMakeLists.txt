@@ -170,6 +170,7 @@ add_library(libBus
     src/bus.cpp
     src/device.cpp
     src/rom.cpp
+    src/mapper.cpp
     src/apu.cpp
 )
 
