@@ -51,6 +51,7 @@ constexpr const char* kFetch = "run tests/test_files/fetch_holy_mapperel.sh";
 //   M1_P512K_S8K       166    M1_P512K_S32K       166
 //   M4_P128K            87    M4_P256K_C256K       22
 //   M0_P32K_C8K_V       14    M3_P32K_C32K_H       14    M2_P128K_V           85
+//   M7_P128K            85
 //
 // One line splits the whole table: CHR-RAM images pay for a write-and-verify
 // sweep of the RAM and CHR-ROM ones skip it. That is why M2_P128K_V takes 85
@@ -345,6 +346,27 @@ const Expected kDiscreteRoms[] = {
 INSTANTIATE_TEST_SUITE_P(Discrete,
                          HolyMapperel,
                          ::testing::ValuesIn(kDiscreteRoms),
+                         [](const ::testing::TestParamInfo<Expected>& info) { return std::string(info.param.name); });
+
+// AxROM, and the board name is the whole test.
+//
+// Holy Mapperel identifies a board by writing mirroring and seeing where the
+// nametables land. AxROM is the case where BOTH answers are one screen and the
+// register picks which - so "007" is not a label the ROM read off the header,
+// it is bit 4 of the latch demonstrably moving all four nametable slots
+// together. The same probe reported "002 UNROM" for an MMC3 with an inverted
+// mirroring bit, which is how much weight this one field carries.
+//
+// ANROM rather than AOROM is the size detection: AOROM is the 256KB variant and
+// this image is 128KB, so the ROM walked the bank tags and got the right answer
+// through a 32KB window with no fixed half to stand on.
+const Expected kAxRomRoms[] = {
+    {"M7_P128K", "007 ANROM", "128K PRG ROM", "PRG RAM MISSING", "8K CHR RAM OK", "0000"},
+};
+
+INSTANTIATE_TEST_SUITE_P(Mapper7,
+                         HolyMapperel,
+                         ::testing::ValuesIn(kAxRomRoms),
                          [](const ::testing::TestParamInfo<Expected>& info) { return std::string(info.param.name); });
 
 INSTANTIATE_TEST_SUITE_P(Mapper1,

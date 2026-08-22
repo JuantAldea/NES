@@ -12,7 +12,8 @@ picture on screen, and the controllers work. A mapper 0, 1, 2, 3 or 4 game
 should draw and respond to input - Super Mario Bros plays, and the 240p Test
 Suite runs. MMC3 brings the scanline IRQ counter that raster splits need, and
 MMC1 brings the SxROM family, which is most of the Nintendo-published library.
-There is still no audio.
+AxROM (7) passes its test ROM but no game has been run on it. There is still no
+audio.
 
 | Area | State |
 |---|---|
@@ -21,8 +22,9 @@ There is still no audio.
 | PPU address space | Pattern tables, nametable and palette mirroring, `$2007` buffer, OAM, open-bus decay |
 | PPU background | Loopy `v`/`t`/`x`/`w`, dot-exact tile pipeline, framebuffer of palette indices + emphasis |
 | Sprites | Secondary OAM, per-dot evaluation, 8-per-line, the overflow search bug, priority, 8x16, flip. Passes blargg's 5 `sprite_overflow` and 11 `sprite_hit` ROMs |
-| Cartridge | iNES **and NES 2.0**, NROM (0), MMC1 (1), UNROM (2), CNROM (3) and MMC3 (4), CHR-ROM and CHR-RAM. All five verified against Holy Mapperel - fourteen images, every board identified, every detail code `0000` |
+| Cartridge | iNES **and NES 2.0**, NROM (0), MMC1 (1), UNROM (2), CNROM (3), MMC3 (4) and AxROM (7), CHR-ROM and CHR-RAM. All six verified against Holy Mapperel - fifteen images, every board identified, every detail code `0000` |
 | MMC1 | Serial shift register, all four PRG modes, both CHR modes (ROM *and* RAM), runtime mirroring including one-screen, work-RAM disable and banking, SUROM's PRG A18, SXROM's 32KB work RAM. All nine mapper-1 Holy Mapperel images identify their board - SGROM, SFROM, SJROM, SLROM, SKROM, SUROM, SXROM - and report detail code `0000` |
+| AxROM | One 32KB PRG window with no fixed half, and runtime one-screen mirroring. `M7_P128K` identifies as ANROM and reports `0000` |
 | MMC3 | PRG/CHR banking in 8KB/1KB units, runtime mirroring, PRG-RAM gating, CHR-RAM banking. Both mapper-4 Holy Mapperel images identify as TGROM and TLROM and report `0000` |
 | MMC3 IRQ | A12-filtered scanline counter driving `/IRQ`, clocked on the right dot. Passes 5 of blargg's 6 `mmc3_test_2` ROMs; the sixth tests the other chip revision, see below |
 | APU | Frame counter, `/IRQ`, length counters, the power-on/RESET state. Delta modulation channel, minus its CPU stall. Passes **all** of blargg's `apu_test`, `apu_reset` and `blargg_apu_2005` ROMs. No audio output yet. |

@@ -152,6 +152,25 @@ std::string check_mmc3(const size_t prg_16k_banks, const size_t chr_8k_banks)
     return {};
 }
 
+std::string check_axrom(const size_t prg_16k_banks, const size_t chr_8k_banks)
+{
+    // No CHR-ROM: CHR-RAM is the pattern memory, as on UNROM.
+    if (chr_8k_banks != 0) {
+        return "AxROM has no CHR-ROM, header advertises " + std::to_string(chr_8k_banks) + " bank(s)";
+    }
+    // It switches 32KB at a time, so the header's 16KB count has to be even -
+    // and a power of two once halved, because prg_read masks with the bank
+    // count rather than dividing. Real boards are 32KB to 256KB, which is 1 to
+    // 8 banks of 32KB. A 96KB image would make that mask ambiguous and is not a
+    // size any AxROM cartridge was made in.
+    const size_t banks32 = prg_16k_banks / 2;
+    if (prg_16k_banks % 2 != 0 || banks32 == 0 || banks32 > 8 || (banks32 & (banks32 - 1)) != 0) {
+        return "AxROM requires 2, 4, 8 or 16 PRG-ROM banks (32KB to 256KB in 32KB steps), header advertises " +
+               std::to_string(prg_16k_banks);
+    }
+    return {};
+}
+
 struct Board {
     MapperId id;
     std::unique_ptr<Mapper> (*make)(ROM&);
@@ -161,7 +180,7 @@ struct Board {
 const Board kBoards[] = {
     {MapperId::nrom, construct<NRom>, check_nrom},    {MapperId::mmc1, construct<Mmc1>, check_mmc1},
     {MapperId::uxrom, construct<UnRom>, check_uxrom}, {MapperId::cnrom, construct<CnRom>, check_cnrom},
-    {MapperId::mmc3, construct<Mmc3>, check_mmc3},
+    {MapperId::mmc3, construct<Mmc3>, check_mmc3},    {MapperId::axrom, construct<AxRom>, check_axrom},
 };
 
 const Board* find_board(const MapperId id)
@@ -465,6 +484,56 @@ void CnRom::cpu_write(const uint16_t addr, const uint8_t data)
 
 // PRG behaves exactly as NROM's does.
 uint8_t CnRom::prg_read(const uint16_t addr) const { return rom.prg_rom[(addr - 0x8000) % rom.prg_rom.size()]; }
+
+// --- AxROM (7) --------------------------------------------------------------
+
+AxRom::AxRom(ROM& cartridge) : Mapper{cartridge}
+{
+    // The board is physically one-screen: CIRAM A10 comes from a register bit,
+    // not from a PPU address line, so the iNES header's horizontal/vertical bit
+    // describes nothing that exists here. Overriding it at construction rather
+    // than waiting for the first register write is what stops the PPU spending
+    // the first frames mirroring a way this cartridge cannot be wired.
+    //
+    // Lower rather than upper because bank_select powers up at 0 and bit 4 is
+    // the screen select; hardware does not specify the power-on value, but the
+    // register and the field have to agree and 0 is what the register holds.
+    rom.mirroring = ROM::Mirroring::single_screen_lower;
+}
+
+// One latch, from a write anywhere in cartridge space - the board decodes
+// nothing finer.
+//
+// Bus conflicts are not modelled, the same call UNROM and CNROM make and for a
+// stronger reason here: AOROM uses a 74HC161 with a '32 to gate the ROM's
+// output, so it genuinely has none. ANROM and AMROM do, and cartridges written
+// for them avoid the hazard by storing the bank number at the address they
+// write to, which makes the AND a no-op for correct software either way.
+void AxRom::cpu_write(const uint16_t addr, const uint8_t data)
+{
+    if (addr < 0x8000) {
+        return;
+    }
+
+    bank_select = data;
+
+    // Bit 4, live: PPU::nametable_offset reads ROM::mirroring on every access,
+    // so switching screens needs nothing else told.
+    rom.mirroring = (data & 0x10) ? ROM::Mirroring::single_screen_upper : ROM::Mirroring::single_screen_lower;
+}
+
+uint8_t AxRom::prg_read(const uint16_t addr) const
+{
+    // prg_bank_count is in 16KB units because that is what the iNES header
+    // counts; this board switches 32KB at a time, so halve it. The load-time
+    // check guarantees the result is a non-zero power of two, which is what
+    // makes the mask below the whole of the decoding - a real board decodes
+    // only as many bank lines as it has banks.
+    const uint32_t banks = rom.prg_bank_count / 2u;
+    const uint32_t bank = (bank_select & 0x07u) & (banks - 1u);
+
+    return rom.prg_rom[bank * 32u * 1024u + (addr & 0x7FFFu)];
+}
 
 // --- MMC3 (4) ---------------------------------------------------------------
 

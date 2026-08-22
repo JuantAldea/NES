@@ -1,5 +1,5 @@
 #!/bin/sh
-# Fetches fourteen builds of Damian Yerrick's Holy Mapperel - an NES cartridge
+# Fetches fifteen builds of Damian Yerrick's Holy Mapperel - an NES cartridge
 # manufacturing test, and the only MMC1 oracle in reach that reports a verdict
 # rather than asking a human to look at it. Nine mapper-1 images, and two
 # mapper-4 ones covering ground no MMC3 ROM here reaches (see MAPPER 4 below).
@@ -172,6 +172,40 @@
 # - nametable mirroring and CHR-RAM addressing - neither of which any other MMC3
 # oracle here reaches.
 #
+# MAPPER 7. M7_P128K is the oracle AxROM was written against, and unlike every
+# other image here it was fetched BEFORE the board existed rather than to check
+# one that already did.
+#
+#   image        header                          what it exercises
+#   M7_P128K     128K PRG, 8K CHR-RAM, NES2.0    ANROM
+#
+# MEASURED BEFORE, with no mapper 7 at all:
+#
+#   ROM: mapper 7 (AxROM) is not supported
+#
+# That message is worth recording as the baseline even though it is only a
+# rejection: it is the naming table in mapper.cpp doing its job, and the reason
+# the enum carries forty entries when five have boards.
+#
+# MEASURED AFTER, first run, nothing adjusted:
+#
+#   image        board reported  PRG    work RAM  CHR           detail  settled
+#   M7_P128K     007 ANROM       128K   MISSING   8K RAM OK     0000    frame 85
+#
+# THE BOARD LINE IS THE TEST, more here than anywhere else in this suite.
+# Detection works by writing mirroring and observing where the nametables land,
+# and AxROM is the board where both answers are ONE SCREEN with a register bit
+# choosing which. So "007" is not a label read off the header - it is bit 4 of
+# the latch demonstrably moving all four nametable slots together. The same
+# probe is what reported "002 UNROM" for an MMC3 whose mirroring bit was
+# inverted.
+#
+# ANROM rather than AOROM is the size detection: AOROM is the 256KB variant, and
+# getting 128KB right means the ROM walked the bank tags through a 32KB window
+# with no fixed half to stand on. AxROM is the only board here with no fixed PRG
+# bank at all - the vectors are switchable, so the cartridge has to replicate
+# its handlers in every bank, and reproducing the board means reproducing that.
+#
 # THE THREE DISCRETE BOARDS - M0, M2, M3 - AND A CLEAN RESULT.
 #
 # Added last, and on a base rate rather than a suspicion: this oracle had been
@@ -227,7 +261,8 @@ M1_P128K_C128K_W8K 5065edcfaff5e0b4518f96c7b4e12889f6cc47f82bbedabd80cd3e07d33fe
 M1_P512K_S8K a68997cca022e1fdbd0773d847f3d49a3c18af2ee4eb187d31655e27a7cff34a
 M1_P512K_S32K c5bfaa5c2f318295b167da8f9b5b4d32e47a8be080c92cc6d7bc2c63eaabadc9
 M4_P128K acf96ad58b8fef57ae80b0d18f2dbb9aed3bb4447f6d6ee3e793c011f08b9481
-M4_P256K_C256K c5dca47517d1cdb5cc252382802418253b8edf1a0cbff6c6b60b62ba2b6317ca"
+M4_P256K_C256K c5dca47517d1cdb5cc252382802418253b8edf1a0cbff6c6b60b62ba2b6317ca
+M7_P128K 6161a17001ba7d0345d6650d799994832d62990fd545c3c3a054015604de6f83"
 
 echo "$ROMS" | while read -r name want; do
     [ -n "$name" ] || continue
@@ -259,8 +294,8 @@ echo "$ROMS" | while read -r name want; do
 done
 
 count=$(ls "$DEST" | wc -l | tr -d ' ')
-if [ "$count" -ne 14 ]; then
-    echo "incomplete: $count/14 files present in $DEST" >&2
+if [ "$count" -ne 15 ]; then
+    echo "incomplete: $count/15 files present in $DEST" >&2
     exit 1
 fi
 

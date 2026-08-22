@@ -256,6 +256,33 @@ public:
     uint8_t prg_read(const uint16_t addr) const override;
 };
 
+// AxROM (7): one 32KB PRG window covering the whole of $8000-$FFFF, and
+// one-screen mirroring the game picks at runtime.
+//
+// It is the only board here with NO fixed PRG bank. Every other mapper wires
+// part of the address space down so the vectors at $FFFA-$FFFF survive a bank
+// switch; AxROM switches all 32KB at once, so an AxROM game has to keep a copy
+// of its vectors and its interrupt handlers in every bank. That is a constraint
+// on the cartridge, not on the emulator, and it is why nothing here fixes a
+// half - reproducing the board means reproducing the hazard.
+//
+// One-screen mirroring is the other half. AxROM ties CIRAM A10 to a register
+// bit instead of to a PPU line, so all four nametable slots show the same
+// screen and the game chooses which. That is exactly the mode MMC1 already
+// needed, which is why this board costs a register and no new PPU work.
+class AxRom final : public Mapper
+{
+public:
+    explicit AxRom(ROM& rom);
+
+    void cpu_write(const uint16_t addr, const uint8_t data) override;
+    uint8_t prg_read(const uint16_t addr) const override;
+
+    // The single register, latched from the data of a write anywhere in
+    // $8000-$FFFF. Bits 0-2 are the 32KB bank; bit 4 chooses the screen.
+    uint8_t bank_select = 0;
+};
+
 // MMC3 (4): eight bank registers behind a select/data pair, runtime mirroring,
 // PRG-RAM gating, and an IRQ counter clocked by PPU A12. The register semantics
 // are documented on the fields in rom.h, which is still where they live.
