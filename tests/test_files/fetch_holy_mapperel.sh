@@ -78,7 +78,7 @@
 #   M1_P128K_C128K_S8K   SKROM  128K   8K OK             128K ROM OK     0000
 #   M1_P128K_C128K_W8K   SKROM  128K   8K OK             128K ROM OK     0000
 #   M1_P512K_S8K         SUROM  512K   8K OK             8K RAM OK       0000
-#   M1_P512K_S32K        SUROM  512K   8K OK  (want 32K) 8K RAM OK       0000
+#   M1_P512K_S32K        SXROM  512K   32K OK            8K RAM OK       0000
 #
 # Every board is identified correctly, which is the load-bearing line: the ROM
 # works out which SxROM it is on purely from how the mapper answers, so a right
@@ -101,12 +101,19 @@
 #   same mapper CHR address lines as CHR-ROM, so MMC1 in 4KB mode pages an 8KB
 #   chip as two halves. It goes through Mapper::chr_offset now.
 #
-#   NOT FIXED: M1_P512K_S32K reports 8K of work RAM where its header says 32K.
-#   That is the console rather than the mapper - PrgRAM is a fixed 8KB Bus
-#   device, so SXROM's four switchable banks have nowhere to live. Pinned
-#   exactly in tests/holy_mapperel_tests.cpp, the way opcode $AB is pinned in
-#   tests/instr_test_roms.cpp, so closing it surfaces as a distinct message
-#   instead of a row everyone has learned to expect red.
+#   ALSO FIXED, later: M1_P512K_S32K reported 8K of work RAM where its header
+#   says 32K, and called itself SUROM. That was the console rather than the
+#   mapper - PrgRAM was an 8KB Bus device, sized to the $6000-$7FFF WINDOW
+#   rather than to the board, so SXROM's four switchable 8KB banks had nowhere
+#   to live. The device is 32KB now and MMC1 selects the bank from CHR register
+#   bits 2-3, with ROM::prg_ram_offset folding every access into the size the
+#   header declares so an 8KB board still cannot reach past its one chip.
+#
+#   The board name is the evidence, not the size line. Both 512K images are
+#   SUROM as far as the PRG side can tell; SXROM is SUROM plus banked work RAM,
+#   and the ROM can only tell them apart by writing tags to all four banks and
+#   reading them back. M1_P512K_S8K stays SUROM with 8K, which is the fold
+#   working.
 #
 # Settle frames were measured too and live next to kMaxFrames in that file.
 #

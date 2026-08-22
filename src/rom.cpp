@@ -238,6 +238,32 @@ uint8_t ROM::chr_read(const uint16_t addr) const
 // CHR-ROM oracle can see that.
 uint32_t ROM::chr_ram_offset(const uint16_t addr) const { return mapper ? mapper->chr_offset(addr) : (addr & 0x1FFF); }
 
+// The board's work-RAM banking, folded into the RAM the cartridge declares.
+//
+// The fold is the interesting half. An 8KB board's upper bank lines go nowhere,
+// so a mapper selecting bank 3 on one still reads its single chip - and doing
+// that here, once, rather than in each override, is what stops a board indexing
+// RAM it does not have. NROM through MMC3 take the flat default and are
+// unaffected either way.
+//
+// Volatile and battery-backed sizes are summed. No SxROM board carries both,
+// but NES 2.0 can describe one, and summing is the reading that gives such a
+// cartridge all of its RAM rather than silently half.
+uint16_t ROM::prg_ram_offset(const uint16_t addr) const
+{
+    const uint32_t raw = mapper ? mapper->prg_ram_offset(addr) : static_cast<uint32_t>(addr - 0x6000);
+    const uint32_t declared = prg_ram_size + prg_nvram_size;
+
+    // Bus::decode consults has_prg_ram() before ever reaching here, so this
+    // cannot be zero on a live path. Guarded anyway, because the alternative to
+    // a wrong byte is a modulo by zero.
+    const uint32_t folded = declared == 0 ? 0 : raw % declared;
+
+    // And never past the array, whatever a header claims: NES 2.0 can encode
+    // 2MB of work RAM, which no board carries and this device does not have.
+    return static_cast<uint16_t>(folded % PrgRAM::SIZE);
+}
+
 // A change on PPU address line A12. Only the MMC3 has the wire; Mapper's
 // default override is what makes that true of three boards without them saying
 // so.

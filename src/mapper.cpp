@@ -210,6 +210,9 @@ uint32_t Mapper::chr_offset(const uint16_t ppu_addr) const
     return static_cast<uint32_t>(rom.chr_bank) * CHR_ROM_BANK_SIZE + (ppu_addr & 0x1FFF);
 }
 
+// One 8KB chip behind the window, which is every board but SOROM and SXROM.
+uint16_t Mapper::prg_ram_offset(const uint16_t cpu_addr) const { return static_cast<uint16_t>(cpu_addr - 0x6000); }
+
 // --- NROM (0) ---------------------------------------------------------------
 
 // Nothing to latch. NROM PRG-ROM is not writable and the board decodes no
@@ -395,6 +398,28 @@ uint32_t Mmc1::chr_offset(const uint16_t ppu_addr) const
 }
 
 uint8_t Mmc1::prg_read(const uint16_t addr) const { return rom.prg_rom[prg_bank_offset(addr)]; }
+
+uint16_t Mmc1::prg_ram_offset(const uint16_t cpu_addr) const
+{
+    // SOROM and SXROM carry 16KB and 32KB of work RAM, more than the
+    // $6000-$7FFF window shows, and select the 8KB bank with bits 2-3 of the
+    // CHR register that drives the $0000 window - the same register whose bit 4
+    // supplies PRG A18 on SUROM. One register, three jobs, because MMC1 ran out
+    // of pins long before it ran out of things to switch.
+    //
+    // chr_reg[0] specifically, in both CHR modes. In 8KB mode it is the only
+    // CHR register that does anything; in 4KB mode it is the one driving
+    // $0000, which is how NESdev specifies the WRAM select and how the PRG A18
+    // select above already reads it.
+    //
+    // No clamp here: a board with one 8KB chip leaves these lines unconnected,
+    // and ROM::prg_ram_offset folding to the declared size is what reproduces
+    // that. Masking here as well would state the same rule in two places and
+    // make the SUROM case - 512KB PRG, 8KB WRAM, bits 2-3 live for neither -
+    // silently depend on which clamp ran first.
+    const uint32_t bank = (chr_reg[0] >> 2) & 0x03;
+    return static_cast<uint16_t>(bank * 8 * 1024 + (cpu_addr & 0x1FFF));
+}
 
 // --- UNROM (2) --------------------------------------------------------------
 

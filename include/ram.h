@@ -43,4 +43,15 @@ public:
 };
 
 using SystemRAM = RAM<2 * 1024>;
-using PrgRAM = RAM<8 * 1024>;
+
+// 32KB, not the 8KB the $6000-$7FFF window shows at once. SOROM and SXROM carry
+// 16KB and 32KB of work RAM and page it through that window, so a device sized
+// to the window cannot hold what the board has - Holy Mapperel's M1_P512K_S32K
+// reported 8KB against a header declaring 32KB for exactly that reason.
+//
+// Sizing to the largest board and letting ROM::prg_ram_offset fold every access
+// into the cartridge's REAL size is what keeps a smaller cartridge honest: an
+// 8KB board's bank lines are not connected, so a bank select there has to wrap
+// back onto the single chip rather than reach the other 24KB. That fold is the
+// enforcement, not this number.
+using PrgRAM = RAM<32 * 1024>;

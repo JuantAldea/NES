@@ -214,13 +214,18 @@ const Expected kRoms[] = {
     {"M1_P128K_C128K", "001 SLROM (MMC1)", "128K PRG ROM", "PRG RAM MISSING", "128K CHR ROM OK", "0000"},
     {"M1_P128K_C128K_S8K", "001 SKROM (MMC1)", "128K PRG ROM", "8K PRG RAM OK", "128K CHR ROM OK", "0000"},
     {"M1_P128K_C128K_W8K", "001 SKROM (MMC1)", "128K PRG ROM", "8K PRG RAM OK", "128K CHR ROM OK", "0000"},
-    // Both SUROMs report 8K of work RAM. For _S8K that is correct; for _S32K it
-    // is not, and the reason is the console rather than the mapper - PrgRAM is
-    // a fixed 8KB Bus device, so SXROM's four switchable 8KB banks have nowhere
-    // to live. Recorded as measured; banking it is a separate change with its
-    // own oracle row waiting here for it.
+    // The last two differ only in work RAM, and the BOARD NAMES are the check
+    // that matters. Both images declare 512K of PRG, so both are SUROM as far
+    // as the PRG side can tell; SXROM is SUROM plus 32K of banked work RAM, and
+    // the only way the ROM can tell them apart is by writing tags to all four
+    // 8KB banks and reading them back. So "SXROM" on the second row is not a
+    // relabelling of the first - it is the banking working, stated in the one
+    // field that cannot be satisfied by getting the header right.
+    //
+    // Both read 8K and SUROM until PrgRAM stopped being an 8KB device sized to
+    // the window rather than to the board.
     {"M1_P512K_S8K", "001 SUROM (MMC1)", "512K PRG ROM", "8K PRG RAM OK", "8K CHR RAM OK", "0000"},
-    {"M1_P512K_S32K", "001 SUROM (MMC1)", "512K PRG ROM", "8K PRG RAM OK", "8K CHR RAM OK", "0000"},
+    {"M1_P512K_S32K", "001 SXROM (MMC1)", "512K PRG ROM", "32K PRG RAM OK", "8K CHR RAM OK", "0000"},
 };
 
 // The two mapper-4 builds. These were added to settle one specific question -

@@ -114,7 +114,10 @@ Bus::DecodedAddress Bus::decode(const uint16_t addr, const Access access)
         if (access == Access::Write && rom.prg_ram_write_protected) {
             return {nullptr, addr};
         }
-        return {&prg_ram, static_cast<uint16_t>(addr - 0x6000)};
+        // Not addr - 0x6000: SOROM and SXROM carry more work RAM than the
+        // window shows and page it with MMC1 CHR register bits 2-3, so where
+        // the byte lives is the cartridge's answer to give, not the Bus's.
+        return {&prg_ram, rom.prg_ram_offset(addr)};
     }
 
     return {&rom, addr};

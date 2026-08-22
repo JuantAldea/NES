@@ -129,6 +129,15 @@ public:
     // always 0 on the first two.
     virtual uint32_t chr_offset(const uint16_t ppu_addr) const;
 
+    // Where a CPU address in $6000-$7FFF lands in the cartridge's work RAM.
+    // Defaults to the flat window, which is every board that carries a single
+    // 8KB chip - only MMC1's SOROM and SXROM page more than the window shows.
+    //
+    // Returned unclamped: ROM::prg_ram_offset folds it into the size the header
+    // declares, so a board cannot reach RAM it does not have and no override
+    // has to repeat the bound.
+    virtual uint16_t prg_ram_offset(const uint16_t cpu_addr) const;
+
     // PPU address line A12, watched for the MMC3's scanline counter. A default
     // rather than a pure virtual because three of the four boards genuinely do
     // not have the wire - making them each write an empty override would state
@@ -164,6 +173,7 @@ public:
     void cpu_write(const uint16_t addr, const uint8_t data) override;
     uint8_t prg_read(const uint16_t addr) const override;
     uint32_t chr_offset(const uint16_t ppu_addr) const override;
+    uint16_t prg_ram_offset(const uint16_t cpu_addr) const override;
 
     // The serial port. Five writes carrying one bit each in bit 0 fill this,
     // and the fifth commits it to whichever register the LAST write's address

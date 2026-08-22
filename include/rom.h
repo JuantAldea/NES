@@ -77,6 +77,12 @@ public:
     // definition.
     uint32_t chr_ram_offset(const uint16_t addr) const;
 
+    // Where a CPU address in $6000-$7FFF lands in the work RAM, after the
+    // board's banking and after folding into the size the cartridge actually
+    // declares. Bus::decode calls it; PrgRAM is a plain memory device and knows
+    // nothing about either step.
+    uint16_t prg_ram_offset(const uint16_t addr) const;
+
     MapperId mapper_id = MapperId::nrom;
     Mirroring mirroring = Mirroring::horizontal;
 

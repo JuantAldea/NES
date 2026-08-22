@@ -22,7 +22,8 @@ There is still no audio.
 | PPU background | Loopy `v`/`t`/`x`/`w`, dot-exact tile pipeline, framebuffer of palette indices + emphasis |
 | Sprites | Secondary OAM, per-dot evaluation, 8-per-line, the overflow search bug, priority, 8x16, flip. Passes blargg's 5 `sprite_overflow` and 11 `sprite_hit` ROMs |
 | Cartridge | iNES **and NES 2.0**, NROM (0), MMC1 (1), UNROM (2), CNROM (3) and MMC3 (4), CHR-ROM and CHR-RAM |
-| MMC1 | Serial shift register, all four PRG modes, both CHR modes (ROM *and* RAM), runtime mirroring including one-screen, work-RAM disable, SUROM's PRG A18. All nine mapper-1 Holy Mapperel images identify the board correctly and report detail code `0000`; the one row still short is SXROM's 32KB work RAM, see below |
+| MMC1 | Serial shift register, all four PRG modes, both CHR modes (ROM *and* RAM), runtime mirroring including one-screen, work-RAM disable and banking, SUROM's PRG A18, SXROM's 32KB work RAM. All nine mapper-1 Holy Mapperel images identify their board - SGROM, SFROM, SJROM, SLROM, SKROM, SUROM, SXROM - and report detail code `0000` |
+| MMC3 | PRG/CHR banking in 8KB/1KB units, runtime mirroring, PRG-RAM gating, CHR-RAM banking. Both mapper-4 Holy Mapperel images identify as TGROM and TLROM and report `0000` |
 | MMC3 IRQ | A12-filtered scanline counter driving `/IRQ`, clocked on the right dot. Passes 5 of blargg's 6 `mmc3_test_2` ROMs; the sixth tests the other chip revision, see below |
 | APU | Frame counter, `/IRQ`, length counters, the power-on/RESET state. Delta modulation channel, minus its CPU stall. Passes **all** of blargg's `apu_test`, `apu_reset` and `blargg_apu_2005` ROMs. No audio output yet. |
 | Display | SDL2 + Dear ImGui: the screen and the debugger in one window |
@@ -77,13 +78,18 @@ Sharp boards and that is what real games depend on.
 `tests/mmc3_rom_tests.cpp` pins `6-MMC3_alt`'s exact status and message, so a
 change in *how* it fails still surfaces.
 
-`M1_P512K_S32K` reports 8KB of work RAM where its header says 32KB, because
-`PrgRAM` is a fixed 8KB Bus device and SXROM's four switchable banks have
-nowhere to live. It is pinned exactly in `tests/holy_mapperel_tests.cpp`, so
-closing it - or breaking a board that passes today - surfaces as a distinct
-message. Every other row of all nine mapper-1 images reads clean.
+Every row of all eleven Holy Mapperel images now reads clean, so nothing from
+that suite is listed here as outstanding. Two entries that used to be are worth
+keeping, because of how each was found.
 
-That file's neighbour in this list used to be the three **CHR-RAM** boards
+`M1_P512K_S32K` reported 8KB of work RAM against a 32KB header, and called
+itself SUROM. `PrgRAM` was an 8KB device sized to the `$6000-$7FFF` **window**
+rather than to the board, so SXROM's four switchable banks had nowhere to live.
+The board name was the tell: both 512KB images are SUROM as far as the PRG side
+can see, and the only way the ROM distinguishes SXROM is by writing tags to all
+four banks and reading them back.
+
+The other was the three **CHR-RAM** boards
 reporting detail code `0003` while the six CHR-ROM boards read `0000`, and how
 it was closed is worth keeping. CHR-RAM was indexed flat, `chr_ram[addr]`,
 because the array lives in the PPU and the comment there called it RAM "the
