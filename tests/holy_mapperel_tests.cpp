@@ -1,5 +1,6 @@
-// Damian Yerrick's Holy Mapperel, the mapper-1 builds - the oracle MMC1 is
-// implemented against.
+// Damian Yerrick's Holy Mapperel - the oracle MMC1 is implemented against, and
+// since the two mapper-4 builds were added, the only test here that checks an
+// MMC3 answers mirroring writes the way the hardware does. See kMapper4Roms.
 //
 // WHY THIS SUITE AND NOT MMC1_A12. nes-test-roms carries an MMC1 test that
 // looks like the obvious choice and is not usable: it asks a human to walk a
@@ -44,9 +45,13 @@ constexpr const char* kFetch = "run tests/test_files/fetch_holy_mapperel.sh";
 //   M1_P128K_C32K_S8K   92    M1_P128K_C32K_W8K    92
 //   M1_P128K_C128K_S8K  93    M1_P128K_C128K_W8K   93
 //   M1_P512K_S8K       166    M1_P512K_S32K       166
+//   M4_P128K            87    M4_P256K_C256K       22
 //
 // The two CHR-ROM images without work RAM settle in 15 because they skip both
 // RAM sweeps; the SUROMs take 166 because 512KB is four times the PRG to walk.
+// The M4 pair splits the same way and for the same reason - M4_P128K is CHR-RAM
+// and pays for the sweep, M4_P256K_C256K is CHR-ROM and skips it - which is why
+// the larger ROM is the faster of the two.
 // The cap is a bit over 2x the slowest, and the loop still waits for the line
 // to hold steady rather than trusting any of these numbers - so the cap only
 // turns a hang into a diagnosis instead of a stalled suite.
@@ -108,6 +113,20 @@ std::string find_row(const std::vector<std::string>& rows, const std::string& ne
         }
         const size_t start = row.find_first_not_of(' ');
         return row.substr(start == std::string::npos ? 0 : start);
+    }
+    return {};
+}
+
+// The board line, trimmed. Holy Mapperel draws the report block first and the
+// board is its top line, so this finds it without assuming what the ROM decided
+// the board WAS - see the note at the EXPECT_EQ that uses it.
+std::string first_non_empty_row(const std::vector<std::string>& rows)
+{
+    for (const std::string& row : rows) {
+        const size_t start = row.find_first_not_of(' ');
+        if (start != std::string::npos) {
+            return row.substr(start);
+        }
     }
     return {};
 }
@@ -198,6 +217,31 @@ const Expected kRoms[] = {
     {"M1_P512K_S32K", "001 SUROM (MMC1)", "512K PRG ROM", "8K PRG RAM OK", "8K CHR RAM OK", "0000"},
 };
 
+// The two mapper-4 builds. These were added to settle one specific question -
+// whether $A000 bit 0 selects vertical or horizontal - and they answered it on
+// the first run, which is the argument for reaching for an oracle instead of a
+// doc citation. Under the old polarity M4_P128K reported "002 UNROM": Holy
+// Mapperel identifies the board by writing mirroring and seeing where the
+// nametables land, so an inverted bit makes an MMC3 answer exactly like a
+// discrete mapper. M4_P256K_C256K never rendered a report at all.
+//
+// WHY THE EXISTING MMC3 SUITE MISSED IT. All six blargg mmc3_test_2 ROMs are
+// IRQ-counter tests: they write mirroring once during init and never read the
+// nametables back, so the bug survived a fully green mmc3_rom_tests.cpp. These
+// two rows are what closes that gap, and they cross-check the PRG and CHR
+// banking at the same time.
+//
+// M4_P128K's CHR digit is 3 - the SAME value the three MMC1 CHR-RAM boards
+// carry above, and that is worth more than a pinned number. The fault now
+// reproduces across two unrelated mappers, on every CHR-RAM image and on no
+// CHR-ROM image, which locates it in the console's shared CHR-RAM path rather
+// than in either mapper. M4_P256K_C256K is CHR-ROM and reports 0000, completing
+// the same pattern from the other side.
+const Expected kMapper4Roms[] = {
+    {"M4_P128K", "004 TGROM (MMC3)", "128K PRG ROM", "PRG RAM MISSING", "8K CHR RAM OK", "0003"},
+    {"M4_P256K_C256K", "004 TLROM (MMC3)", "256K PRG ROM", "PRG RAM MISSING", "256K CHR ROM OK", "0000"},
+};
+
 }  // namespace
 
 class HolyMapperel : public ::testing::TestWithParam<Expected>
@@ -231,7 +275,16 @@ TEST_P(HolyMapperel, reports_what_the_board_is_and_that_it_works)
     // SxROM boards it is on purely from how the mapper answers, so getting it
     // right means mirroring control, PRG banking and the size detection all
     // behaved. A wrong board name makes every line under it meaningless.
-    EXPECT_EQ(expected.board, find_row(run.rows, "(MMC1)")) << screen;
+    // The board line is located by POSITION, not by matching "(MMC1)" as this
+    // used to. A misidentified board is the single most informative failure this
+    // suite produces, and it is exactly the case a needle naming the expected
+    // chip cannot report: the mirroring-polarity bug made M4_P128K print
+    // "002 UNROM", which contains no "(MMC" at all, so the row would have come
+    // back empty and read as "the ROM printed nothing" - a hang - rather than
+    // "the ROM decided this was a different board". The report block is the
+    // first thing drawn, so the first non-blank row is the board line whatever
+    // the ROM concluded.
+    EXPECT_EQ(expected.board, first_non_empty_row(run.rows)) << screen;
     EXPECT_EQ(expected.prg, find_row(run.rows, "PRG ROM")) << screen;
     EXPECT_EQ(expected.wram, find_row(run.rows, "PRG RAM")) << screen;
     EXPECT_EQ(expected.chr, find_row(run.rows, "CHR R")) << screen;
@@ -241,6 +294,11 @@ TEST_P(HolyMapperel, reports_what_the_board_is_and_that_it_works)
 INSTANTIATE_TEST_SUITE_P(Mapper1,
                          HolyMapperel,
                          ::testing::ValuesIn(kRoms),
+                         [](const ::testing::TestParamInfo<Expected>& info) { return std::string(info.param.name); });
+
+INSTANTIATE_TEST_SUITE_P(Mapper4,
+                         HolyMapperel,
+                         ::testing::ValuesIn(kMapper4Roms),
                          [](const ::testing::TestParamInfo<Expected>& info) { return std::string(info.param.name); });
 
 }  // namespace holy_mapperel

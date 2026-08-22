@@ -171,6 +171,23 @@ GTEST_TEST(mmc3, chr_a12_inversion_swaps_the_two_halves_of_pattern_space)
 // is fixed at load. PPU::nametable_offset reads the flag live, so this works
 // with no PPU change - which is worth pinning, because it would otherwise look
 // like an accident.
+//
+// THE POLARITY IS THE POINT, and this test asserted it backwards for as long as
+// it existed - it was written from the implementation, so it restated the bug
+// instead of catching it. Bit 0 CLEAR is VERTICAL. That is the opposite of the
+// iNES header bit, which is why it is easy to get wrong in both directions at
+// once, and the wiki states it in ARRANGEMENT terms - "0: horizontal (A10);
+// 1: vertical (A11)" - where arrangement is the inverse of mirroring.
+//
+// The A10/A11 half of that row is the part no terminology can flip: bit 0 clear
+// routes CIRAM A10 from PPU A10, so A10 selects the screen and $2000/$2800
+// coincide. The addresses below are therefore the real assertion, and the
+// enum comparison is a convenience - if the naming is ever revisited, trust the
+// EXPECT_EQ pair and re-derive the ASSERT_EQ from it, not the other way round.
+//
+// Independently: FCEUX `setmirror((V & 1) ^ 1)` with MI_H = 0, Mesen2
+// `(RegA000 & 0x01) ? Horizontal : Vertical`, and Holy Mapperel M4_P128K, which
+// reported "002 UNROM" under the old polarity - see holy_mapperel_tests.cpp.
 GTEST_TEST(mmc3, a000_changes_mirroring_at_runtime)
 {
     BankedRom rom("mmc3_mirror.nes", 2, 1);
@@ -179,15 +196,17 @@ GTEST_TEST(mmc3, a000_changes_mirroring_at_runtime)
     ASSERT_TRUE(console.load_cartridge(rom.path));
 
     // Write a byte through one nametable and see where its mirror lands.
-    console.write(0xA000, 0x00);  // horizontal
-    ASSERT_EQ(ROM::Mirroring::horizontal, console.rom.mirroring);
-    ppu.ppu_bus_write(0x2000, 0x11);
-    EXPECT_EQ(0x11, ppu.ppu_bus_read(0x2400)) << "horizontal: $2000 and $2400 are the same screen";
-
-    console.write(0xA000, 0x01);  // vertical
+    console.write(0xA000, 0x00);  // bit 0 clear -> CIRAM A10 from PPU A10
     ASSERT_EQ(ROM::Mirroring::vertical, console.rom.mirroring);
+    ppu.ppu_bus_write(0x2000, 0x11);
+    EXPECT_EQ(0x11, ppu.ppu_bus_read(0x2800)) << "$A000 bit 0 clear: $2000 and $2800 are the same screen";
+    EXPECT_NE(0x11, ppu.ppu_bus_read(0x2400)) << "$A000 bit 0 clear: $2400 is a DIFFERENT screen";
+
+    console.write(0xA000, 0x01);  // bit 0 set -> CIRAM A10 from PPU A11
+    ASSERT_EQ(ROM::Mirroring::horizontal, console.rom.mirroring);
     ppu.ppu_bus_write(0x2000, 0x22);
-    EXPECT_EQ(0x22, ppu.ppu_bus_read(0x2800)) << "vertical: $2000 and $2800 are the same screen";
+    EXPECT_EQ(0x22, ppu.ppu_bus_read(0x2400)) << "$A000 bit 0 set: $2000 and $2400 are the same screen";
+    EXPECT_NE(0x22, ppu.ppu_bus_read(0x2800)) << "$A000 bit 0 set: $2800 is a DIFFERENT screen";
 }
 
 GTEST_TEST(mmc3, a001_records_the_prg_ram_protect_bits)

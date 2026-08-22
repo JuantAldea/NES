@@ -1,7 +1,8 @@
 #!/bin/sh
-# Fetches the nine mapper-1 builds of Damian Yerrick's Holy Mapperel - an NES
-# cartridge manufacturing test, and the only MMC1 oracle in reach that reports
-# a verdict rather than asking a human to look at it.
+# Fetches eleven builds of Damian Yerrick's Holy Mapperel - an NES cartridge
+# manufacturing test, and the only MMC1 oracle in reach that reports a verdict
+# rather than asking a human to look at it. Nine mapper-1 images, and two
+# mapper-4 ones covering ground no MMC3 ROM here reaches (see MAPPER 4 below).
 #
 # WHY NOT MMC1_A12. nes-test-roms carries MMC1_A12/mmc1_a12.nes, which is
 # mapper 1 and looks like the obvious choice. It is not an oracle: its screen
@@ -109,6 +110,47 @@
 #
 # Settle frames were measured too and live next to kMaxFrames in that file.
 #
+#
+# MAPPER 4. The two M4 images were added for a narrower reason than the nine
+# above: to decide whether MMC3 $A000 bit 0 selects vertical mirroring or
+# horizontal. The wiki gives the answer in ARRANGEMENT terms - "0: horizontal
+# (A10); 1: vertical (A11)" - and arrangement is the inverse of mirroring, so
+# reading that row as though it named a mirroring mode inverts the bit. This
+# emulator had it inverted, and no test noticed.
+#
+#   image                header                       what it exercises
+#   M4_P128K             128K PRG, 8K CHR-RAM, NES2.0  TGROM
+#   M4_P256K_C256K       256K PRG, 256K CHR-ROM, NES2.0  TLROM
+#
+# MEASURED BEFORE THE FIX, with $A000 bit 0 still reading clear-means-horizontal:
+#
+#   image             board reported   detail  settled
+#   M4_P128K          002 UNROM        0100    frame 85
+#   M4_P256K_C256K    (blank screen)   -       never, hit the 400-frame cap
+#
+# "002 UNROM" is the finding, not a crash. Holy Mapperel works out the board by
+# writing mirroring and observing where the nametables land, so an inverted bit
+# does not corrupt the test - it makes an MMC3 answer the detection probe the
+# way a discrete mapper would, and the ROM believes it. That is the failure mode
+# a doc citation cannot produce and an oracle gets on the first run.
+#
+# MEASURED AFTER, and this is what the test pins:
+#
+#   image             board reported     PRG         work RAM          CHR             detail
+#   M4_P128K          004 TGROM (MMC3)   128K PRG    MISSING           8K CHR RAM OK   0003
+#   M4_P256K_C256K    004 TLROM (MMC3)   256K PRG    MISSING           256K CHR ROM OK 0000
+#
+# The 0003 on M4_P128K is NOT a new defect. It is the same CHR digit the three
+# MMC1 CHR-RAM boards report above, now reproduced on a second, unrelated
+# mapper - every CHR-RAM image in the suite fails it and every CHR-ROM image
+# passes, across both mappers. That pattern is what moves the fault out of MMC1
+# and into the console's shared CHR-RAM path, and it is why adding these two
+# rows was worth more than the one question they were fetched to answer.
+#
+# WHY blargg's mmc3_test_2 DID NOT CATCH THIS. All six of those ROMs test the
+# IRQ counter. They write $A000 once during init and never read the nametables
+# back, so mmc3_rom_tests.cpp was fully green with the polarity reversed.
+#
 # Not committed: redistributable-but-unlicensed dumps, SHA256-pinned.
 #
 # Usage: tests/test_files/fetch_holy_mapperel.sh
@@ -128,7 +170,9 @@ M1_P128K_C128K 56497c054cfddafc93120fb25d85a7659f9f31ebe35f3304e966cad6edfa053c
 M1_P128K_C128K_S8K 1b90e96b17f373637114b59e78e379d6e7a776dc5477d60010df172c3c486687
 M1_P128K_C128K_W8K 5065edcfaff5e0b4518f96c7b4e12889f6cc47f82bbedabd80cd3e07d33fe212
 M1_P512K_S8K a68997cca022e1fdbd0773d847f3d49a3c18af2ee4eb187d31655e27a7cff34a
-M1_P512K_S32K c5bfaa5c2f318295b167da8f9b5b4d32e47a8be080c92cc6d7bc2c63eaabadc9"
+M1_P512K_S32K c5bfaa5c2f318295b167da8f9b5b4d32e47a8be080c92cc6d7bc2c63eaabadc9
+M4_P128K acf96ad58b8fef57ae80b0d18f2dbb9aed3bb4447f6d6ee3e793c011f08b9481
+M4_P256K_C256K c5dca47517d1cdb5cc252382802418253b8edf1a0cbff6c6b60b62ba2b6317ca"
 
 echo "$ROMS" | while read -r name want; do
     [ -n "$name" ] || continue
@@ -160,8 +204,8 @@ echo "$ROMS" | while read -r name want; do
 done
 
 count=$(ls "$DEST" | wc -l | tr -d ' ')
-if [ "$count" -ne 9 ]; then
-    echo "incomplete: $count/9 files present in $DEST" >&2
+if [ "$count" -ne 11 ]; then
+    echo "incomplete: $count/11 files present in $DEST" >&2
     exit 1
 fi
 

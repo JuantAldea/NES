@@ -472,7 +472,23 @@ void Mmc3::cpu_write(const uint16_t addr, const uint8_t data)
         } else {
             // $A000 mirroring, live: PPU::nametable_offset reads this flag on
             // every access, so nothing else has to be told.
-            rom.mirroring = (data & 0x01) ? ROM::Mirroring::vertical : ROM::Mirroring::horizontal;
+            //
+            // BIT 0 CLEAR IS VERTICAL, which is the opposite of the iNES header
+            // bit and was inverted here until the M4 oracle landed. The wiki
+            // states it in ARRANGEMENT terms - "0: horizontal (A10); 1: vertical
+            // (A11)" - and arrangement is the inverse of mirroring, so reading
+            // that row as if it named a mirroring mode yields exactly the bug
+            // that was here. The A10/A11 annotation is the unambiguous part:
+            // bit 0 clear routes CIRAM A10 from PPU A10, which makes $2000 and
+            // $2800 the same screen, and that is vertical mirroring by the
+            // naming PPU::nametable_offset uses. FCEUX writes the same fact as
+            // `setmirror((V & 1) ^ 1)` with MI_H = 0, and Mesen2 as
+            // `(RegA000 & 0x01) ? Horizontal : Vertical`.
+            //
+            // Holy Mapperel is what caught it: it identifies the board from how
+            // the mapper answers, and with the polarity reversed M4_P128K
+            // reported "002 UNROM" - the right answer to the wrong question.
+            rom.mirroring = (data & 0x01) ? ROM::Mirroring::horizontal : ROM::Mirroring::vertical;
         }
         break;
 
