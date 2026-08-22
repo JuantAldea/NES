@@ -1,5 +1,5 @@
 #!/bin/sh
-# Fetches eleven builds of Damian Yerrick's Holy Mapperel - an NES cartridge
+# Fetches fourteen builds of Damian Yerrick's Holy Mapperel - an NES cartridge
 # manufacturing test, and the only MMC1 oracle in reach that reports a verdict
 # rather than asking a human to look at it. Nine mapper-1 images, and two
 # mapper-4 ones covering ground no MMC3 ROM here reaches (see MAPPER 4 below).
@@ -118,7 +118,7 @@
 # Settle frames were measured too and live next to kMaxFrames in that file.
 #
 #
-# MAPPER 4. The two M4 images were added for a narrower reason than the nine
+# MAPPER 4. The two M4 images were added for a narrower reason than the SxROM
 # above: to decide whether MMC3 $A000 bit 0 selects vertical mirroring or
 # horizontal. The wiki gives the answer in ARRANGEMENT terms - "0: horizontal
 # (A10); 1: vertical (A11)" - and arrangement is the inverse of mirroring, so
@@ -172,6 +172,37 @@
 # - nametable mirroring and CHR-RAM addressing - neither of which any other MMC3
 # oracle here reaches.
 #
+# THE THREE DISCRETE BOARDS - M0, M2, M3 - AND A CLEAN RESULT.
+#
+# Added last, and on a base rate rather than a suspicion: this oracle had been
+# pointed at exactly two mappers and found three real faults in them (MMC1
+# indexing CHR-RAM flat, MMC3 inverting $A000 bit 0, MMC3 leaving CHR-RAM
+# unbanked). NROM, UNROM and CNROM predate the Mapper refactor and had been
+# carried through two structural changes on the strength of suites largely
+# written from the implementation, so they were the obvious next place to look.
+#
+# MEASURED, with nothing changed to accommodate them:
+#
+#   image             board reported  PRG    work RAM  CHR             detail
+#   M0_P32K_C8K_V     066 NROM        32K    MISSING   8K ROM OK       0000
+#   M2_P128K_V        002 UNROM       128K   MISSING   8K RAM OK       0000
+#   M3_P32K_C32K_H    066 CNROM       32K    MISSING   32K ROM OK      0000
+#
+# All clean. Recorded because "we looked and there was nothing" is a result -
+# it is the difference between three boards being correct and three boards
+# being untested, and only one of those survives the next refactor.
+#
+# "066" ON TWO OF THEM IS NOT A MISREPORT. The Holy Mapperel README groups board
+# 066 as "NROM, CNROM, GNROM" - mappers it cannot tell apart, because none of
+# them changes mirroring and that is how the detection works. The number is the
+# detection GROUP, the word after it the board within it. UNROM switches PRG, so
+# it gets a line of its own.
+#
+# M2_P128K_V earns its place twice over: it is CHR-RAM, so it is the check that
+# 58f1ce6 - which routed CHR-RAM through the mapper so MMC1 could page it - left
+# alone the boards that must NOT page it. UNROM takes the flat default and reads
+# 0000.
+#
 # Not committed: redistributable-but-unlicensed dumps, SHA256-pinned.
 #
 # Usage: tests/test_files/fetch_holy_mapperel.sh
@@ -183,7 +214,10 @@ BASE="https://raw.githubusercontent.com/koute/pinky/master/nes-testsuite/roms/ho
 
 mkdir -p "$DEST"
 
-ROMS="M1_P128K b3270d196e5dcaa3ed7026cf8ea583418b653055002c6d04bf4f637999badc36
+ROMS="M0_P32K_C8K_V 94ea295e37a94b055e9ee09d1de213e646d9ebe5919ff3b389f4f151a982f73f
+M2_P128K_V 47c46bee4c56babda552c321256b9683c11edfe8904964ae4ae9f6af7158ad2c
+M3_P32K_C32K_H e10c73aadda7c1a8d610bcaf09d07d253308fd3206efc5d9805a1c75f1d1874f
+M1_P128K b3270d196e5dcaa3ed7026cf8ea583418b653055002c6d04bf4f637999badc36
 M1_P128K_C32K 0f1e9329e2a9a4749de1f48c606a7b243fc5b8b1e50511de630015130e10d504
 M1_P128K_C32K_S8K 0a35d243cf061366987aba7a91f58df61810ad0072128b28e6df5977a5cb8f1d
 M1_P128K_C32K_W8K 3cba6e68f1f30dcba3c1e686ce81916bbf54384bfab47a6281e1b94ada875f6c
@@ -225,8 +259,8 @@ echo "$ROMS" | while read -r name want; do
 done
 
 count=$(ls "$DEST" | wc -l | tr -d ' ')
-if [ "$count" -ne 11 ]; then
-    echo "incomplete: $count/11 files present in $DEST" >&2
+if [ "$count" -ne 14 ]; then
+    echo "incomplete: $count/14 files present in $DEST" >&2
     exit 1
 fi
 

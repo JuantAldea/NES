@@ -21,7 +21,7 @@ There is still no audio.
 | PPU address space | Pattern tables, nametable and palette mirroring, `$2007` buffer, OAM, open-bus decay |
 | PPU background | Loopy `v`/`t`/`x`/`w`, dot-exact tile pipeline, framebuffer of palette indices + emphasis |
 | Sprites | Secondary OAM, per-dot evaluation, 8-per-line, the overflow search bug, priority, 8x16, flip. Passes blargg's 5 `sprite_overflow` and 11 `sprite_hit` ROMs |
-| Cartridge | iNES **and NES 2.0**, NROM (0), MMC1 (1), UNROM (2), CNROM (3) and MMC3 (4), CHR-ROM and CHR-RAM |
+| Cartridge | iNES **and NES 2.0**, NROM (0), MMC1 (1), UNROM (2), CNROM (3) and MMC3 (4), CHR-ROM and CHR-RAM. All five verified against Holy Mapperel - fourteen images, every board identified, every detail code `0000` |
 | MMC1 | Serial shift register, all four PRG modes, both CHR modes (ROM *and* RAM), runtime mirroring including one-screen, work-RAM disable and banking, SUROM's PRG A18, SXROM's 32KB work RAM. All nine mapper-1 Holy Mapperel images identify their board - SGROM, SFROM, SJROM, SLROM, SKROM, SUROM, SXROM - and report detail code `0000` |
 | MMC3 | PRG/CHR banking in 8KB/1KB units, runtime mirroring, PRG-RAM gating, CHR-RAM banking. Both mapper-4 Holy Mapperel images identify as TGROM and TLROM and report `0000` |
 | MMC3 IRQ | A12-filtered scanline counter driving `/IRQ`, clocked on the right dot. Passes 5 of blargg's 6 `mmc3_test_2` ROMs; the sixth tests the other chip revision, see below |

@@ -8,13 +8,17 @@
 // no verdict in it to read. The reasoning is written out in full at the top of
 // tests/test_files/fetch_holy_mapperel.sh.
 //
-// WHAT IT CHECKS, and why nine images rather than one. The ROM detects which
+// WHAT IT CHECKS, and why a set of images rather than one. The ROM detects which
 // board it is on from how the mapper answers, then measures PRG size, CHR size
 // and kind, work-RAM size and battery, and finally runs a per-mapper detailed
-// test. The nine differ ONLY in their headers and payload sizes, so between
-// them they walk the whole SxROM family - SGROM, SFROM, SJROM, SLROM, SKROM and
-// SUROM - and a mapper bug tends to show up in one board and not its neighbour.
-// That is the diagnostic value: the failing set names the feature.
+// test. The mapper-1 images differ ONLY in their headers and payload sizes, so
+// between them they walk the whole SxROM family - SGROM, SFROM, SJROM, SLROM,
+// SKROM, SUROM, SXROM - and a mapper bug tends to show up in one board and not
+// its neighbour. That is the diagnostic value: the failing SET names the
+// feature, which is how both CHR-RAM faults here were located.
+//
+// Counts are deliberately not written into this prose. Every table below states
+// its own, and a total stated here would be a fourth place to forget.
 //
 // HOW IT REPORTS. On screen, so tests/nametable_screen.h does the reading - but
 // NOT with the identity mapping the blargg 2005 ROMs use. Holy Mapperel's puts
@@ -46,9 +50,13 @@ constexpr const char* kFetch = "run tests/test_files/fetch_holy_mapperel.sh";
 //   M1_P128K_C128K_S8K  93    M1_P128K_C128K_W8K   93
 //   M1_P512K_S8K       166    M1_P512K_S32K       166
 //   M4_P128K            87    M4_P256K_C256K       22
+//   M0_P32K_C8K_V       14    M3_P32K_C32K_H       14    M2_P128K_V           85
 //
-// The two CHR-ROM images without work RAM settle in 15 because they skip both
-// RAM sweeps; the SUROMs take 166 because 512KB is four times the PRG to walk.
+// One line splits the whole table: CHR-RAM images pay for a write-and-verify
+// sweep of the RAM and CHR-ROM ones skip it. That is why M2_P128K_V takes 85
+// where the two discrete CHR-ROM boards take 14, and why M4_P256K_C256K is
+// faster than M4_P128K despite being eight times the cartridge. The SUROMs take
+// 166 because 512KB is four times the PRG to walk on top of that.
 // The M4 pair splits the same way and for the same reason - M4_P128K is CHR-RAM
 // and pays for the sweep, M4_P256K_C256K is CHR-ROM and skips it - which is why
 // the larger ROM is the faster of the two.
@@ -306,6 +314,38 @@ TEST_P(HolyMapperel, reports_what_the_board_is_and_that_it_works)
     EXPECT_EQ(expected.chr, find_row(run.rows, "CHR R")) << screen;
     EXPECT_EQ(std::string(kDetailLine) + " " + expected.detail, find_row(run.rows, kDetailLine)) << screen;
 }
+
+// The three discrete boards - NROM, UNROM and CNROM. These found nothing, and
+// that is the result rather than a reason to leave them out.
+//
+// They were added because this oracle had been aimed at exactly two mappers and
+// found three real faults in them: MMC1 indexing CHR-RAM flat, MMC3 inverting
+// $A000 bit 0, MMC3 leaving CHR-RAM unbanked. NROM, UNROM and CNROM predate the
+// Mapper refactor and had been carried through two structural changes on the
+// strength of suites largely written from the implementation, so they were the
+// obvious place to look next. They are clean. Now that is measured rather than
+// assumed, and the rows stay as the regression net for the next refactor.
+//
+// TWO OF THE BOARD NAMES LOOK WRONG AND ARE NOT. Holy Mapperel reports "066"
+// for NROM and CNROM because its README groups board 066 as "NROM, CNROM,
+// GNROM" - mappers it cannot separate by how they answer, since none of them
+// changes mirroring. The number is the detection GROUP and the word after it is
+// the board within it. Only UNROM, which switches PRG, gets its own line.
+//
+// M2_P128K_V is the useful one for a reason beyond UNROM itself: it is CHR-RAM,
+// and it reports 0000. 58f1ce6 routed CHR-RAM through Mapper::chr_offset so
+// MMC1 could page it; this is the check that boards which must NOT page it were
+// left alone, since UNROM takes the flat default.
+const Expected kDiscreteRoms[] = {
+    {"M0_P32K_C8K_V", "066 NROM", "32K PRG ROM", "PRG RAM MISSING", "8K CHR ROM OK", "0000"},
+    {"M2_P128K_V", "002 UNROM", "128K PRG ROM", "PRG RAM MISSING", "8K CHR RAM OK", "0000"},
+    {"M3_P32K_C32K_H", "066 CNROM", "32K PRG ROM", "PRG RAM MISSING", "32K CHR ROM OK", "0000"},
+};
+
+INSTANTIATE_TEST_SUITE_P(Discrete,
+                         HolyMapperel,
+                         ::testing::ValuesIn(kDiscreteRoms),
+                         [](const ::testing::TestParamInfo<Expected>& info) { return std::string(info.param.name); });
 
 INSTANTIATE_TEST_SUITE_P(Mapper1,
                          HolyMapperel,
