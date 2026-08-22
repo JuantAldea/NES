@@ -25,8 +25,15 @@ bool ROM::load(const std::string& path)
     prg_rom.clear();
     chr_rom.clear();
     mapper.reset();
-    mapper_id = 0;
-    horizontal_mirroring = true;
+    mapper_id = MapperId::nrom;
+    mirroring = Mirroring::horizontal;
+    nes2 = false;
+    has_battery = false;
+    // Back to the no-cartridge default, not to zero: a load that fails part way
+    // through must leave the console as it would be with nothing plugged in.
+    prg_ram_size = 8 * 1024;
+    prg_nvram_size = 0;
+    chr_ram_size = 0;
     chr_bank = 0;
     chr_bank_count = 0;
 
@@ -60,69 +67,47 @@ bool ROM::load(const std::string& path)
     const uint8_t flags6 = data[6];
     const uint8_t flags7 = data[7];
 
+    // NES 2.0 identifies itself in byte 7 bits 2-3 reading exactly 10b. The
+    // test has to be that precise: 00b is iNES 1.0 and 01b is an "archaic"
+    // dump, and treating either as 2.0 would read bytes 9-11 as sizes when they
+    // are whatever the dumper left there - some fill them with a name string.
+    const bool parsed_nes2 = (flags7 & 0x0C) == 0x08;
+
+    // Byte 9's nibbles extend the PRG and CHR sizes by 256 banks each, and the
+    // value $F switches that field to an exponent-multiplier encoding entirely.
+    // Nothing here carries either: the largest board this emulator implements
+    // is 512KB, which is 32 banks. Rejecting rather than ignoring, because
+    // ignoring loads a multi-megabyte image at a thirty-second of its size with
+    // no complaint.
+    if (parsed_nes2 && data[9] != 0) {
+        std::cerr << "ROM: NES 2.0 byte 9 is " << static_cast<int>(data[9])
+                  << ", so the image is larger than 4MB or uses the exponent size form; neither is supported\n";
+        return false;
+    }
+
     const bool has_trainer = flags6 & 0x04;
     // Mapper id: low nibble comes from the high nibble of flags6, high nibble
     // from the high nibble of flags7.
-    const uint8_t parsed_mapper_id = (flags7 & 0xF0) | (flags6 >> 4);
+    const MapperId parsed_mapper_id = static_cast<MapperId>((flags7 & 0xF0) | (flags6 >> 4));
 
-    if (parsed_mapper_id != 0 && parsed_mapper_id != 2 && parsed_mapper_id != 3 && parsed_mapper_id != 4) {
-        std::cerr << "ROM: mapper " << static_cast<int>(parsed_mapper_id)
-                  << " is not supported (only NROM/0, UNROM/2, CNROM/3 and MMC3/4)\n";
-        return false;
-    }
-
-    // MMC3 banks PRG in 8KB and CHR in 1KB units, so the only header constraint
-    // is that there is enough of each to index. A cartridge with no CHR-ROM is
-    // legal and uses CHR-RAM; several MMC3 boards do.
-    if (parsed_mapper_id == 4 && prg_rom_banks < 2) {
-        std::cerr << "ROM: MMC3 requires at least 2 PRG-ROM banks, header advertises " << prg_rom_banks << "\n";
-        return false;
-    }
-
-    // UNROM switches PRG rather than CHR, so it carries no CHR-ROM at all - the
-    // console's CHR-RAM is the pattern memory. A header claiming CHR banks is
-    // not a UNROM image whatever byte 7 says.
-    if (parsed_mapper_id == 2 && chr_rom_banks != 0) {
-        std::cerr << "ROM: UNROM has no CHR-ROM, header advertises " << chr_rom_banks << " bank(s)\n";
-        return false;
-    }
-
-    // NROM carries either one 16KB PRG bank (mirrored across $8000-$FFFF) or
-    // two (filling it). Anything else is not NROM, however byte 4 reads: the
-    // CPU can only address 32KB of cartridge space, so a larger image would
-    // load with most of it permanently unreachable and no error.
-    // NROM carries at most one 8KB CHR bank. A header claiming more would load
-    // happily with the excess permanently unreachable, which is the same
-    // failure the PRG check below exists to prevent.
-    // NROM has a single fixed CHR bank; CNROM is the mapper that exists in
-    // order to have several. A CNROM image with one bank is legal and just
-    // never switches.
-    if (parsed_mapper_id == 0 && chr_rom_banks > 1) {
-        std::cerr << "ROM: NROM supports at most 1 CHR-ROM bank, header advertises " << chr_rom_banks << "\n";
-        return false;
-    }
-
-    // The bank register is masked with the bank count, so a count that is not
-    // a power of two would make the masking ambiguous. Real CNROM boards carry
-    // 1, 2 or 4 banks (8KB, 16KB, 32KB of CHR).
-    if (parsed_mapper_id == 3 &&
-        (chr_rom_banks == 0 || chr_rom_banks > 4 || (chr_rom_banks & (chr_rom_banks - 1)) != 0)) {
-        std::cerr << "ROM: CNROM requires 1, 2 or 4 CHR-ROM banks, header advertises " << chr_rom_banks << "\n";
-        return false;
-    }
-
-    // UNROM is the mapper that exists to carry more PRG than the CPU can
-    // address, so the NROM ceiling of two banks does not apply. Eight or
-    // sixteen 16KB banks (128KB or 256KB) are the real board sizes.
-    if (parsed_mapper_id == 2) {
-        if (prg_rom_banks < 2 || prg_rom_banks > 16) {
-            std::cerr << "ROM: UNROM requires 2 to 16 PRG-ROM banks, header advertises " << prg_rom_banks << "\n";
-            return false;
+    // Two questions, one table. Whether a board exists, and whether the header
+    // is consistent with it, both come from kBoards in mapper.cpp - so adding a
+    // mapper cannot leave it accepted with no board behind it, or implemented
+    // and rejected before it runs. Those were the two ways the previous chain
+    // of `!=` comparisons could fail, and both were silent.
+    if (!mapper_supported(parsed_mapper_id)) {
+        const char* name = mapper_name(parsed_mapper_id);
+        std::cerr << "ROM: mapper " << static_cast<int>(parsed_mapper_id);
+        if (name != nullptr) {
+            std::cerr << " (" << name << ")";
         }
-    } else if (parsed_mapper_id == 4) {
-        // Checked above; MMC3 images run to 512KB.
-    } else if (prg_rom_banks == 0 || prg_rom_banks > 2) {
-        std::cerr << "ROM: NROM/CNROM require 1 or 2 PRG-ROM banks, header advertises " << prg_rom_banks << "\n";
+        std::cerr << " is not supported\n";
+        return false;
+    }
+
+    const std::string header_error = mapper_header_error(parsed_mapper_id, prg_rom_banks, chr_rom_banks);
+    if (!header_error.empty()) {
+        std::cerr << "ROM: " << header_error << "\n";
         return false;
     }
 
@@ -140,7 +125,36 @@ bool ROM::load(const std::string& path)
     }
 
     mapper_id = parsed_mapper_id;
-    horizontal_mirroring = !(flags6 & 0x01);
+    nes2 = parsed_nes2;
+    mirroring = (flags6 & 0x01) ? Mirroring::vertical : Mirroring::horizontal;
+    has_battery = (flags6 & 0x02) != 0;
+
+    // Byte 10 stores each RAM size as a shift count in one nibble: 0 means the
+    // chip is absent, and n means 64 << n bytes. Byte 11 says the same for CHR.
+    // A shift of 15 would be 2MB and is not a size any board has, but it is
+    // also not worth rejecting - it costs nothing to compute and the bank
+    // arithmetic never indexes by it.
+    if (nes2) {
+        const auto ram_size = [](const uint8_t shift) -> uint32_t {
+            return shift == 0 ? 0u : static_cast<uint32_t>(64) << shift;
+        };
+        prg_ram_size = ram_size(data[10] & 0x0F);
+        prg_nvram_size = ram_size(data[10] >> 4);
+        chr_ram_size = ram_size(data[11] & 0x0F) + ram_size(data[11] >> 4);
+    } else {
+        // iNES 1.0 cannot express "no work RAM" - byte 8 is a count of 8KB
+        // units that "0 means 1" for compatibility, and most dumps leave it
+        // zero regardless. Assuming 8KB is the format's own advice, and it is
+        // what keeps every cartridge that loaded before this parsing existed
+        // seeing the same $6000-$7FFF window it saw then.
+        if (has_battery) {
+            prg_nvram_size = 8 * 1024;
+        } else {
+            prg_ram_size = 8 * 1024;
+        }
+        chr_ram_size = chr_rom_banks == 0 ? 8 * 1024 : 0;
+    }
+
     chr_bank_count = static_cast<uint8_t>(chr_rom_banks);
     prg_bank_count = static_cast<uint8_t>(prg_rom_banks);
     prg_bank = 0;
@@ -155,25 +169,14 @@ bool ROM::load(const std::string& path)
     chr_bank = 0;
 
     // The board is chosen once, here, rather than re-decided on every access.
-    // The header check above is what guarantees this switch is exhaustive - add
-    // a mapper to one without the other and the cartridge either loads with no
-    // board or is rejected while implemented.
-    switch (mapper_id) {
-    case 0:
-        mapper = std::make_unique<NRom>(*this);
-        break;
-    case 2:
-        mapper = std::make_unique<UnRom>(*this);
-        break;
-    case 3:
-        mapper = std::make_unique<CnRom>(*this);
-        break;
-    case 4:
-        mapper = std::make_unique<Mmc3>(*this);
-        break;
-    default:
+    // mapper_supported() above asked the same table, so this cannot come back
+    // null; the check is kept because "cannot" is a claim about two functions
+    // agreeing, and a loaded cartridge with no board is a null dereference on
+    // the first instruction fetch.
+    mapper = make_mapper(mapper_id, *this);
+    if (!mapper) {
         std::cerr << "ROM: no board for mapper " << static_cast<int>(mapper_id)
-                  << ", which the header check above should have rejected\n";
+                  << ", which the support check above should have rejected\n";
         return false;
     }
 
@@ -250,3 +253,5 @@ void ROM::drive_irq_line(const bool asserted)
 
     bus->cpu.set_IRQ_line(CPU::IRQSource::cartridge, asserted);
 }
+
+uint64_t ROM::cpu_cycle() const { return bus == nullptr ? 0 : bus->cpu_cycles; }

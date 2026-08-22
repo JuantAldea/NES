@@ -58,7 +58,7 @@ GTEST_TEST(unrom, loads_and_reports_its_bank_count)
     Bus console;
     ASSERT_TRUE(console.load_cartridge(rom.path));
 
-    EXPECT_EQ(2, console.rom.mapper_id);
+    EXPECT_EQ(MapperId::uxrom, console.rom.mapper_id);
     EXPECT_EQ(8, console.rom.prg_bank_count);
     EXPECT_EQ(0, console.rom.prg_bank) << "power-on bank is 0";
     EXPECT_TRUE(console.rom.chr_rom.empty()) << "UNROM has no CHR-ROM; the console supplies CHR-RAM";

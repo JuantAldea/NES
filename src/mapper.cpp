@@ -10,7 +10,197 @@ namespace
 {
 constexpr size_t PRG_ROM_BANK_SIZE = 16 * 1024;
 constexpr size_t CHR_ROM_BANK_SIZE = 8 * 1024;
+
+// MMC1 switches CHR in halves of the pattern table rather than whole ones.
+constexpr size_t CHR_ROM_4K_BANK_SIZE = 4 * 1024;
+
+struct KnownMapper {
+    MapperId id;
+    const char* name;
+};
+
+// Names only. A row here does NOT mean the board is implemented; see kBoards.
+const KnownMapper kKnownMappers[] = {
+    {MapperId::nrom, "NROM"},
+    {MapperId::mmc1, "MMC1 / SxROM"},
+    {MapperId::uxrom, "UxROM"},
+    {MapperId::cnrom, "CNROM"},
+    {MapperId::mmc3, "MMC3 / TxROM"},
+    {MapperId::mmc5, "MMC5 / ExROM"},
+    {MapperId::axrom, "AxROM"},
+    {MapperId::mmc2, "MMC2 / PxROM"},
+    {MapperId::mmc4, "MMC4 / FxROM"},
+    {MapperId::color_dreams, "Color Dreams"},
+    {MapperId::cprom, "CPROM"},
+    {MapperId::bandai_fcg, "Bandai FCG"},
+    {MapperId::jaleco_ss88006, "Jaleco SS 88006"},
+    {MapperId::namco_163, "Namco 163"},
+    {MapperId::vrc4a, "Konami VRC4a/VRC4c"},
+    {MapperId::vrc2a, "Konami VRC2a"},
+    {MapperId::vrc4b, "Konami VRC2b/VRC4e"},
+    {MapperId::vrc6a, "Konami VRC6a"},
+    {MapperId::vrc4c, "Konami VRC2c/VRC4b/VRC4d"},
+    {MapperId::vrc6b, "Konami VRC6b"},
+    {MapperId::action53, "Action 53 / INL-ROM"},
+    {MapperId::unrom512, "UNROM 512"},
+    {MapperId::irem_g101, "Irem G-101"},
+    {MapperId::taito_tc0190, "Taito TC0190"},
+    {MapperId::bnrom, "BNROM / NINA-001"},
+    {MapperId::rambo1, "RAMBO-1"},
+    {MapperId::gxrom, "GxROM"},
+    {MapperId::sunsoft4, "Sunsoft-4"},
+    {MapperId::sunsoft_fme7, "Sunsoft FME-7"},
+    {MapperId::codemasters, "Codemasters"},
+    {MapperId::vrc3, "Konami VRC3"},
+    {MapperId::vrc1, "Konami VRC1"},
+    {MapperId::holy_diver, "Irem IF-12 / Holy Diver"},
+    {MapperId::nina003, "NINA-003-006"},
+    {MapperId::vrc7, "Konami VRC7"},
+    {MapperId::txsrom, "TxSROM"},
+    {MapperId::tqrom, "TQROM"},
+    {MapperId::unrom_7408, "UNROM (7408)"},
+    {MapperId::dxrom, "DxROM"},
+    {MapperId::namco_175, "Namco 175/340"},
+};
+
+// --- the board table --------------------------------------------------------
+//
+// The single place a mapper number becomes behaviour. It used to be two places
+// - a chain of `!=` comparisons in the header check and a switch further down
+// in load() - and keeping those in step was a standing invitation to add a
+// board that got rejected before it could run, or accept a cartridge with no
+// board behind it. Both failure modes are silent from the header check's side.
+//
+// Each row's `check` validates the bank counts the iNES header advertises
+// against what the board can physically be. Boards whose only constraint is
+// "any legal size" use nullptr rather than an empty function.
+
+template <typename T>
+std::unique_ptr<Mapper> construct(ROM& rom)
+{
+    return std::make_unique<T>(rom);
+}
+
+std::string check_nrom(const size_t prg_16k_banks, const size_t chr_8k_banks)
+{
+    // NROM carries one 16KB PRG bank (mirrored across $8000-$FFFF) or two
+    // (filling it). Anything else is not NROM however byte 4 reads: the CPU can
+    // only address 32KB of cartridge space, so a larger image would load with
+    // most of it permanently unreachable and no error.
+    if (prg_16k_banks == 0 || prg_16k_banks > 2) {
+        return "NROM requires 1 or 2 PRG-ROM banks, header advertises " + std::to_string(prg_16k_banks);
+    }
+    // One fixed CHR bank. CNROM is the mapper that exists in order to have
+    // several; more than one here would load with the excess unreachable, the
+    // same failure the PRG check above prevents.
+    if (chr_8k_banks > 1) {
+        return "NROM supports at most 1 CHR-ROM bank, header advertises " + std::to_string(chr_8k_banks);
+    }
+    return {};
+}
+
+std::string check_mmc1(const size_t prg_16k_banks, const size_t chr_8k_banks)
+{
+    (void)chr_8k_banks;  // CHR-ROM is optional; SNROM and friends use CHR-RAM.
+    // Every SxROM board has at least two PRG banks - the fixed half of the
+    // address space has to come from somewhere.
+    if (prg_16k_banks < 2 || prg_16k_banks > 32) {
+        return "MMC1 requires 2 to 32 PRG-ROM banks, header advertises " + std::to_string(prg_16k_banks);
+    }
+    return {};
+}
+
+std::string check_uxrom(const size_t prg_16k_banks, const size_t chr_8k_banks)
+{
+    // UNROM switches PRG rather than CHR, so it carries no CHR-ROM at all - the
+    // console's CHR-RAM is the pattern memory. A header claiming CHR banks is
+    // not a UNROM image whatever byte 7 says.
+    if (chr_8k_banks != 0) {
+        return "UNROM has no CHR-ROM, header advertises " + std::to_string(chr_8k_banks) + " bank(s)";
+    }
+    // UNROM exists to carry more PRG than the CPU can address, so NROM's
+    // two-bank ceiling does not apply. 8 or 16 banks are the real board sizes.
+    if (prg_16k_banks < 2 || prg_16k_banks > 16) {
+        return "UNROM requires 2 to 16 PRG-ROM banks, header advertises " + std::to_string(prg_16k_banks);
+    }
+    return {};
+}
+
+std::string check_cnrom(const size_t prg_16k_banks, const size_t chr_8k_banks)
+{
+    if (prg_16k_banks == 0 || prg_16k_banks > 2) {
+        return "CNROM requires 1 or 2 PRG-ROM banks, header advertises " + std::to_string(prg_16k_banks);
+    }
+    // The bank register is masked with the bank count, so a count that is not a
+    // power of two would make the masking ambiguous. Real boards carry 1, 2 or
+    // 4 banks (8KB, 16KB, 32KB of CHR).
+    if (chr_8k_banks == 0 || chr_8k_banks > 4 || (chr_8k_banks & (chr_8k_banks - 1)) != 0) {
+        return "CNROM requires 1, 2 or 4 CHR-ROM banks, header advertises " + std::to_string(chr_8k_banks);
+    }
+    return {};
+}
+
+std::string check_mmc3(const size_t prg_16k_banks, const size_t chr_8k_banks)
+{
+    (void)chr_8k_banks;
+    // MMC3 banks PRG in 8KB and CHR in 1KB units, so the only header constraint
+    // is that there is enough of each to index. A cartridge with no CHR-ROM is
+    // legal and uses CHR-RAM; several MMC3 boards do.
+    if (prg_16k_banks < 2) {
+        return "MMC3 requires at least 2 PRG-ROM banks, header advertises " + std::to_string(prg_16k_banks);
+    }
+    return {};
+}
+
+struct Board {
+    MapperId id;
+    std::unique_ptr<Mapper> (*make)(ROM&);
+    std::string (*check)(size_t prg_16k_banks, size_t chr_8k_banks);
+};
+
+const Board kBoards[] = {
+    {MapperId::nrom, construct<NRom>, check_nrom},    {MapperId::mmc1, construct<Mmc1>, check_mmc1},
+    {MapperId::uxrom, construct<UnRom>, check_uxrom}, {MapperId::cnrom, construct<CnRom>, check_cnrom},
+    {MapperId::mmc3, construct<Mmc3>, check_mmc3},
+};
+
+const Board* find_board(const MapperId id)
+{
+    for (const Board& board : kBoards) {
+        if (board.id == id) {
+            return &board;
+        }
+    }
+    return nullptr;
+}
 }  // namespace
+
+const char* mapper_name(const MapperId id)
+{
+    for (const KnownMapper& known : kKnownMappers) {
+        if (known.id == id) {
+            return known.name;
+        }
+    }
+    return nullptr;
+}
+
+bool mapper_supported(const MapperId id) { return find_board(id) != nullptr; }
+
+std::string mapper_header_error(const MapperId id, const size_t prg_16k_banks, const size_t chr_8k_banks)
+{
+    const Board* board = find_board(id);
+    if (board == nullptr || board->check == nullptr) {
+        return {};
+    }
+    return board->check(prg_16k_banks, chr_8k_banks);
+}
+
+std::unique_ptr<Mapper> make_mapper(const MapperId id, ROM& rom)
+{
+    const Board* board = find_board(id);
+    return board == nullptr ? nullptr : board->make(rom);
+}
 
 // --- NROM (0) ---------------------------------------------------------------
 
@@ -34,6 +224,177 @@ uint8_t NRom::chr_read(const uint16_t addr) const
     // Cannot go out of range given the load-time bank-count check, but a
     // cartridge whose file was shorter than its header claimed would have been
     // rejected there, so this is belt and braces rather than a live path.
+    return offset < rom.chr_rom.size() ? rom.chr_rom[offset] : 0;
+}
+
+// --- MMC1 (1) ---------------------------------------------------------------
+
+Mmc1::Mmc1(ROM& cartridge) : Mapper{cartridge}
+{
+    // $0C in the PRG-mode bits is guaranteed by hardware and load-bearing (see
+    // mapper.h). The MIRRORING bits are NOT guaranteed, and leaving them zero
+    // would power the board on in one-screen-lower - so they are seeded from
+    // the iNES header, which keeps ROM::mirroring the single source of truth
+    // instead of having the field and the register disagree until a game
+    // happens to write $8000.
+    control = static_cast<uint8_t>(0x0C | (rom.mirroring == ROM::Mirroring::vertical ? 0x02 : 0x03));
+}
+
+void Mmc1::cpu_write(const uint16_t addr, const uint8_t data)
+{
+    if (addr < 0x8000) {
+        return;
+    }
+
+    // Consecutive-cycle writes are ignored - see last_write_cycle in mapper.h
+    // for why that is required rather than an optimisation. A cartridge with no
+    // Bus (the loader tests build one) has no clock to compare against, so the
+    // filter is simply off there; those tests drive ROM::write directly and
+    // never from a read-modify-write instruction.
+    if (rom.has_bus()) {
+        const uint64_t now = rom.cpu_cycle();
+        if (wrote_before && now == last_write_cycle + 1) {
+            return;
+        }
+        last_write_cycle = now;
+        wrote_before = true;
+    }
+
+    // Bit 7 empties the shift register and forces PRG mode 3. Note what it does
+    // NOT do: the other three registers keep their values, and the OR with $0C
+    // leaves the mirroring bits alone. So a game can resynchronise the serial
+    // port without losing its bank selection, which is why the reset is usable
+    // as the first instruction of an interrupt handler.
+    if (data & 0x80) {
+        shift = 0;
+        shift_count = 0;
+        control |= 0x0C;
+        return;
+    }
+
+    // Bits arrive least-significant first and shift right into bit 4, so after
+    // five writes the first bit written has reached bit 0.
+    shift = static_cast<uint8_t>((shift >> 1) | ((data & 0x01) << 4));
+    if (++shift_count < 5) {
+        return;
+    }
+
+    // The register is chosen by the address of the FIFTH write, not the first:
+    // a game may move around inside $8000-$FFFF while clocking bits in, and
+    // only the last address counts.
+    write_register(addr, shift);
+    shift = 0;
+    shift_count = 0;
+}
+
+void Mmc1::write_register(const uint16_t addr, const uint8_t value)
+{
+    switch ((addr >> 13) & 0x03) {
+    case 0:
+        control = value;
+        apply_mirroring();
+        break;
+    case 1:
+        chr_reg[0] = value;
+        break;
+    case 2:
+        chr_reg[1] = value;
+        break;
+    default:
+        prg_reg = value;
+        // Bit 4 disables the work RAM, and Bus::decode is what enforces it -
+        // the RAM behind $6000-$7FFF is a separate device with no idea a mapper
+        // exists. Same route the MMC3's $A001 takes.
+        //
+        // SNROM ALSO disables it from $A000 bit 4, and this does not implement
+        // that: the board cannot be told apart from an iNES header with
+        // certainty, and guessing wrong breaks the boards that use those bits
+        // for CHR. Holy Mapperel reports the disagreement as a detail digit
+        // rather than a failure, so it is a measured divergence - see
+        // tests/holy_mapperel_tests.cpp.
+        rom.prg_ram_enabled = !wram_disabled();
+        break;
+    }
+}
+
+void Mmc1::apply_mirroring()
+{
+    switch (control & 0x03) {
+    case 0:
+        rom.mirroring = ROM::Mirroring::single_screen_lower;
+        break;
+    case 1:
+        rom.mirroring = ROM::Mirroring::single_screen_upper;
+        break;
+    case 2:
+        rom.mirroring = ROM::Mirroring::vertical;
+        break;
+    default:
+        rom.mirroring = ROM::Mirroring::horizontal;
+        break;
+    }
+}
+
+uint32_t Mmc1::prg_bank_offset(const uint16_t cpu_addr) const
+{
+    const uint32_t banks = rom.prg_bank_count;
+
+    // SUROM (512KB): MMC1 has four PRG bank lines and 32 banks need five, so
+    // CHR register 0 bit 4 supplies A18 and picks which 256KB half EVERYTHING
+    // is read from - the fixed window included. That is what makes switching
+    // halves survivable: if the fixed bank stayed behind, the code performing
+    // the switch would vanish out from under itself mid-instruction.
+    const uint32_t half = (banks > 16 && (chr_reg[0] & 0x10) != 0) ? 16u : 0u;
+    const uint32_t select = prg_reg & 0x0F;
+
+    uint32_t bank = 0;
+    switch (prg_mode()) {
+    case 0:
+    case 1:
+        // 32KB at a time: the register's low bit is ignored, and $C000 is
+        // simply the bank after $8000.
+        bank = (select & 0x0E) | ((cpu_addr >= 0xC000) ? 1u : 0u);
+        break;
+    case 2:
+        // $8000 fixed to the first bank of the half, $C000 switchable.
+        bank = (cpu_addr < 0xC000) ? 0u : select;
+        break;
+    default:
+        // $8000 switchable, $C000 fixed to the last bank of the half. Written
+        // as 15 rather than banks-1 because 15 is what a full-size board's four
+        // address lines carry; the mask below is what lands a smaller cartridge
+        // on its own last bank, which is exactly what its unconnected upper
+        // lines do on hardware.
+        bank = (cpu_addr < 0xC000) ? select : 15u;
+        break;
+    }
+
+    // Every MMC1 PRG size is a power of two (32KB to 512KB), so this mask is
+    // the whole of the address decoding a real board performs.
+    return ((half + bank) & (banks - 1)) * PRG_ROM_BANK_SIZE + (cpu_addr & 0x3FFF);
+}
+
+uint32_t Mmc1::chr_bank_offset(const uint16_t ppu_addr) const
+{
+    const uint32_t banks = static_cast<uint32_t>(rom.chr_bank_count) * 2;
+    if (banks == 0) {
+        return 0;
+    }
+
+    const bool upper_half = (ppu_addr & 0x1000) != 0;
+    const uint32_t bank = chr_4k_mode() ? (chr_reg[upper_half ? 1 : 0] & 0x1F)
+                                        // 8KB mode reads register 0 only, with its low
+                                        // bit ignored: the pair is one bank, not two.
+                                        : ((chr_reg[0] & 0x1E) | (upper_half ? 1u : 0u));
+
+    return ((bank & (banks - 1)) * CHR_ROM_4K_BANK_SIZE) + (ppu_addr & 0x0FFF);
+}
+
+uint8_t Mmc1::prg_read(const uint16_t addr) const { return rom.prg_rom[prg_bank_offset(addr)]; }
+
+uint8_t Mmc1::chr_read(const uint16_t addr) const
+{
+    const uint32_t offset = chr_bank_offset(addr);
     return offset < rom.chr_rom.size() ? rom.chr_rom[offset] : 0;
 }
 
@@ -130,7 +491,7 @@ void Mmc3::cpu_write(const uint16_t addr, const uint8_t data)
         } else {
             // $A000 mirroring, live: PPU::nametable_offset reads this flag on
             // every access, so nothing else has to be told.
-            rom.horizontal_mirroring = (data & 0x01) == 0;
+            rom.mirroring = (data & 0x01) ? ROM::Mirroring::vertical : ROM::Mirroring::horizontal;
         }
         break;
 

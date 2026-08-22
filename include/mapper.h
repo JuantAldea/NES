@@ -1,29 +1,101 @@
 #pragma once
 #include <cstdint>
+#include <memory>
+#include <string>
 
 class ROM;
+class Mapper;
+
+// Every mapper number this emulator has a NAME for. Deliberately far longer
+// than the list it has a BOARD for, and the two must not be conflated: what is
+// implemented is decided by the board table in mapper.cpp and nowhere else.
+//
+// The point of carrying the unimplemented ones is the error message. "mapper 69
+// (Sunsoft FME-7) is not supported" tells you what to go and read; "mapper 69"
+// sends you to a wiki to find out what you even have. Adding a number here
+// costs a table row and claims nothing.
+//
+// Numbers are the iNES assignments, so the gaps are real - they are the
+// mappers nobody has bothered to name here yet, not an ordering.
+enum class MapperId : uint16_t {
+    nrom = 0,
+    mmc1 = 1,
+    uxrom = 2,
+    cnrom = 3,
+    mmc3 = 4,
+    mmc5 = 5,
+    axrom = 7,
+    mmc2 = 9,
+    mmc4 = 10,
+    color_dreams = 11,
+    cprom = 13,
+    bandai_fcg = 16,
+    jaleco_ss88006 = 18,
+    namco_163 = 19,
+    vrc4a = 21,
+    vrc2a = 22,
+    vrc4b = 23,
+    vrc6a = 24,
+    vrc4c = 25,
+    vrc6b = 26,
+    action53 = 28,
+    unrom512 = 30,
+    irem_g101 = 32,
+    taito_tc0190 = 33,
+    bnrom = 34,
+    rambo1 = 64,
+    gxrom = 66,
+    sunsoft4 = 68,
+    sunsoft_fme7 = 69,
+    codemasters = 71,
+    vrc3 = 73,
+    vrc1 = 75,
+    holy_diver = 78,
+    nina003 = 79,
+    vrc7 = 85,
+    txsrom = 118,
+    tqrom = 119,
+    unrom_7408 = 180,
+    dxrom = 206,
+    namco_175 = 210,
+};
+
+// The board name for a mapper number, or nullptr when the table above has never
+// heard of it. Naming is independent of support - most of these have no board.
+const char* mapper_name(MapperId id);
+
+// Whether a board exists for this mapper number. The ONE place a number is
+// turned into an implementation is make_mapper below, and this asks the same
+// table, so the two cannot drift apart the way a header check and a
+// construction switch did.
+bool mapper_supported(MapperId id);
+
+// Empty when the header's bank counts are consistent with what the board can
+// physically be wired as; otherwise the complaint, ready for load() to print.
+// Returns empty for an unsupported mapper - mapper_supported answers that, and
+// answering it twice would produce two different messages for one cause.
+std::string mapper_header_error(MapperId id, size_t prg_16k_banks, size_t chr_8k_banks);
+
+// Constructs the board, or returns null when there is none. Called once per
+// cartridge by ROM::load.
+std::unique_ptr<Mapper> make_mapper(MapperId id, ROM& rom);
 
 // One cartridge board's decoding logic, as an object rather than as a run of
 // `if (mapper_id == N)` branches inside ROM.
 //
-// WHY THIS EXISTS. Every mapper added a branch to each of ROM::read,
+// WHY THIS EXISTS. Every mapper used to add a branch to each of ROM::read,
 // ROM::write and ROM::chr_read, and a clause to the load-time header checks -
 // so a board's behaviour was spread across four functions and interleaved with
-// three other boards'. Four mappers was already twelve sites; MMC1 would have
-// been the fifth, and it is the first with state that is not a latch (a 5-bit
-// shift register clocked one bit per write, reset by bit 7 of the data). That
-// does not read well as another branch beside CNROM's single assignment.
+// three other boards'. Four mappers was already twelve sites, and MMC1 was the
+// one that made it untenable: its registers are not latches but a 5-bit shift
+// register clocked one bit per write, which does not read as another branch
+// beside CNROM's single assignment.
 //
-// WHAT IS AND IS NOT MOVED. The mapper holds a reference to its ROM and reads
-// the register fields that still live there. That is deliberate for this step:
-// the dispatch moves, the state does not, so nothing outside rom.cpp changes
-// and the existing MMC3/UNROM suites are a real check that behaviour is
-// identical rather than merely recompiled. Moving the state into the subclasses
-// is a separate step with a separate blast radius - mmc3_tests.cpp alone pokes
-// those fields twenty-five times.
-//
-// The PRG-RAM enable/protect bits stay on ROM for a further reason: Bus::decode
-// reads them on every access to $6000-$7FFF, and it holds a ROM, not a Mapper.
+// WHAT STAYS ON ROM, and why it is not laziness. The header-derived sizes, the
+// mirroring the PPU reads live, and the PRG-RAM enable/protect bits: Bus::decode
+// consults the last of those on every access to $6000-$7FFF and it holds a ROM,
+// not a Mapper. Everything that is one board's business - the register file,
+// the mode bits, the MMC3's IRQ counter - lives on the subclass.
 class Mapper
 {
 public:
@@ -66,6 +138,79 @@ public:
     void cpu_write(const uint16_t addr, const uint8_t data) override;
     uint8_t prg_read(const uint16_t addr) const override;
     uint8_t chr_read(const uint16_t addr) const override;
+};
+
+// MMC1 (1): the SxROM family. The first board here whose registers are not
+// latches - the CPU cannot present five bits at once, so writes are serialised
+// through a shift register one bit at a time.
+class Mmc1 final : public Mapper
+{
+public:
+    explicit Mmc1(ROM& rom);
+
+    void cpu_write(const uint16_t addr, const uint8_t data) override;
+    uint8_t prg_read(const uint16_t addr) const override;
+    uint8_t chr_read(const uint16_t addr) const override;
+
+    // The serial port. Five writes carrying one bit each in bit 0 fill this,
+    // and the fifth commits it to whichever register the LAST write's address
+    // selects. Bit 7 of any write empties it instead.
+    uint8_t shift = 0;
+    uint8_t shift_count = 0;
+
+    // $8000-$9FFF. bits 0-1 mirroring, bits 2-3 PRG mode, bit 4 CHR mode.
+    //
+    // Power-on is $0C and that value is load-bearing, not arbitrary: PRG mode 3
+    // fixes the LAST bank at $C000-$FFFF, which is where the reset vector is
+    // read from. Come up in any other mode and the console jumps into whatever
+    // bank happens to be there. Hardware guarantees it, and the reset that bit
+    // 7 of a write performs ORs $0C in for the same reason.
+    uint8_t control = 0x0C;
+
+    // $A000-$BFFF and $C000-$DFFF: 5-bit CHR bank numbers, 4KB each. On boards
+    // larger than 256KB of PRG or 8KB of work RAM these registers carry more
+    // than CHR - see prg_bank_offset and wram_disabled.
+    uint8_t chr_reg[2] = {0, 0};
+
+    // $E000-$FFFF: bits 0-3 the 16KB PRG bank, bit 4 the work-RAM disable.
+    uint8_t prg_reg = 0;
+
+    // $E000 bit 4, and on SNROM also $A000 bit 4: hold the work RAM disabled so
+    // a dying power rail cannot corrupt a save. Inverted from the register bit,
+    // which is a disable rather than an enable.
+    bool wram_disabled() const { return (prg_reg & 0x10) != 0; }
+
+    // bits 2-3 of control.
+    uint8_t prg_mode() const { return static_cast<uint8_t>((control >> 2) & 0x03); }
+
+    // bit 4 of control: 0 switches 8KB of CHR at once, 1 switches two 4KB
+    // halves independently.
+    bool chr_4k_mode() const { return (control & 0x10) != 0; }
+
+    // Which 16KB PRG bank and 4KB CHR bank the given address currently reads
+    // through. Pure functions of the registers, so they can be reasoned about
+    // and tested without driving a read.
+    uint32_t prg_bank_offset(const uint16_t cpu_addr) const;
+    uint32_t chr_bank_offset(const uint16_t ppu_addr) const;
+
+private:
+    // Commits a completed 5-bit value to the register the address selects, and
+    // applies whatever side effects it has outside this class - mirroring lives
+    // on ROM because the PPU reads it live.
+    void write_register(const uint16_t addr, const uint8_t value);
+
+    void apply_mirroring();
+
+    // MMC1 ignores a write that lands on the CPU cycle immediately after
+    // another one. That is not an optimisation: a read-modify-write instruction
+    // targeting $8000-$FFFF puts two writes back to back, and games rely on
+    // only the FIRST being seen. Without this, an INC $E000 clocks two bits in
+    // and desynchronises the shift register for every write that follows.
+    //
+    // Held as an absolute cycle rather than a flag so that "the previous cycle"
+    // stays true across whatever else the bus did in between.
+    uint64_t last_write_cycle = 0;
+    bool wrote_before = false;
 };
 
 // UNROM (2): a switchable 16KB PRG window at $8000-$BFFF, with $C000-$FFFF

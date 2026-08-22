@@ -67,7 +67,7 @@ GTEST_TEST(mmc3, loads_and_reports_its_bank_counts)
     Bus console;
     ASSERT_TRUE(console.load_cartridge(rom.path));
 
-    EXPECT_EQ(4, console.rom.mapper_id);
+    EXPECT_EQ(MapperId::mmc3, console.rom.mapper_id);
     EXPECT_EQ(16, console.rom.prg_8k_bank_count) << "8 x 16KB = 16 banks of 8KB";
     EXPECT_EQ(16, console.rom.chr_1k_bank_count) << "2 x 8KB = 16 banks of 1KB";
 }
@@ -180,12 +180,12 @@ GTEST_TEST(mmc3, a000_changes_mirroring_at_runtime)
 
     // Write a byte through one nametable and see where its mirror lands.
     console.write(0xA000, 0x00);  // horizontal
-    ASSERT_TRUE(console.rom.horizontal_mirroring);
+    ASSERT_EQ(ROM::Mirroring::horizontal, console.rom.mirroring);
     ppu.ppu_bus_write(0x2000, 0x11);
     EXPECT_EQ(0x11, ppu.ppu_bus_read(0x2400)) << "horizontal: $2000 and $2400 are the same screen";
 
     console.write(0xA000, 0x01);  // vertical
-    ASSERT_FALSE(console.rom.horizontal_mirroring);
+    ASSERT_EQ(ROM::Mirroring::vertical, console.rom.mirroring);
     ppu.ppu_bus_write(0x2000, 0x22);
     EXPECT_EQ(0x22, ppu.ppu_bus_read(0x2800)) << "vertical: $2000 and $2800 are the same screen";
 }

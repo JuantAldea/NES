@@ -103,7 +103,12 @@ Bus::DecodedAddress Bus::decode(const uint16_t addr, const Access access)
         //                 only the write is swallowed. This is the direction-
         //                 dependent case, and the reason Access has to be
         //                 consulted here at all.
-        if (!rom.prg_ram_enabled) {
+        // Nothing soldered to the board at all is a different thing from a chip
+        // the mapper has switched off, and both decode to no device. Only an
+        // NES 2.0 header can say "no work RAM"; an iNES 1.0 image cannot
+        // express it and load() gives those 8KB, so every cartridge that
+        // worked before this check existed still gets its window.
+        if (!rom.has_prg_ram() || !rom.prg_ram_enabled) {
             return {nullptr, addr};
         }
         if (access == Access::Write && rom.prg_ram_write_protected) {

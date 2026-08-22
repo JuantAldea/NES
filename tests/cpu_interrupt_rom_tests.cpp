@@ -135,7 +135,7 @@ GTEST_TEST(cpuInterruptHarness, roms_present_and_prg_ram_readable)
     EXPECT_TRUE(signature_present(console));
 
     EXPECT_EQ(32768u, console.rom.prg_rom.size());
-    EXPECT_EQ(0, console.rom.mapper_id);
+    EXPECT_EQ(MapperId::nrom, console.rom.mapper_id);
 }
 
 }  // namespace interrupts

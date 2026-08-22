@@ -1165,14 +1165,33 @@ void PPU::process_visible_scanline()
 // Horizontal mirroring duplicates side by side, so a game scrolling VERTICALLY
 // gets two distinct screens - the naming refers to how the duplication runs,
 // not to the scrolling it suits.
+//
+// MMC1 adds two more: it can tie CIRAM A10 to a constant and point all four
+// slots at ONE screen, giving up the second in exchange for being able to
+// scroll the whole 32x30 without a seam. That is a runtime choice written to
+// its control register, not a wiring decision, which is why ROM::mirroring is
+// an enum the mapper assigns rather than the header bit it used to be.
 uint16_t PPU::nametable_offset(const uint16_t addr) const
 {
     const uint16_t index = (addr - 0x2000) & 0x0FFF;
     const uint16_t screen = index / 0x0400;
     const uint16_t within = index & 0x03FF;
 
-    const bool horizontal = bus->rom.horizontal_mirroring;
-    const uint16_t bank = horizontal ? (screen >> 1) : (screen & 1);
+    uint16_t bank = 0;
+    switch (bus->rom.mirroring) {
+    case ROM::Mirroring::horizontal:
+        bank = screen >> 1;
+        break;
+    case ROM::Mirroring::vertical:
+        bank = screen & 1;
+        break;
+    case ROM::Mirroring::single_screen_lower:
+        bank = 0;
+        break;
+    case ROM::Mirroring::single_screen_upper:
+        bank = 1;
+        break;
+    }
 
     return static_cast<uint16_t>(bank * 0x0400 + within);
 }

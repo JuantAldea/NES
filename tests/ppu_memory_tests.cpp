@@ -81,7 +81,7 @@ GTEST_TEST(testPPUMemory, horizontal_mirroring_pairs_2000_with_2400)
 
     Bus console;
     ASSERT_TRUE(console.load_cartridge(rom.path));
-    ASSERT_TRUE(console.rom.horizontal_mirroring);
+    ASSERT_EQ(ROM::Mirroring::horizontal, console.rom.mirroring);
 
     console.ppu.ppu_bus_write(0x2000, 0x11);
     EXPECT_EQ(0x11, console.ppu.ppu_bus_read(0x2400)) << "$2400 must alias $2000 under horizontal mirroring";
@@ -101,7 +101,7 @@ GTEST_TEST(testPPUMemory, vertical_mirroring_pairs_2000_with_2800)
 
     Bus console;
     ASSERT_TRUE(console.load_cartridge(rom.path));
-    ASSERT_FALSE(console.rom.horizontal_mirroring);
+    ASSERT_EQ(ROM::Mirroring::vertical, console.rom.mirroring);
 
     console.ppu.ppu_bus_write(0x2000, 0x33);
     EXPECT_EQ(0x33, console.ppu.ppu_bus_read(0x2800)) << "$2800 must alias $2000 under vertical mirroring";

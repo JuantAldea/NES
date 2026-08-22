@@ -229,7 +229,9 @@ void draw_cpu_panel(Bus& console)
     flag_checkbox(console, "C", CPU::FLAGS::C);
 
     ImGui::Separator();
-    ImGui::Text("mapper %u, PRG %zu KB, CHR %zu KB", console.rom.mapper_id, console.rom.prg_rom.size() / 1024,
+    const char* board = mapper_name(console.rom.mapper_id);
+    ImGui::Text("mapper %u (%s), PRG %zu KB, CHR %zu KB", static_cast<unsigned>(console.rom.mapper_id),
+                board != nullptr ? board : "unnamed", console.rom.prg_rom.size() / 1024,
                 console.rom.chr_rom.size() / 1024);
     if (console.rom.chr_bank_count > 1) {
         ImGui::Text("CHR bank %u/%u", console.rom.chr_bank, console.rom.chr_bank_count);

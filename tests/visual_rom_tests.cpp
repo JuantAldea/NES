@@ -75,7 +75,7 @@ GTEST_TEST(visualRoms, the_240p_suite_runs_and_switches_prg_banks_under_its_own_
     ASSERT_TRUE(console.load_cartridge(rom_path("240pee.nes")))
         << "visual ROMs absent - run tests/test_files/fetch_visual_roms.sh";
 
-    ASSERT_EQ(2, console.rom.mapper_id) << "240pee is UNROM";
+    ASSERT_EQ(MapperId::uxrom, console.rom.mapper_id) << "240pee is UNROM";
     ASSERT_EQ(0, console.rom.prg_bank) << "precondition: power-on bank";
 
     console.cpu.reset();

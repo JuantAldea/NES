@@ -161,7 +161,7 @@ GTEST_TEST(blarggHarness, prg_ram_window_is_readable_and_roms_are_present)
     // And the cartridge must actually be visible, i.e. this is a 32KB NROM
     // image filling $8000-$FFFF rather than a 16KB one mirrored into it.
     EXPECT_EQ(32768u, console.rom.prg_rom.size());
-    EXPECT_EQ(0, console.rom.mapper_id);
+    EXPECT_EQ(MapperId::nrom, console.rom.mapper_id);
 }
 
 }  // namespace ppu_vbl_nmi

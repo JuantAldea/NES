@@ -141,7 +141,7 @@ GTEST_TEST(testMemory, load_nestest_header_fields)
     ASSERT_TRUE(rom.load(nestest_path()));
     EXPECT_EQ(16384u, rom.prg_rom.size());
     EXPECT_EQ(8192u, rom.chr_rom.size());
-    EXPECT_EQ(0, rom.mapper_id);
+    EXPECT_EQ(MapperId::nrom, rom.mapper_id);
 }
 
 GTEST_TEST(testMemory, load_nestest_through_bus)
@@ -177,10 +177,14 @@ struct SyntheticRom {
                uint8_t flags7,
                uint8_t prg_fill = 0xAA,
                uint8_t chr_fill = 0xBB,
+               // NES 2.0 work-RAM sizes. Only read when flags7 bits 2-3 are
+               // 10b, which is the whole point of the pair of tests below.
+               uint8_t byte10 = 0,
                bool include_banks = true)
     {
         std::ofstream out(path, std::ios::binary | std::ios::trunc);
-        const uint8_t header[16] = {'N', 'E', 'S', 0x1A, prg_banks, chr_banks, flags6, flags7, 0, 0, 0, 0, 0, 0, 0, 0};
+        const uint8_t header[16] = {'N', 'E', 'S',    0x1A, prg_banks, chr_banks, flags6, flags7,
+                                    0,   0,   byte10, 0,    0,         0,         0,      0};
         out.write(reinterpret_cast<const char*>(header), sizeof(header));
 
         if (!include_banks) {
@@ -278,13 +282,13 @@ GTEST_TEST(testMemory, mirroring_flag_is_decoded)
     horizontal.write(1, 1, /*flags6=*/0x00, 0);
     ROM rom_h(nullptr);
     ASSERT_TRUE(rom_h.load(horizontal.path));
-    EXPECT_TRUE(rom_h.horizontal_mirroring) << "flags6 bit 0 clear means horizontal mirroring";
+    EXPECT_EQ(ROM::Mirroring::horizontal, rom_h.mirroring) << "flags6 bit 0 clear means horizontal mirroring";
 
     SyntheticRom vertical("mirror_v_test.nes");
     vertical.write(1, 1, /*flags6=*/0x01, 0);
     ROM rom_v(nullptr);
     ASSERT_TRUE(rom_v.load(vertical.path));
-    EXPECT_FALSE(rom_v.horizontal_mirroring) << "flags6 bit 0 set means vertical mirroring";
+    EXPECT_EQ(ROM::Mirroring::vertical, rom_v.mirroring) << "flags6 bit 0 set means vertical mirroring";
 }
 
 // NROM addresses at most 32KB of PRG. A larger image would otherwise load with
@@ -383,25 +387,94 @@ GTEST_TEST(testMemory, reject_truncated_file)
     std::remove(path.c_str());
 }
 
-GTEST_TEST(testMemory, reject_nonzero_mapper)
+// This test used to build a MAPPER 1 image and expect rejection, which stopped
+// meaning anything the day MMC1 was implemented - and it kept passing, because
+// the header it built also had only one PRG bank, which MMC1 rejects for an
+// entirely different reason. A green test measuring the wrong thing is the
+// failure mode this repo is built to avoid, so it is now mapper 5: named in
+// MapperId (so the message is useful) and deliberately not implemented.
+GTEST_TEST(testMemory, reject_unimplemented_mapper)
 {
-    const std::string path = std::string(NES_TEST_FILES_DIR) + "/mapper1_test.nes";
-    {
-        std::ofstream out(path, std::ios::binary | std::ios::trunc);
-        // flags6 high nibble = 0x1 -> mapper id low nibble 1 (mapper 1, MMC1).
-        const uint8_t header[16] = {'N', 'E', 'S', 0x1A, 1, 1, 0x10, 0, 0, 0, 0, 0, 0, 0, 0, 0};
-        out.write(reinterpret_cast<const char*>(header), sizeof(header));
-        std::vector<uint8_t> prg(16 * 1024, 0);
-        std::vector<uint8_t> chr(8 * 1024, 0);
-        out.write(reinterpret_cast<const char*>(prg.data()), prg.size());
-        out.write(reinterpret_cast<const char*>(chr.data()), chr.size());
-    }
+    SyntheticRom rom_file("mapper5_test.nes");
+    // flags6 high nibble = 0x5 -> mapper id low nibble 5 (mapper 5, MMC5).
+    rom_file.write(/*prg_banks=*/1, /*chr_banks=*/1, /*flags6=*/0x50, /*flags7=*/0);
 
     ROM rom(nullptr);
-    EXPECT_FALSE(rom.load(path));
+    EXPECT_FALSE(rom.load(rom_file.path));
     EXPECT_FALSE(rom.loaded());
+}
 
-    std::remove(path.c_str());
+// MMC1 IS implemented, so what rejects this one is the board's own constraint:
+// every SxROM has a fixed 16KB window, so a single-bank image cannot be one.
+GTEST_TEST(testMemory, reject_mmc1_with_one_prg_bank)
+{
+    SyntheticRom rom_file("mmc1_one_bank_test.nes");
+    rom_file.write(/*prg_banks=*/1, /*chr_banks=*/1, /*flags6=*/0x10, /*flags7=*/0);
+
+    ROM rom(nullptr);
+    EXPECT_FALSE(rom.load(rom_file.path));
+    EXPECT_FALSE(rom.loaded());
+}
+
+// Every mapper this emulator implements must also be NAMED, or its rejection
+// message names a number and nothing else. Checked here rather than trusted,
+// because the two tables live apart on purpose - naming a mapper is not a claim
+// to support it.
+GTEST_TEST(testMemory, every_supported_mapper_is_named)
+{
+    for (const MapperId id : {MapperId::nrom, MapperId::mmc1, MapperId::uxrom, MapperId::cnrom, MapperId::mmc3}) {
+        EXPECT_TRUE(mapper_supported(id)) << "mapper " << static_cast<int>(id) << " should have a board";
+        EXPECT_NE(nullptr, mapper_name(id)) << "mapper " << static_cast<int>(id) << " has a board but no name";
+    }
+    // A number nobody has named, to prove the lookup can say no.
+    EXPECT_EQ(nullptr, mapper_name(static_cast<MapperId>(255)));
+    EXPECT_FALSE(mapper_supported(static_cast<MapperId>(255)));
+}
+
+// NES 2.0's byte 10 is the only place a cartridge can say how much work RAM it
+// has, or that it has none. Nothing else in the file carries it, so a loader
+// that skipped the byte would give every board 8KB - which is wrong for six of
+// the nine Holy Mapperel mapper-1 images and is one of the things they test.
+GTEST_TEST(testMemory, nes2_byte_10_sizes_the_work_ram)
+{
+    struct Case {
+        uint8_t byte10;
+        uint32_t volatile_bytes;
+        uint32_t battery_bytes;
+    };
+    // Low nibble is volatile work RAM, high nibble battery-backed; each is a
+    // shift count where 0 means absent and n means 64 << n.
+    for (const Case& c : {Case{0x00, 0, 0}, Case{0x07, 8 * 1024, 0}, Case{0x70, 0, 8 * 1024}, Case{0x90, 0, 32 * 1024},
+                          Case{0x77, 8 * 1024, 8 * 1024}}) {
+        SyntheticRom rom_file("nes2_wram_test.nes");
+        // flags7 bits 2-3 = 10b is the NES 2.0 marker; MMC1 with two PRG banks.
+        rom_file.write(/*prg_banks=*/2, /*chr_banks=*/1, /*flags6=*/0x10, /*flags7=*/0x08, /*prg_fill=*/0,
+                       /*chr_fill=*/0, /*byte10=*/c.byte10);
+
+        ROM rom(nullptr);
+        ASSERT_TRUE(rom.load(rom_file.path)) << "byte 10 = " << static_cast<int>(c.byte10);
+        EXPECT_TRUE(rom.nes2);
+        EXPECT_EQ(c.volatile_bytes, rom.prg_ram_size) << "byte 10 = " << static_cast<int>(c.byte10);
+        EXPECT_EQ(c.battery_bytes, rom.prg_nvram_size) << "byte 10 = " << static_cast<int>(c.byte10);
+        EXPECT_EQ(c.volatile_bytes + c.battery_bytes != 0, rom.has_prg_ram());
+    }
+}
+
+// An iNES 1.0 image cannot express "no work RAM", so it must not be read as
+// saying so. This is what keeps every cartridge that loaded before NES 2.0
+// parsing existed seeing the same $6000-$7FFF window it saw then - the bytes
+// being ignored here are padding that some dumpers filled with a name string.
+GTEST_TEST(testMemory, ines1_keeps_its_8k_work_ram_whatever_byte_10_holds)
+{
+    SyntheticRom rom_file("ines1_wram_test.nes");
+    rom_file.write(/*prg_banks=*/1, /*chr_banks=*/1, /*flags6=*/0x00, /*flags7=*/0x00, /*prg_fill=*/0,
+                   /*chr_fill=*/0, /*byte10=*/0x00);
+
+    ROM rom(nullptr);
+    ASSERT_TRUE(rom.load(rom_file.path));
+    EXPECT_FALSE(rom.nes2);
+    EXPECT_TRUE(rom.has_prg_ram()) << "byte 10 is zero, but iNES 1.0 does not mean that";
+    EXPECT_EQ(8u * 1024, rom.prg_ram_size);
 }
 
 GTEST_TEST(testMemory, reject_zero_prg_banks)
