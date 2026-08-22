@@ -72,6 +72,11 @@ public:
     // directly, or a CNROM cartridge would be stuck on bank 0 forever.
     uint8_t chr_read(const uint16_t addr) const;
 
+    // Where a PPU address lands in the console's CHR-RAM array. Same mapping as
+    // chr_read uses for CHR-ROM, because it is the same set of wires - see the
+    // definition.
+    uint32_t chr_ram_offset(const uint16_t addr) const;
+
     MapperId mapper_id = MapperId::nrom;
     Mirroring mirroring = Mirroring::horizontal;
 

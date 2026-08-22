@@ -1242,7 +1242,10 @@ uint8_t PPU::ppu_bus_read(const uint16_t addr)
         if (bus->rom.has_chr_rom()) {
             return bus->rom.chr_read(a);
         }
-        return chr_ram[a];
+        // CHR-RAM goes through the mapper too. The array is ours; the address
+        // decoding is the cartridge's, and MMC1 in 4KB mode pages an 8KB chip
+        // as two halves. Indexing by `a` directly unbanks it silently.
+        return chr_ram[bus->rom.chr_ram_offset(a) % chr_ram_size];
     }
 
     if (a < 0x3F00) {
@@ -1267,7 +1270,7 @@ void PPU::ppu_bus_write(const uint16_t addr, const uint8_t data)
         if (bus->rom.has_chr_rom()) {
             return;
         }
-        chr_ram[a] = data;
+        chr_ram[bus->rom.chr_ram_offset(a) % chr_ram_size] = data;
         return;
     }
 

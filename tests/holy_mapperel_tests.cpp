@@ -165,23 +165,24 @@ struct Expected {
     const char* detail;
 };
 
-// The three CHR-RAM boards - SGROM and both SUROMs - are pinned at `0003`, and
-// that is a real divergence recorded rather than hidden, in the same spirit as
-// the unstable $AB opcode in instr_test_roms.cpp.
+// All nine report 0000. Worth recording how the last three got there, because
+// the diagnosis came from WHICH images failed rather than from reading code.
 //
-// The two set bits are the two 4K CHR windows: mmcdrivers.s runs
+// The three CHR-RAM boards - SGROM and both SUROMs - reported 0003 at first,
+// while all six CHR-ROM boards reported 0000. Digits are WRAM, PRG, IRQ, CHR,
+// and the two set bits are the two 4K CHR windows: mmcdrivers.s runs
 // mmc1_test_one_chr_window at $0000 and again at $1000, ORing the second in
-// shifted left. So both windows fail to read back their bank tags, and they
-// fail identically on a 128K board and on a 512K one - which rules out the PRG
-// side, since only the 512K boards route a CHR register bit to PRG A18.
+// shifted left. Identical on a 128K board and a 512K one, which ruled out the
+// PRG side, since only the 512K boards route a CHR register bit to PRG A18.
 //
-// Every CHR-ROM image in the set reports 0000, so the fault is in the CHR-RAM
-// path specifically. Pinning the exact value keeps that finding visible: a
-// change that breaks a CHR-ROM board, or that alters HOW the CHR-RAM boards
-// fail, still surfaces as a distinct message instead of being absorbed into a
-// test everyone has learned to expect red.
+// The cause was that CHR-RAM was indexed FLAT - `chr_ram[addr]` - on the
+// assumption that RAM the console supplies is not banked. CHR-RAM is not the
+// console's: it sits on the cartridge behind the same mapper CHR address lines
+// as CHR-ROM, so MMC1 in 4KB mode pages an 8KB chip as two halves. It now goes
+// through Mapper::chr_offset like everything else. No CHR-ROM oracle could have
+// found this, which is the argument for taking all nine images rather than one.
 const Expected kRoms[] = {
-    {"M1_P128K", "001 SGROM (MMC1)", "128K PRG ROM", "PRG RAM MISSING", "8K CHR RAM OK", "0003"},
+    {"M1_P128K", "001 SGROM (MMC1)", "128K PRG ROM", "PRG RAM MISSING", "8K CHR RAM OK", "0000"},
     {"M1_P128K_C32K", "001 SFROM (MMC1)", "128K PRG ROM", "PRG RAM MISSING", "32K CHR ROM OK", "0000"},
     {"M1_P128K_C32K_S8K", "001 SJROM (MMC1)", "128K PRG ROM", "8K PRG RAM OK", "32K CHR ROM OK", "0000"},
     {"M1_P128K_C32K_W8K", "001 SJROM (MMC1)", "128K PRG ROM", "8K PRG RAM OK", "32K CHR ROM OK", "0000"},
@@ -193,8 +194,8 @@ const Expected kRoms[] = {
     // a fixed 8KB Bus device, so SXROM's four switchable 8KB banks have nowhere
     // to live. Recorded as measured; banking it is a separate change with its
     // own oracle row waiting here for it.
-    {"M1_P512K_S8K", "001 SUROM (MMC1)", "512K PRG ROM", "8K PRG RAM OK", "8K CHR RAM OK", "0003"},
-    {"M1_P512K_S32K", "001 SUROM (MMC1)", "512K PRG ROM", "8K PRG RAM OK", "8K CHR RAM OK", "0003"},
+    {"M1_P512K_S8K", "001 SUROM (MMC1)", "512K PRG ROM", "8K PRG RAM OK", "8K CHR RAM OK", "0000"},
+    {"M1_P512K_S32K", "001 SUROM (MMC1)", "512K PRG ROM", "8K PRG RAM OK", "8K CHR RAM OK", "0000"},
 };
 
 }  // namespace

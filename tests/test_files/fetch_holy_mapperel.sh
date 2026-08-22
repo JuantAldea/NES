@@ -64,41 +64,48 @@
 # nothing about whether the ROMs boot and report rather than hanging, which is
 # the property that makes a suite usable as an oracle.
 #
-# AFTER the first cut of MMC1 - shift register, all four PRG modes, both CHR
-# modes, runtime mirroring, SUROM's PRG A18 - and this is the work queue:
+# AFTER, and this is the CURRENT state rather than the work queue the first cut
+# produced - see the FIXED note below for what the first cut got wrong and how
+# the failing SET named it:
 #
 #   image                board  PRG    work RAM          CHR             detail
-#   M1_P128K             SGROM  128K   MISSING           8K RAM OK       0003
+#   M1_P128K             SGROM  128K   MISSING           8K RAM OK       0000
 #   M1_P128K_C32K        SFROM  128K   MISSING           32K ROM OK      0000
 #   M1_P128K_C32K_S8K    SJROM  128K   8K OK             32K ROM OK      0000
 #   M1_P128K_C32K_W8K    SJROM  128K   8K OK             32K ROM OK      0000
 #   M1_P128K_C128K       SLROM  128K   MISSING           128K ROM OK     0000
 #   M1_P128K_C128K_S8K   SKROM  128K   8K OK             128K ROM OK     0000
 #   M1_P128K_C128K_W8K   SKROM  128K   8K OK             128K ROM OK     0000
-#   M1_P512K_S8K         SUROM  512K   8K OK             8K RAM OK       0003
-#   M1_P512K_S32K        SUROM  512K   8K OK  (want 32K) 8K RAM OK       0003
+#   M1_P512K_S8K         SUROM  512K   8K OK             8K RAM OK       0000
+#   M1_P512K_S32K        SUROM  512K   8K OK  (want 32K) 8K RAM OK       0000
 #
 # Every board is identified correctly, which is the load-bearing line: the ROM
 # works out which SxROM it is on purely from how the mapper answers, so a right
 # name means mirroring control, PRG banking and size detection all behaved.
 #
-# TWO THINGS LEFT, both recorded rather than papered over:
+# TWO THINGS WERE LEFT AT THAT POINT. One is now fixed, one is not, and the
+# fixed one is the argument for taking all nine images rather than a favourite.
 #
-#   detail 0003 on the three CHR-RAM boards. The digits are WRAM, PRG, IRQ, CHR
-#   and the CHR one is 3 - both 4K windows failed their bank-tag readback
+#   FIXED, and the detail column above now reads 0000 on every row: the three
+#   CHR-RAM boards read 0003 where all six CHR-ROM boards read 0000. Digits are
+#   WRAM, PRG, IRQ, CHR, so both 4K CHR windows failed their bank-tag readback
 #   (mmcdrivers.s runs mmc1_test_one_chr_window at $0000 and again at $1000,
 #   ORing the second in shifted left). Identical on a 128K board and on a 512K
-#   one, which rules out the PRG side: only the 512K boards route a CHR register
-#   bit to PRG A18. Every CHR-ROM image reports 0000, so it is the CHR-RAM path.
+#   one, which ruled out the PRG side - only the 512K boards route a CHR
+#   register bit to PRG A18 - and left the CHR-RAM path.
 #
-#   M1_P512K_S32K reports 8K of work RAM where the header says 32K. That is the
-#   console, not the mapper: PrgRAM is a fixed 8KB Bus device, so SXROM's four
-#   switchable banks have nowhere to live.
+#   The cause was that CHR-RAM was indexed FLAT, `chr_ram[addr]`, because the
+#   array lives in the PPU and the comment there called it RAM "the console
+#   supplies". It is not the console's. CHR-RAM sits on the cartridge behind the
+#   same mapper CHR address lines as CHR-ROM, so MMC1 in 4KB mode pages an 8KB
+#   chip as two halves. It goes through Mapper::chr_offset now.
 #
-# Both are pinned exactly in tests/holy_mapperel_tests.cpp, the way opcode $AB
-# is pinned in tests/instr_test_roms.cpp - so fixing either, or breaking a board
-# that passes today, surfaces as a distinct message instead of a row everyone
-# has learned to expect red.
+#   NOT FIXED: M1_P512K_S32K reports 8K of work RAM where its header says 32K.
+#   That is the console rather than the mapper - PrgRAM is a fixed 8KB Bus
+#   device, so SXROM's four switchable banks have nowhere to live. Pinned
+#   exactly in tests/holy_mapperel_tests.cpp, the way opcode $AB is pinned in
+#   tests/instr_test_roms.cpp, so closing it surfaces as a distinct message
+#   instead of a row everyone has learned to expect red.
 #
 # Settle frames were measured too and live next to kMaxFrames in that file.
 #

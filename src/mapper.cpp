@@ -202,6 +202,14 @@ std::unique_ptr<Mapper> make_mapper(const MapperId id, ROM& rom)
     return board == nullptr ? nullptr : board->make(rom);
 }
 
+// The single 8KB window, at whatever bank a one-latch board last selected.
+// NROM, UNROM and CNROM are all exactly this - chr_bank never leaves 0 on the
+// first two - so none of them overrides it.
+uint32_t Mapper::chr_offset(const uint16_t ppu_addr) const
+{
+    return static_cast<uint32_t>(rom.chr_bank) * CHR_ROM_BANK_SIZE + (ppu_addr & 0x1FFF);
+}
+
 // --- NROM (0) ---------------------------------------------------------------
 
 // Nothing to latch. NROM PRG-ROM is not writable and the board decodes no
@@ -216,16 +224,6 @@ void NRom::cpu_write(const uint16_t addr, const uint8_t data)
 // images fill $8000-$FFFF directly. The modulo handles both cases since
 // prg_rom.size() is either 16384 or 32768 (a multiple of the bank size).
 uint8_t NRom::prg_read(const uint16_t addr) const { return rom.prg_rom[(addr - 0x8000) % rom.prg_rom.size()]; }
-
-uint8_t NRom::chr_read(const uint16_t addr) const
-{
-    // One fixed bank, so chr_bank is always 0 and this reduces to a plain index.
-    const size_t offset = static_cast<size_t>(rom.chr_bank) * CHR_ROM_BANK_SIZE + (addr & 0x1FFF);
-    // Cannot go out of range given the load-time bank-count check, but a
-    // cartridge whose file was shorter than its header claimed would have been
-    // rejected there, so this is belt and braces rather than a live path.
-    return offset < rom.chr_rom.size() ? rom.chr_rom[offset] : 0;
-}
 
 // --- MMC1 (1) ---------------------------------------------------------------
 
@@ -374,11 +372,17 @@ uint32_t Mmc1::prg_bank_offset(const uint16_t cpu_addr) const
     return ((half + bank) & (banks - 1)) * PRG_ROM_BANK_SIZE + (cpu_addr & 0x3FFF);
 }
 
-uint32_t Mmc1::chr_bank_offset(const uint16_t ppu_addr) const
+uint32_t Mmc1::chr_offset(const uint16_t ppu_addr) const
 {
-    const uint32_t banks = static_cast<uint32_t>(rom.chr_bank_count) * 2;
+    // Whichever pattern memory the cartridge brought, counted in 4KB banks.
+    // CHR-RAM is banked here exactly as CHR-ROM is - it sits behind the same
+    // mapper CHR address lines - and an 8KB chip in 4KB mode is two banks, not
+    // an unbanked flat 8KB. That distinction is the whole of Holy Mapperel's
+    // CHR window test on SGROM and SUROM.
+    const uint32_t banks =
+        rom.chr_rom.empty() ? rom.chr_ram_size / CHR_ROM_4K_BANK_SIZE : static_cast<uint32_t>(rom.chr_bank_count) * 2;
     if (banks == 0) {
-        return 0;
+        return ppu_addr & 0x1FFF;
     }
 
     const bool upper_half = (ppu_addr & 0x1000) != 0;
@@ -391,12 +395,6 @@ uint32_t Mmc1::chr_bank_offset(const uint16_t ppu_addr) const
 }
 
 uint8_t Mmc1::prg_read(const uint16_t addr) const { return rom.prg_rom[prg_bank_offset(addr)]; }
-
-uint8_t Mmc1::chr_read(const uint16_t addr) const
-{
-    const uint32_t offset = chr_bank_offset(addr);
-    return offset < rom.chr_rom.size() ? rom.chr_rom[offset] : 0;
-}
 
 // --- UNROM (2) --------------------------------------------------------------
 
@@ -429,17 +427,6 @@ uint8_t UnRom::prg_read(const uint16_t addr) const
     return rom.prg_rom[bank * PRG_ROM_BANK_SIZE + (addr & 0x3FFF)];
 }
 
-uint8_t UnRom::chr_read(const uint16_t addr) const
-{
-    // UNROM carries no CHR-ROM at all - the console's CHR-RAM is the pattern
-    // memory, and ROM::chr_read has already returned for an empty chr_rom before
-    // reaching here. Kept as the same plain index the other latch boards use so
-    // that a UNROM image which somehow carried CHR-ROM reads it rather than
-    // silently returning zero.
-    const size_t offset = static_cast<size_t>(rom.chr_bank) * CHR_ROM_BANK_SIZE + (addr & 0x1FFF);
-    return offset < rom.chr_rom.size() ? rom.chr_rom[offset] : 0;
-}
-
 // --- CNROM (3) --------------------------------------------------------------
 
 // A write anywhere in $8000-$FFFF latches the low bits as the CHR bank number.
@@ -453,12 +440,6 @@ void CnRom::cpu_write(const uint16_t addr, const uint8_t data)
 
 // PRG behaves exactly as NROM's does.
 uint8_t CnRom::prg_read(const uint16_t addr) const { return rom.prg_rom[(addr - 0x8000) % rom.prg_rom.size()]; }
-
-uint8_t CnRom::chr_read(const uint16_t addr) const
-{
-    const size_t offset = static_cast<size_t>(rom.chr_bank) * CHR_ROM_BANK_SIZE + (addr & 0x1FFF);
-    return offset < rom.chr_rom.size() ? rom.chr_rom[offset] : 0;
-}
 
 // --- MMC3 (4) ---------------------------------------------------------------
 
@@ -606,14 +587,19 @@ uint8_t Mmc3::prg_read(const uint16_t addr) const
     return offset < rom.prg_rom.size() ? rom.prg_rom[offset] : 0;
 }
 
-uint8_t Mmc3::chr_read(const uint16_t addr) const
+uint32_t Mmc3::chr_offset(const uint16_t ppu_addr) const
 {
+    // A cartridge with no CHR-ROM uses CHR-RAM, and this board is NOT given the
+    // banking of it that MMC1 has below. Real MMC3 does drive the RAM's address
+    // lines, so paging it is very likely right - but nothing in the suite
+    // measures it, and an unmeasured "very likely" is how a wrong dummy read
+    // gets in. Identity keeps the behaviour that every green MMC3 test was
+    // written against. The Holy Mapperel M4 images would settle it.
     if (rom.chr_1k_bank_count == 0) {
-        return 0;
+        return ppu_addr & 0x1FFF;
     }
-    const uint16_t bank = chr_bank_for(addr) % rom.chr_1k_bank_count;
-    const size_t offset = static_cast<size_t>(bank) * 1024 + (addr & 0x03FF);
-    return offset < rom.chr_rom.size() ? rom.chr_rom[offset] : 0;
+    const uint16_t bank = chr_bank_for(ppu_addr) % rom.chr_1k_bank_count;
+    return static_cast<uint32_t>(bank) * 1024 + (ppu_addr & 0x03FF);
 }
 
 // A change on PPU address line A12, as the mapper sees it.

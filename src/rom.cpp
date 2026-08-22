@@ -219,13 +219,24 @@ uint8_t ROM::read(const uint16_t addr)
 
 uint8_t ROM::chr_read(const uint16_t addr) const
 {
-    // An empty chr_rom means the cartridge uses CHR-RAM, which is the PPU's, not
-    // the mapper's. Checked here rather than in four boards.
     if (chr_rom.empty() || !mapper) {
         return 0;
     }
-    return mapper->chr_read(addr);
+    const uint32_t offset = mapper->chr_offset(addr);
+    // Cannot go out of range given the load-time bank-count checks, but a
+    // cartridge whose file was shorter than its header claimed would have been
+    // rejected there - so this is belt and braces rather than a live path.
+    return offset < chr_rom.size() ? chr_rom[offset] : 0;
 }
+
+// Where in the console's CHR-RAM array a PPU address lands.
+//
+// The array is the PPU's because that is where it was put, but the ADDRESSING
+// is the cartridge's: CHR-RAM sits behind the mapper's CHR lines exactly as
+// CHR-ROM does. Indexing it flat - which is what happened until Holy Mapperel's
+// CHR-RAM boards failed their window test - silently unbanks it, and no
+// CHR-ROM oracle can see that.
+uint32_t ROM::chr_ram_offset(const uint16_t addr) const { return mapper ? mapper->chr_offset(addr) : (addr & 0x1FFF); }
 
 // A change on PPU address line A12. Only the MMC3 has the wire; Mapper's
 // default override is what makes that true of three boards without them saying

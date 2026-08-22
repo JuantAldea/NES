@@ -22,7 +22,7 @@ There is still no audio.
 | PPU background | Loopy `v`/`t`/`x`/`w`, dot-exact tile pipeline, framebuffer of palette indices + emphasis |
 | Sprites | Secondary OAM, per-dot evaluation, 8-per-line, the overflow search bug, priority, 8x16, flip. Passes blargg's 5 `sprite_overflow` and 11 `sprite_hit` ROMs |
 | Cartridge | iNES **and NES 2.0**, NROM (0), MMC1 (1), UNROM (2), CNROM (3) and MMC3 (4), CHR-ROM and CHR-RAM |
-| MMC1 | Serial shift register, all four PRG modes, both CHR modes, runtime mirroring including one-screen, work-RAM disable, SUROM's PRG A18. Identifies correctly as SGROM/SFROM/SJROM/SLROM/SKROM/SUROM under all nine mapper-1 Holy Mapperel images; see below for the two rows still short |
+| MMC1 | Serial shift register, all four PRG modes, both CHR modes (ROM *and* RAM), runtime mirroring including one-screen, work-RAM disable, SUROM's PRG A18. All nine mapper-1 Holy Mapperel images identify the board correctly and report detail code `0000`; the one row still short is SXROM's 32KB work RAM, see below |
 | MMC3 IRQ | A12-filtered scanline counter driving `/IRQ`, clocked on the right dot. Passes 5 of blargg's 6 `mmc3_test_2` ROMs; the sixth tests the other chip revision, see below |
 | APU | Frame counter, `/IRQ`, length counters, the power-on/RESET state. Delta modulation channel, minus its CPU stall. Passes **all** of blargg's `apu_test`, `apu_reset` and `blargg_apu_2005` ROMs. No audio output yet. |
 | Display | SDL2 + Dear ImGui: the screen and the debugger in one window |
@@ -77,17 +77,20 @@ Sharp boards and that is what real games depend on.
 `tests/mmc3_rom_tests.cpp` pins `6-MMC3_alt`'s exact status and message, so a
 change in *how* it fails still surfaces.
 
-Holy Mapperel's three **CHR-RAM** mapper-1 boards - `M1_P128K` and both
-`M1_P512K` images - report detail code `0003` where the six CHR-ROM boards
-report `0000`. That is a gap, not a chip disagreement: the digits are WRAM, PRG,
-IRQ and CHR, and `3` is both 4K CHR windows failing to read back their bank
-tags. Identical on a 128KB board and on a 512KB one, which rules out the PRG
-side, since only the 512KB boards route a CHR register bit to PRG A18.
-`M1_P512K_S32K` separately reports 8KB of work RAM where its header says 32KB,
-because `PrgRAM` is a fixed 8KB Bus device and SXROM's four switchable banks
-have nowhere to live. Both are pinned exactly in
-`tests/holy_mapperel_tests.cpp`, so fixing either - or breaking a board that
-passes today - surfaces as a distinct message.
+`M1_P512K_S32K` reports 8KB of work RAM where its header says 32KB, because
+`PrgRAM` is a fixed 8KB Bus device and SXROM's four switchable banks have
+nowhere to live. It is pinned exactly in `tests/holy_mapperel_tests.cpp`, so
+closing it - or breaking a board that passes today - surfaces as a distinct
+message. Every other row of all nine mapper-1 images reads clean.
+
+That file's neighbour in this list used to be the three **CHR-RAM** boards
+reporting detail code `0003` while the six CHR-ROM boards read `0000`, and how
+it was closed is worth keeping. CHR-RAM was indexed flat, `chr_ram[addr]`,
+because the array lives in the PPU and the comment there called it RAM "the
+console supplies". It is not the console's: CHR-RAM sits on the cartridge
+behind the same mapper CHR address lines as CHR-ROM, so MMC1 in 4KB mode pages
+an 8KB chip as two halves. No CHR-ROM oracle could have found that, and no
+single image could either - the diagnosis came from *which* three failed.
 
 `4-scanline_timing` used to be listed here as a third case - a real gap rather
 than a divergence, pinned at "fails subtest 3". **It now passes**, and how it

@@ -112,8 +112,22 @@ public:
     // A CPU read from $8000-$FFFF, already known to have PRG-ROM behind it.
     virtual uint8_t prg_read(const uint16_t addr) const = 0;
 
-    // A PPU read from $0000-$1FFF, already known to have CHR-ROM behind it.
-    virtual uint8_t chr_read(const uint16_t addr) const = 0;
+    // Which byte of the cartridge's PATTERN MEMORY a PPU address reads through
+    // right now. An offset rather than a byte, because the same mapping has to
+    // serve CHR-ROM and CHR-RAM and only one of those is the cartridge's to
+    // read - the RAM array lives in the PPU (see PPU::chr_ram).
+    //
+    // Splitting them was the bug. CHR-RAM was addressed FLAT, straight by
+    // `chr_ram[addr]`, on the assumption that RAM the console supplies is not
+    // banked. It is not the console's: CHR-RAM sits on the cartridge behind the
+    // mapper's CHR address lines exactly as CHR-ROM does, so MMC1 in 4KB mode
+    // pages an 8KB chip as two halves. Holy Mapperel's three CHR-RAM boards
+    // caught it and its six CHR-ROM boards could not have.
+    //
+    // The default is the single 8KB window at whatever bank a one-latch board
+    // selected, which is NROM, UNROM and CNROM exactly - chr_bank is simply
+    // always 0 on the first two.
+    virtual uint32_t chr_offset(const uint16_t ppu_addr) const;
 
     // PPU address line A12, watched for the MMC3's scanline counter. A default
     // rather than a pure virtual because three of the four boards genuinely do
@@ -137,7 +151,6 @@ public:
     using Mapper::Mapper;
     void cpu_write(const uint16_t addr, const uint8_t data) override;
     uint8_t prg_read(const uint16_t addr) const override;
-    uint8_t chr_read(const uint16_t addr) const override;
 };
 
 // MMC1 (1): the SxROM family. The first board here whose registers are not
@@ -150,7 +163,7 @@ public:
 
     void cpu_write(const uint16_t addr, const uint8_t data) override;
     uint8_t prg_read(const uint16_t addr) const override;
-    uint8_t chr_read(const uint16_t addr) const override;
+    uint32_t chr_offset(const uint16_t ppu_addr) const override;
 
     // The serial port. Five writes carrying one bit each in bit 0 fill this,
     // and the fifth commits it to whichever register the LAST write's address
@@ -222,7 +235,6 @@ public:
     using Mapper::Mapper;
     void cpu_write(const uint16_t addr, const uint8_t data) override;
     uint8_t prg_read(const uint16_t addr) const override;
-    uint8_t chr_read(const uint16_t addr) const override;
 };
 
 // CNROM (3): NROM's PRG with a switchable 8KB CHR window.
@@ -232,7 +244,6 @@ public:
     using Mapper::Mapper;
     void cpu_write(const uint16_t addr, const uint8_t data) override;
     uint8_t prg_read(const uint16_t addr) const override;
-    uint8_t chr_read(const uint16_t addr) const override;
 };
 
 // MMC3 (4): eight bank registers behind a select/data pair, runtime mirroring,
@@ -244,7 +255,7 @@ public:
     using Mapper::Mapper;
     void cpu_write(const uint16_t addr, const uint8_t data) override;
     uint8_t prg_read(const uint16_t addr) const override;
-    uint8_t chr_read(const uint16_t addr) const override;
+    uint32_t chr_offset(const uint16_t ppu_addr) const override;
     void observe_a12(const uint16_t ppu_addr, const uint64_t ppu_cycle) override;
 
     // Eight bank registers behind a select/data pair, rather than a single
