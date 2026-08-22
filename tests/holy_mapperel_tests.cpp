@@ -51,7 +51,8 @@ constexpr const char* kFetch = "run tests/test_files/fetch_holy_mapperel.sh";
 //   M1_P512K_S8K       166    M1_P512K_S32K       166
 //   M4_P128K            87    M4_P256K_C256K       22
 //   M0_P32K_C8K_V       14    M3_P32K_C32K_H       14    M2_P128K_V           85
-//   M7_P128K            85
+//   M7_P128K            85    M9_P128K_C64K        15
+//   M10_P128K_C64K_S8K  93    M10_P128K_C64K_W8K   93
 //
 // One line splits the whole table: CHR-RAM images pay for a write-and-verify
 // sweep of the RAM and CHR-ROM ones skip it. That is why M2_P128K_V takes 85
@@ -367,6 +368,34 @@ const Expected kAxRomRoms[] = {
 INSTANTIATE_TEST_SUITE_P(Mapper7,
                          HolyMapperel,
                          ::testing::ValuesIn(kAxRomRoms),
+                         [](const ::testing::TestParamInfo<Expected>& info) { return std::string(info.param.name); });
+
+// MMC2 and MMC4 - the first boards here the CPU does not fully drive. Their CHR
+// bank changes when the PPU FETCHES tile $FD or $FE, so these rows exercise a
+// path no other image in this suite touches: PPU::ppu_bus_read notifying the
+// mapper after serving a pattern byte.
+//
+// The board line carries the mirroring check, as it did for MMC3 and AxROM, and
+// here it does so more sharply than either. Measured both ways: with $F000 bit
+// 0 clear meaning vertical these identify as 009 PNROM and 010 F*ROM, and with
+// it flipped NEITHER renders a report inside 400 frames - detection runs from
+// RAM and hangs on a wrong answer rather than printing one. So a regression in
+// that single bit fails these as a timeout, not as a diff.
+//
+// "F*ROM" with a literal asterisk is the ROM's own output, not a decode fault:
+// FJROM and FKROM differ only in work-RAM size and it declines to guess. The
+// two M10 images are that pair, and they differ here only in whether the work
+// RAM is battery-backed - which the loader reads from NES 2.0 byte 10 and which
+// nothing in the report distinguishes, so their rows are identical.
+const Expected kLatchedChrRoms[] = {
+    {"M9_P128K_C64K", "009 PNROM (MMC2)", "128K PRG ROM", "PRG RAM MISSING", "64K CHR ROM OK", "0000"},
+    {"M10_P128K_C64K_S8K", "010 F*ROM (MMC4)", "128K PRG ROM", "8K PRG RAM OK", "64K CHR ROM OK", "0000"},
+    {"M10_P128K_C64K_W8K", "010 F*ROM (MMC4)", "128K PRG ROM", "8K PRG RAM OK", "64K CHR ROM OK", "0000"},
+};
+
+INSTANTIATE_TEST_SUITE_P(LatchedChr,
+                         HolyMapperel,
+                         ::testing::ValuesIn(kLatchedChrRoms),
                          [](const ::testing::TestParamInfo<Expected>& info) { return std::string(info.param.name); });
 
 INSTANTIATE_TEST_SUITE_P(Mapper1,

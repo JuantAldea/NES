@@ -138,6 +138,16 @@ public:
     // has to repeat the bound.
     virtual uint16_t prg_ram_offset(const uint16_t cpu_addr) const;
 
+    // A completed PPU read from $0000-$1FFF, reported AFTER the byte was
+    // served. MMC2 and MMC4 change CHR bank when particular tiles are fetched,
+    // and the triggering read itself comes from the old bank.
+    //
+    // Separate from observe_a12 below because the two want opposite ordering:
+    // the A12 filter times an edge and must see the address as it is put on the
+    // bus, while a latch must not apply to the fetch that set it. One hook
+    // serving both would silently be wrong for whichever came second.
+    virtual void observe_pattern_fetch(const uint16_t ppu_addr) { (void)ppu_addr; }
+
     // PPU address line A12, watched for the MMC3's scanline counter. A default
     // rather than a pure virtual because three of the four boards genuinely do
     // not have the wire - making them each write an empty override would state
@@ -254,6 +264,77 @@ public:
     using Mapper::Mapper;
     void cpu_write(const uint16_t addr, const uint8_t data) override;
     uint8_t prg_read(const uint16_t addr) const override;
+};
+
+// The shared half of MMC2 (9) and MMC4 (10): a CHR window pair whose bank is
+// chosen by what the PPU last looked at.
+//
+// THIS IS THE FIRST BOARD HERE THE CPU DOES NOT FULLY DRIVE. Every other mapper
+// changes state only when written to. These two watch the PPU fetch a tile, and
+// if it is tile $FD or $FE out of a particular window, swap that window's bank
+// for the next fetch. Punch-Out!!'s big animated faces are the reason: two 4KB
+// halves alternating under the PPU's nose gets far more sprite detail on screen
+// than the CHR budget of the era otherwise allows.
+//
+// Each window therefore has TWO bank registers and a latch saying which is
+// live - hence chr_bank[window][latch] rather than one register per window.
+class LatchedChr : public Mapper
+{
+public:
+    using Mapper::Mapper;
+
+    void cpu_write(const uint16_t addr, const uint8_t data) override;
+    uint32_t chr_offset(const uint16_t ppu_addr) const override;
+    void observe_pattern_fetch(const uint16_t ppu_addr) override;
+
+    // [window][latch]: window 0 is PPU $0000-$0FFF and window 1 is $1000-$1FFF;
+    // latch 0 is the $FD register and latch 1 the $FE one. Written through
+    // $B000, $C000, $D000 and $E000 respectively, 5 bits each.
+    uint8_t chr_bank[2][2] = {{0, 0}, {0, 0}};
+
+    // Which register each window is currently reading through. Indexes the
+    // second subscript above, so 0 means $FD is live.
+    uint8_t latch[2] = {0, 0};
+
+    // $A000-$AFFF, 4 bits. What it means depends on the board: an 8KB bank for
+    // MMC2, a 16KB one for MMC4, which is the only reason these are two classes
+    // and not one.
+    uint8_t prg_bank = 0;
+
+protected:
+    // Does an address in the LOWER window latch, and to which register? MMC2
+    // decodes exactly $0FD8 and $0FE8; MMC4 decodes the eight-byte runs
+    // $0FD8-$0FDF and $0FE8-$0FEF. Both decode runs in the upper window, which
+    // is why only this half is virtual.
+    //
+    // The asymmetry is real silicon, not a documentation artefact: MMC2 came
+    // first and its lower-window comparator is narrower.
+    virtual bool lower_window_latches(const uint16_t ppu_addr, uint8_t& which) const = 0;
+};
+
+// MMC2 (9), PxROM. One game: Punch-Out!!. An 8KB switchable PRG window at
+// $8000-$9FFF with the remaining three 8KB banks wired down.
+class Mmc2 final : public LatchedChr
+{
+public:
+    using LatchedChr::LatchedChr;
+    uint8_t prg_read(const uint16_t addr) const override;
+
+protected:
+    bool lower_window_latches(const uint16_t ppu_addr, uint8_t& which) const override;
+};
+
+// MMC4 (10), FxROM. Fire Emblem, Famicom Wars. MMC2's CHR latch with UNROM's
+// PRG layout - a 16KB switchable window at $8000-$BFFF and the last bank fixed
+// at $C000 - plus work RAM, which PxROM has none of.
+class Mmc4 final : public LatchedChr
+{
+public:
+    using LatchedChr::LatchedChr;
+    uint8_t prg_read(const uint16_t addr) const override;
+
+protected:
+    bool lower_window_latches(const uint16_t ppu_addr, uint8_t& which) const override;
 };
 
 // AxROM (7): one 32KB PRG window covering the whole of $8000-$FFFF, and

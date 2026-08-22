@@ -171,6 +171,34 @@ std::string check_axrom(const size_t prg_16k_banks, const size_t chr_8k_banks)
     return {};
 }
 
+std::string check_latched_chr(const char* board, const size_t prg_16k_banks, const size_t chr_8k_banks)
+{
+    // Both boards page CHR in 4KB windows through 5-bit registers, so 32 banks
+    // of 4KB - 128KB - is the ceiling, and CHR-ROM is not optional: the latch
+    // has nothing to switch without it.
+    if (chr_8k_banks == 0 || chr_8k_banks > 16) {
+        return std::string(board) + " requires 1 to 16 CHR-ROM banks (8KB to 128KB), header advertises " +
+               std::to_string(chr_8k_banks);
+    }
+    // Four PRG bits, and both boards wire part of the space down, so there has
+    // to be more than one bank to switch between.
+    if (prg_16k_banks < 2 || prg_16k_banks > 16) {
+        return std::string(board) + " requires 2 to 16 PRG-ROM banks, header advertises " +
+               std::to_string(prg_16k_banks);
+    }
+    return {};
+}
+
+std::string check_mmc2(const size_t prg_16k_banks, const size_t chr_8k_banks)
+{
+    return check_latched_chr("MMC2", prg_16k_banks, chr_8k_banks);
+}
+
+std::string check_mmc4(const size_t prg_16k_banks, const size_t chr_8k_banks)
+{
+    return check_latched_chr("MMC4", prg_16k_banks, chr_8k_banks);
+}
+
 struct Board {
     MapperId id;
     std::unique_ptr<Mapper> (*make)(ROM&);
@@ -181,6 +209,7 @@ const Board kBoards[] = {
     {MapperId::nrom, construct<NRom>, check_nrom},    {MapperId::mmc1, construct<Mmc1>, check_mmc1},
     {MapperId::uxrom, construct<UnRom>, check_uxrom}, {MapperId::cnrom, construct<CnRom>, check_cnrom},
     {MapperId::mmc3, construct<Mmc3>, check_mmc3},    {MapperId::axrom, construct<AxRom>, check_axrom},
+    {MapperId::mmc2, construct<Mmc2>, check_mmc2},    {MapperId::mmc4, construct<Mmc4>, check_mmc4},
 };
 
 const Board* find_board(const MapperId id)
@@ -484,6 +513,137 @@ void CnRom::cpu_write(const uint16_t addr, const uint8_t data)
 
 // PRG behaves exactly as NROM's does.
 uint8_t CnRom::prg_read(const uint16_t addr) const { return rom.prg_rom[(addr - 0x8000) % rom.prg_rom.size()]; }
+
+// --- MMC2 (9) and MMC4 (10), the shared half -------------------------------
+
+// Registers are decoded from the top nibble only, so $A000 and $AFFF are the
+// same register - the board compares four address lines and no more.
+void LatchedChr::cpu_write(const uint16_t addr, const uint8_t data)
+{
+    switch (addr & 0xF000) {
+    case 0xA000:
+        prg_bank = data & 0x0F;
+        break;
+    case 0xB000:
+        chr_bank[0][0] = data & 0x1F;
+        break;
+    case 0xC000:
+        chr_bank[0][1] = data & 0x1F;
+        break;
+    case 0xD000:
+        chr_bank[1][0] = data & 0x1F;
+        break;
+    case 0xE000:
+        chr_bank[1][1] = data & 0x1F;
+        break;
+    case 0xF000:
+        // Mirroring, live - PPU::nametable_offset reads it on every access.
+        //
+        // POLARITY DECIDED BY THE ORACLE, not by reading a table, because the
+        // MMC3 register was inverted here for as long as it was taken from a
+        // wiki row written in ARRANGEMENT terms rather than mirroring ones.
+        //
+        // MEASURED both ways. Bit 0 clear meaning VERTICAL is what identifies
+        // the boards - 009 PNROM and 010 F*ROM. Flipped, neither image renders
+        // a report at all inside 400 frames: mapper detection runs from RAM and
+        // hangs when a probe answers wrongly, so it never reaches the screen.
+        // A louder failure than MMC3's, which at least printed a wrong board.
+        rom.mirroring = (data & 0x01) ? ROM::Mirroring::horizontal : ROM::Mirroring::vertical;
+        break;
+    default:
+        // $8000-$9FFF decodes nothing on either board.
+        break;
+    }
+}
+
+uint32_t LatchedChr::chr_offset(const uint16_t ppu_addr) const
+{
+    const uint32_t window = (ppu_addr & 0x1000) ? 1u : 0u;
+    const uint32_t banks = static_cast<uint32_t>(rom.chr_bank_count) * 2u;
+    if (banks == 0) {
+        return ppu_addr & 0x1FFF;
+    }
+
+    const uint32_t bank = chr_bank[window][latch[window]] % banks;
+    return bank * CHR_ROM_4K_BANK_SIZE + (ppu_addr & 0x0FFF);
+}
+
+// Tiles $FD and $FE, in either window, swap that window's bank for the NEXT
+// fetch. PPU::ppu_bus_read calls this after serving the byte, which is what
+// makes "next" true - see the comment at that call site.
+//
+// $0FD8 is tile $FD's last byte plane: the fetch pipeline reads the low plane
+// at $xFD0-$xFD7 and the high plane at $xFD8-$xFDF, so the trigger sits at the
+// END of the tile and the swap lands between tiles rather than inside one.
+void LatchedChr::observe_pattern_fetch(const uint16_t ppu_addr)
+{
+    uint8_t which = 0;
+
+    if ((ppu_addr & 0x1000) == 0) {
+        if (lower_window_latches(ppu_addr, which)) {
+            latch[0] = which;
+        }
+        return;
+    }
+
+    // The upper window decodes eight-byte runs on both boards.
+    if (ppu_addr >= 0x1FD8 && ppu_addr <= 0x1FDF) {
+        latch[1] = 0;
+    } else if (ppu_addr >= 0x1FE8 && ppu_addr <= 0x1FEF) {
+        latch[1] = 1;
+    }
+}
+
+// MMC2: an 8KB switchable window and three fixed banks. The fixed three are the
+// LAST three of the cartridge, so the vectors cannot be banked away and neither
+// can the code that does the banking.
+uint8_t Mmc2::prg_read(const uint16_t addr) const
+{
+    const uint32_t banks = rom.prg_8k_bank_count;
+    const uint32_t bank = addr < 0xA000 ? (prg_bank % banks) : (banks - (4u - ((addr >> 13) & 3u)));
+
+    return rom.prg_rom[bank * 8u * 1024u + (addr & 0x1FFFu)];
+}
+
+// MMC2 compares the whole address in the lower window: exactly $0FD8 and
+// exactly $0FE8, where MMC4 takes a run. Punch-Out!! is the only game on the
+// board and it does not depend on the difference, but the boards are not the
+// same part and this is where they differ.
+bool Mmc2::lower_window_latches(const uint16_t ppu_addr, uint8_t& which) const
+{
+    if (ppu_addr == 0x0FD8) {
+        which = 0;
+        return true;
+    }
+    if (ppu_addr == 0x0FE8) {
+        which = 1;
+        return true;
+    }
+    return false;
+}
+
+// MMC4: UNROM's PRG layout - 16KB switchable at $8000, last bank fixed at
+// $C000.
+uint8_t Mmc4::prg_read(const uint16_t addr) const
+{
+    const uint32_t banks = rom.prg_bank_count;
+    const uint32_t bank = addr < 0xC000 ? (prg_bank % banks) : (banks - 1u);
+
+    return rom.prg_rom[bank * PRG_ROM_BANK_SIZE + (addr & 0x3FFFu)];
+}
+
+bool Mmc4::lower_window_latches(const uint16_t ppu_addr, uint8_t& which) const
+{
+    if (ppu_addr >= 0x0FD8 && ppu_addr <= 0x0FDF) {
+        which = 0;
+        return true;
+    }
+    if (ppu_addr >= 0x0FE8 && ppu_addr <= 0x0FEF) {
+        which = 1;
+        return true;
+    }
+    return false;
+}
 
 // --- AxROM (7) --------------------------------------------------------------
 

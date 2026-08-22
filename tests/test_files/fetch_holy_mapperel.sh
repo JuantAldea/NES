@@ -1,5 +1,5 @@
 #!/bin/sh
-# Fetches fifteen builds of Damian Yerrick's Holy Mapperel - an NES cartridge
+# Fetches eighteen builds of Damian Yerrick's Holy Mapperel - an NES cartridge
 # manufacturing test, and the only MMC1 oracle in reach that reports a verdict
 # rather than asking a human to look at it. Nine mapper-1 images, and two
 # mapper-4 ones covering ground no MMC3 ROM here reaches (see MAPPER 4 below).
@@ -172,6 +172,44 @@
 # - nametable mirroring and CHR-RAM addressing - neither of which any other MMC3
 # oracle here reaches.
 #
+# MAPPERS 9 AND 10 - the first boards the CPU does not fully drive.
+#
+# MMC2 and MMC4 change CHR bank when the PPU FETCHES tile $FD or $FE out of a
+# window, so each 4KB window has two bank registers and a latch saying which is
+# live. Punch-Out!!'s animated faces are what the part exists for. These three
+# images are the only ones here that exercise PPU::ppu_bus_read notifying the
+# mapper after a pattern read.
+#
+#   image                header                            what it exercises
+#   M9_P128K_C64K        128K PRG, 64K CHR-ROM, NES2.0     PNROM (MMC2)
+#   M10_P128K_C64K_S8K   + 8K battery work RAM             FJROM/FKROM (MMC4)
+#   M10_P128K_C64K_W8K   + 8K work RAM                     FJROM/FKROM (MMC4)
+#
+# MEASURED BEFORE, with the boards unregistered from kBoards:
+#
+#   M9_P128K_C64K        ROM: mapper 9 (MMC2 / PxROM) is not supported
+#   M10_P128K_C64K_S8K   ROM: mapper 10 (MMC4 / FxROM) is not supported
+#   M10_P128K_C64K_W8K   ROM: mapper 10 (MMC4 / FxROM) is not supported
+#
+# MEASURED AFTER, first run, nothing adjusted:
+#
+#   image                board reported      PRG    work RAM  CHR          detail
+#   M9_P128K_C64K        009 PNROM (MMC2)    128K   MISSING   64K ROM OK   0000
+#   M10_P128K_C64K_S8K   010 F*ROM (MMC4)    128K   8K OK     64K ROM OK   0000
+#   M10_P128K_C64K_W8K   010 F*ROM (MMC4)    128K   8K OK     64K ROM OK   0000
+#
+# "F*ROM" with a literal asterisk is the ROM's own output: FJROM and FKROM
+# differ only in work-RAM size and it declines to guess between them.
+#
+# THE MIRRORING POLARITY WAS DECIDED HERE, and measured both ways rather than
+# read off a table - the MMC3 register above was inverted for exactly as long as
+# it was taken from a wiki row written in arrangement terms. With $F000 bit 0
+# clear meaning VERTICAL these identify correctly. With it flipped, neither
+# image renders a report at all inside 400 frames: detection runs from RAM and
+# HANGS on a wrong probe answer rather than printing a wrong board. Louder than
+# the MMC3 case, and it means a regression in that one bit shows up as a timeout
+# rather than as a diff.
+#
 # MAPPER 7. M7_P128K is the oracle AxROM was written against, and unlike every
 # other image here it was fetched BEFORE the board existed rather than to check
 # one that already did.
@@ -262,7 +300,10 @@ M1_P512K_S8K a68997cca022e1fdbd0773d847f3d49a3c18af2ee4eb187d31655e27a7cff34a
 M1_P512K_S32K c5bfaa5c2f318295b167da8f9b5b4d32e47a8be080c92cc6d7bc2c63eaabadc9
 M4_P128K acf96ad58b8fef57ae80b0d18f2dbb9aed3bb4447f6d6ee3e793c011f08b9481
 M4_P256K_C256K c5dca47517d1cdb5cc252382802418253b8edf1a0cbff6c6b60b62ba2b6317ca
-M7_P128K 6161a17001ba7d0345d6650d799994832d62990fd545c3c3a054015604de6f83"
+M7_P128K 6161a17001ba7d0345d6650d799994832d62990fd545c3c3a054015604de6f83
+M9_P128K_C64K 6605a2a6a2b14bc8cfdfcf1444f902b8a7024332fa0ca31994ab3953b559c1c7
+M10_P128K_C64K_S8K 5181996ce6fbf0dedd6b253815ef2809d938a296d172160d5e463e64cf07f757
+M10_P128K_C64K_W8K 54047d0cf47847e363a4c5932e81f22127862581782a6f66d79be77feee50779"
 
 echo "$ROMS" | while read -r name want; do
     [ -n "$name" ] || continue
@@ -294,8 +335,8 @@ echo "$ROMS" | while read -r name want; do
 done
 
 count=$(ls "$DEST" | wc -l | tr -d ' ')
-if [ "$count" -ne 15 ]; then
-    echo "incomplete: $count/15 files present in $DEST" >&2
+if [ "$count" -ne 18 ]; then
+    echo "incomplete: $count/18 files present in $DEST" >&2
     exit 1
 fi
 

@@ -267,6 +267,13 @@ uint16_t ROM::prg_ram_offset(const uint16_t addr) const
 // A change on PPU address line A12. Only the MMC3 has the wire; Mapper's
 // default override is what makes that true of three boards without them saying
 // so.
+void ROM::observe_pattern_fetch(const uint16_t ppu_addr)
+{
+    if (mapper) {
+        mapper->observe_pattern_fetch(ppu_addr);
+    }
+}
+
 void ROM::mmc3_observe_a12(const uint16_t ppu_addr, const uint64_t ppu_cycle)
 {
     if (mapper) {

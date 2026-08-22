@@ -1239,13 +1239,22 @@ uint8_t PPU::ppu_bus_read(const uint16_t addr)
         // Routed through chr_read rather than indexed directly: on CNROM the
         // visible 8KB is whichever bank the cartridge last latched, so
         // indexing chr_rom would pin it to bank 0 forever.
-        if (bus->rom.has_chr_rom()) {
-            return bus->rom.chr_read(a);
-        }
+        //
         // CHR-RAM goes through the mapper too. The array is ours; the address
         // decoding is the cartridge's, and MMC1 in 4KB mode pages an 8KB chip
         // as two halves. Indexing by `a` directly unbanks it silently.
-        return chr_ram[bus->rom.chr_ram_offset(a) % chr_ram_size];
+        const uint8_t value =
+            bus->rom.has_chr_rom() ? bus->rom.chr_read(a) : chr_ram[bus->rom.chr_ram_offset(a) % chr_ram_size];
+
+        // AFTER the byte, and that ordering is the whole reason this is a
+        // second hook rather than a line in observe_ppu_address_bus above.
+        // MMC2 and MMC4 change CHR bank when the PPU reads particular tiles,
+        // and the read that TRIGGERS the change is still served by the old
+        // bank - the new one applies from the next fetch. Notifying first
+        // would make every latching tile fetch itself out of the wrong bank,
+        // which is a one-tile graphical glitch that no test would name.
+        bus->rom.observe_pattern_fetch(a);
+        return value;
     }
 
     if (a < 0x3F00) {

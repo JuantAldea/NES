@@ -158,6 +158,11 @@ public:
     // PPU::total_cycles, which is the only clock both sides share.
     void mmc3_observe_a12(const uint16_t ppu_addr, const uint64_t ppu_cycle);
 
+    // A completed PPU pattern-table read, reported after the byte was served.
+    // Only MMC2 and MMC4 care; see Mapper::observe_pattern_fetch for why the
+    // ordering is load-bearing and why it is not folded into the call above.
+    void observe_pattern_fetch(const uint16_t ppu_addr);
+
     // The board this cartridge is on, chosen by load() from the header's mapper
     // id. Null until a cartridge is loaded, and every read/write path checks
     // prg_rom/chr_rom emptiness before dereferencing it - loaded() is defined as
