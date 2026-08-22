@@ -150,33 +150,6 @@ bool ROM::load(const std::string& path)
     prg_8k_bank_count = static_cast<uint16_t>(prg_rom_banks * 2);
     chr_1k_bank_count = static_cast<uint16_t>(chr_rom_banks * 8);
 
-    mmc3_bank_select = 0;
-    for (uint8_t& r : mmc3_bank) {
-        r = 0;
-    }
-    // Enabled and writable at power-on. Hardware does not specify this - $A001
-    // comes up in whatever state the register happens to hold - but the choice
-    // is not free now that Bus::decode obeys it: "disabled" would black out
-    // $6000-$7FFF for every non-MMC3 board, which has no such register, and for
-    // the MMC3 games that never write $A001 at all. Note this also decides what
-    // blargg's $6000 result protocol sees before a ROM's init code runs.
-    prg_ram_enabled = true;
-    prg_ram_write_protected = false;
-
-    // The IRQ counter powers up disabled with everything clear. Releasing the
-    // /IRQ line matters as much as clearing the flag: loading a second
-    // cartridge into a running Bus would otherwise leave the previous game's
-    // assertion latched in the CPU, and the new one would take an interrupt it
-    // never asked for before executing a single instruction.
-    mmc3_irq_latch = 0;
-    mmc3_irq_counter = 0;
-    mmc3_irq_reload_pending = false;
-    mmc3_irq_enabled = false;
-    mmc3_irq_asserted = false;
-    mmc3_a12_high = false;
-    mmc3_a12_low_since = 0;
-    mmc3_update_irq_line();
-
     // Power-on bank is 0. The value is not specified by the hardware, but a
     // CNROM game sets it before drawing anything.
     chr_bank = 0;
@@ -204,6 +177,15 @@ bool ROM::load(const std::string& path)
         return false;
     }
 
+    // A fresh board comes up with its registers at their power-on values, so the
+    // long reset block that used to live here is now the Mmc3 members' own
+    // initialisers. The /IRQ line is the exception and must still be released
+    // explicitly: it is the CONSOLE's wire, not the cartridge's, so a new
+    // cartridge inherits whatever the previous one left latched in the CPU and
+    // would take an interrupt it never asked for before executing an
+    // instruction.
+    drive_irq_line(false);
+
     prg_rom.assign(data.begin() + offset, data.begin() + offset + prg_size);
     offset += prg_size;
 
@@ -217,49 +199,54 @@ bool ROM::load(const std::string& path)
 // means and the board is an object. What is left here is the part that is the
 // same on every board: whether there is anything plugged in at all.
 
-void ROM::write(const uint16_t addr, const uint8_t data) {
-  if (mapper) {
-    mapper->cpu_write(addr, data);
-  }
+void ROM::write(const uint16_t addr, const uint8_t data)
+{
+    if (mapper) {
+        mapper->cpu_write(addr, data);
+    }
 }
 
-uint8_t ROM::read(const uint16_t addr) {
-  if (prg_rom.empty() || !mapper) {
-    return 0;
-  }
-  return mapper->prg_read(addr);
+uint8_t ROM::read(const uint16_t addr)
+{
+    if (prg_rom.empty() || !mapper) {
+        return 0;
+    }
+    return mapper->prg_read(addr);
 }
 
-uint8_t ROM::chr_read(const uint16_t addr) const {
-  // An empty chr_rom means the cartridge uses CHR-RAM, which is the PPU's, not
-  // the mapper's. Checked here rather than in four boards.
-  if (chr_rom.empty() || !mapper) {
-    return 0;
-  }
-  return mapper->chr_read(addr);
+uint8_t ROM::chr_read(const uint16_t addr) const
+{
+    // An empty chr_rom means the cartridge uses CHR-RAM, which is the PPU's, not
+    // the mapper's. Checked here rather than in four boards.
+    if (chr_rom.empty() || !mapper) {
+        return 0;
+    }
+    return mapper->chr_read(addr);
 }
 
 // A change on PPU address line A12. Only the MMC3 has the wire; Mapper's
 // default override is what makes that true of three boards without them saying
 // so.
-void ROM::mmc3_observe_a12(const uint16_t ppu_addr, const uint64_t ppu_cycle) {
-  if (mapper) {
-    mapper->observe_a12(ppu_addr, ppu_cycle);
-  }
+void ROM::mmc3_observe_a12(const uint16_t ppu_addr, const uint64_t ppu_cycle)
+{
+    if (mapper) {
+        mapper->observe_a12(ppu_addr, ppu_cycle);
+    }
 }
 
 // /IRQ is open-drain and shared, so the mapper owns one bit of it and nothing
 // else. Going through CPU::set_IRQ_line rather than raise_IRQ is what keeps the
 // APU's frame counter and the DMC from having their assertions dropped when the
 // cartridge releases its own.
-void ROM::mmc3_update_irq_line() {
-  // The loader tests in memory_tests.cpp construct a ROM with no Bus at all,
-  // deliberately: parsing an iNES header needs nothing else, and giving those
-  // tests a whole console to exercise the header checks would be noise. A
-  // bus-less cartridge has no CPU to interrupt, so there is nothing to drive.
-  if (bus == nullptr) {
-    return;
-  }
+void ROM::drive_irq_line(const bool asserted)
+{
+    // The loader tests in memory_tests.cpp construct a ROM with no Bus at all,
+    // deliberately: parsing an iNES header needs nothing else, and giving those
+    // tests a whole console to exercise the header checks would be noise. A
+    // bus-less cartridge has no CPU to interrupt, so there is nothing to drive.
+    if (bus == nullptr) {
+        return;
+    }
 
-  bus->cpu.set_IRQ_line(CPU::IRQSource::cartridge, mmc3_irq_asserted);
+    bus->cpu.set_IRQ_line(CPU::IRQSource::cartridge, asserted);
 }

@@ -65,30 +65,6 @@ public:
     uint8_t prg_bank = 0;
     uint8_t prg_bank_count = 0;
 
-    // --- MMC3 (mapper 4) ----------------------------------------------------
-    //
-    // Eight bank registers behind a select/data pair, rather than a single
-    // latch. $8000 chooses which of R0-R7 the next $8001 write lands in, and
-    // also carries the two mode bits that decide WHICH window each register
-    // drives:
-    //
-    //   R0, R1   2KB CHR banks   (bit 0 ignored - "R0 and R1 ignore the bottom bit")
-    //   R2-R5    1KB CHR banks
-    //   R6, R7   8KB PRG banks   (top two bits ignored - only 6 PRG address lines)
-    //
-    // The two mode bits invert which half of the address space the switchable
-    // windows occupy, which is why they are kept rather than folded in at write
-    // time: a later mode change has to re-point the existing register values.
-    uint8_t mmc3_bank_select = 0;  // the last value written to $8000
-    uint8_t mmc3_bank[8] = {0};    // R0-R7
-
-    // $8000 bit 6: 0 -> $8000-$9FFF switchable, $C000-$DFFF fixed to second-last
-    //              1 -> $C000-$DFFF switchable, $8000-$9FFF fixed to second-last
-    bool mmc3_prg_mode_swapped() const { return (mmc3_bank_select & 0x40) != 0; }
-
-    // $8000 bit 7: swaps the 2KB and 1KB CHR windows between $0000 and $1000.
-    bool mmc3_chr_a12_inverted() const { return (mmc3_bank_select & 0x80) != 0; }
-
     // $A001: bit 7 enables the PRG-RAM chip, bit 6 write-protects it.
     //
     // Read by Bus::decode, which is the only place they can be honoured: the
@@ -107,49 +83,6 @@ public:
     bool prg_ram_enabled = true;
     bool prg_ram_write_protected = false;
 
-    // --- MMC3 scanline IRQ counter ------------------------------------------
-    //
-    // The MMC3 has no idea what a scanline is. It counts RISING EDGES OF PPU
-    // ADDRESS LINE A12, and a scanline happens to produce exactly one of them
-    // in the usual configuration: the background fetches sit in one pattern
-    // table and the sprite fetches in the other, so A12 goes up once per line
-    // when the fetch phase crosses over. Games get "interrupt at scanline N" by
-    // counting those edges - which is why a game that puts both tables on the
-    // same side gets no IRQs at all, and why the counter is clocked just as
-    // happily by a program poking $2006 with rendering switched off.
-    //
-    // blargg's readme for the IRQ ROMs is explicit about that second case:
-    // "The ROMs mainly test behavior by manually clocking the MMC3's IRQ
-    // counter by writing to $2006 to change the current VRAM address." A design
-    // that hooked only the rendering fetches would pass none of them.
-    uint8_t mmc3_irq_latch = 0;            // $C000, the value reloaded into the counter
-    uint8_t mmc3_irq_counter = 0;          // the live count
-    bool mmc3_irq_reload_pending = false;  // set by $C001, consumed by the next edge
-    bool mmc3_irq_enabled = false;         // $E001 enables, $E000 disables
-    bool mmc3_irq_asserted = false;        // are we currently pulling /IRQ low?
-
-    // The A12 line as the mapper last saw it, and the PPU dot at which it went
-    // low. Only the duration matters, so one timestamp is enough.
-    bool mmc3_a12_high = false;
-    uint64_t mmc3_a12_low_since = 0;
-
-    // A rising edge only counts if A12 has been low for a while first. NESdev:
-    // the counter is "triggered on a rising edge after the line has remained
-    // low for three falling edges of M2" - M2 is the CPU clock, so three of its
-    // cycles, and the PPU runs three times faster, giving nine PPU dots.
-    //
-    // The filter is not an optimisation, it is what makes the count mean
-    // "scanline". Within one background tile fetch A12 drops for exactly four
-    // dots (the nametable and attribute reads at $2xxx, between two pattern
-    // reads at $1xxx); without the filter every tile would clock the counter
-    // and an IRQ meant for one scanline would arrive 32 times a line.
-    //
-    // Nine rather than four-plus-one because the margin has to survive both
-    // sides: real clocks follow low periods of 16 dots and up, so there is a
-    // wide gap between "noise" and "signal" and the threshold only has to land
-    // inside it. 3-A12_clocking is what pins this - see mmc3_rom_tests.cpp.
-    static constexpr uint64_t mmc3_a12_filter_dots = 9;
-
     // Called by the PPU on every access that drives its EXTERNAL address bus,
     // and on the $2006 write that commits a new address to v. `ppu_cycle` is
     // PPU::total_cycles, which is the only clock both sides share.
@@ -161,6 +94,15 @@ public:
     // "prg_rom is not empty", so the two cannot disagree.
     std::unique_ptr<Mapper> mapper;
 
+    // The board as an Mmc3, or null if this cartridge is on any other board.
+    //
+    // Exists for tests that reach into the register file and the IRQ counter -
+    // white-box checks written from the register description, which is how the
+    // PRG-RAM gating and the A12 filter are covered at all. Putting those
+    // members on Mapper instead would give NROM an IRQ counter, so the cast is
+    // the honest option: only one board has them.
+    Mmc3* as_mmc3() { return mapper_id == 4 ? static_cast<Mmc3*>(mapper.get()) : nullptr; }
+
     // How many 8KB PRG banks and 1KB CHR banks the cartridge carries. MMC3
     // indexes in those units, unlike UNROM's 16KB and CNROM's 8KB.
     uint16_t prg_8k_bank_count = 0;
@@ -169,13 +111,14 @@ public:
     std::vector<uint8_t> prg_rom;
     std::vector<uint8_t> chr_rom;
 
-    // Pushes mmc3_irq_asserted onto the CPU's cartridge /IRQ bit. Every path
-    // that can change the assertion goes through here, so there is one place
-    // where the wire is driven rather than four.
+    // Drives the cartridge's bit of the CPU's /IRQ line. Every path that can
+    // change the assertion goes through here, so there is one place where the
+    // wire is driven rather than four.
     //
-    // Public rather than private because load() and Mmc3 both drive it, and
-    // because the alternative - friending Mmc3 to reach a private method - buys
-    // nothing: the Bus pointer it needs is Device's, so the encapsulation being
-    // protected here is not this class's to keep.
-    void mmc3_update_irq_line();
+    // Takes the state rather than reading it because the counter that decides it
+    // now lives on Mmc3, and the wire does not: /IRQ is open-drain and shared
+    // with the APU's frame counter and the DMC, so it is the console's, reached
+    // through Device's Bus pointer. Hence CPU::set_IRQ_line rather than
+    // raise_IRQ - the cartridge releasing its own bit must not drop theirs.
+    void drive_irq_line(const bool asserted);
 };

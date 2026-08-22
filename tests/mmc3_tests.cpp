@@ -280,7 +280,7 @@ GTEST_TEST(mmc3, the_register_pair_is_decoded_from_bit_13_and_parity_only)
 
 // --- the A12 filter -------------------------------------------------------
 //
-// These exist because a mutation survived. Lowering mmc3_a12_filter_dots from 9
+// These exist because a mutation survived. Lowering Mmc3::a12_filter_dots from 9
 // to 1 failed NOTHING in the whole suite, which meant the filter - the thing
 // that makes the counter mean "scanline" rather than "tile fetch" - had no test
 // at all.
@@ -313,12 +313,12 @@ bool edge_clocks_counter(Bus& console, const uint64_t low_at, const uint64_t hig
     // A long, unambiguous edge to consume the reload and leave a known count.
     rom.mmc3_observe_a12(0x0000, 0);
     rom.mmc3_observe_a12(0x1000, 100);
-    const uint8_t before = rom.mmc3_irq_counter;
+    const uint8_t before = rom.as_mmc3()->irq_counter;
 
     rom.mmc3_observe_a12(0x0000, low_at);
     rom.mmc3_observe_a12(0x1000, high_at);
 
-    return rom.mmc3_irq_counter != before;
+    return rom.as_mmc3()->irq_counter != before;
 }
 
 }  // namespace
@@ -364,7 +364,7 @@ GTEST_TEST(mmc3A12Filter, staying_low_does_not_restart_the_timer)
     console.write(0xC001, 0x00);
     r.mmc3_observe_a12(0x0000, 0);
     r.mmc3_observe_a12(0x1000, 100);
-    const uint8_t before = r.mmc3_irq_counter;
+    const uint8_t before = r.as_mmc3()->irq_counter;
 
     // Falls once, then several more low accesses, then rises well past the
     // threshold measured from the FIRST fall.
@@ -374,7 +374,7 @@ GTEST_TEST(mmc3A12Filter, staying_low_does_not_restart_the_timer)
     r.mmc3_observe_a12(0x0000, 1006);
     r.mmc3_observe_a12(0x1000, 1012);
 
-    EXPECT_NE(before, r.mmc3_irq_counter)
+    EXPECT_NE(before, r.as_mmc3()->irq_counter)
         << "the low period is measured from the first fall; later low accesses must not restart it";
 }
 
@@ -426,7 +426,7 @@ FirstClock first_clock_after_enabling_rendering(Bus& console, const uint8_t ppuc
         const int scanline = ppu.scanline;
         const int dot = ppu.cycle;
         ppu.clock();
-        if (console.rom.mmc3_irq_counter != 0) {
+        if (console.rom.as_mmc3()->irq_counter != 0) {
             return {scanline, dot};
         }
     }
@@ -529,12 +529,12 @@ int counter_clocks_on_one_line(Bus& console, const uint8_t* tiles)
     }
 
     int clocks = 0;
-    uint8_t previous = console.rom.mmc3_irq_counter;
+    uint8_t previous = console.rom.as_mmc3()->irq_counter;
     while (ppu.scanline == 110) {
         ppu.clock();
-        if (console.rom.mmc3_irq_counter != previous) {
+        if (console.rom.as_mmc3()->irq_counter != previous) {
             ++clocks;
-            previous = console.rom.mmc3_irq_counter;
+            previous = console.rom.as_mmc3()->irq_counter;
         }
     }
     return clocks;

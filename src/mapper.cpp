@@ -114,9 +114,9 @@ void Mmc3::cpu_write(const uint16_t addr, const uint8_t data)
     switch (addr & 0xE000) {
     case 0x8000:
         if (odd) {
-            rom.mmc3_bank[rom.mmc3_bank_select & 0x07] = data;
+            bank[bank_select & 0x07] = data;
         } else {
-            rom.mmc3_bank_select = data;
+            bank_select = data;
         }
         break;
 
@@ -142,10 +142,10 @@ void Mmc3::cpu_write(const uint16_t addr, const uint8_t data)
             // take effect. Writing the counter directly here would make a $C001
             // immediately before an edge behave the same as one long before it,
             // and 1-clocking measures the difference.
-            rom.mmc3_irq_counter = 0;
-            rom.mmc3_irq_reload_pending = true;
+            irq_counter = 0;
+            irq_reload_pending = true;
         } else {
-            rom.mmc3_irq_latch = data;
+            irq_latch = data;
         }
         break;
 
@@ -153,16 +153,16 @@ void Mmc3::cpu_write(const uint16_t addr, const uint8_t data)
         if (odd) {
             // $E001 enables. It does not re-examine the counter: a counter
             // sitting at zero does not raise an IRQ until the next clock.
-            rom.mmc3_irq_enabled = true;
+            irq_enabled = true;
         } else {
             // $E000 does two things at once, and both matter. It disables
             // further IRQs AND acknowledges the current one - that is, it
             // releases /IRQ. A handler that only cleared the enable flag would
             // return to a line that is still held low and be re-entered
             // forever.
-            rom.mmc3_irq_enabled = false;
-            rom.mmc3_irq_asserted = false;
-            rom.mmc3_update_irq_line();
+            irq_enabled = false;
+            irq_asserted = false;
+            rom.drive_irq_line(irq_asserted);
         }
         break;
 
@@ -186,22 +186,22 @@ uint16_t Mmc3::chr_bank_for(const uint16_t ppu_addr) const
     // Position within the 8KB pattern space, in 1KB units: 0-7.
     uint16_t slot = static_cast<uint16_t>((ppu_addr >> 10) & 0x07);
 
-    if (rom.mmc3_chr_a12_inverted()) {
+    if (chr_a12_inverted()) {
         slot ^= 0x04;
     }
 
     switch (slot) {
     case 0:
-        return static_cast<uint16_t>(rom.mmc3_bank[0] & 0xFE);
+        return static_cast<uint16_t>(bank[0] & 0xFE);
     case 1:
-        return static_cast<uint16_t>((rom.mmc3_bank[0] & 0xFE) + 1);
+        return static_cast<uint16_t>((bank[0] & 0xFE) + 1);
     case 2:
-        return static_cast<uint16_t>(rom.mmc3_bank[1] & 0xFE);
+        return static_cast<uint16_t>(bank[1] & 0xFE);
     case 3:
-        return static_cast<uint16_t>((rom.mmc3_bank[1] & 0xFE) + 1);
+        return static_cast<uint16_t>((bank[1] & 0xFE) + 1);
     default:
         // Slots 4-7 are the four 1KB registers R2-R5.
-        return rom.mmc3_bank[2 + (slot - 4)];
+        return bank[2 + (slot - 4)];
     }
 }
 
@@ -219,16 +219,16 @@ uint16_t Mmc3::prg_bank_for(const uint16_t cpu_addr) const
 
     // R6 and R7 "ignore the top two bits, as the MMC3 has only 6 PRG ROM address
     // lines".
-    const uint16_t r6 = static_cast<uint16_t>(rom.mmc3_bank[6] & 0x3F);
-    const uint16_t r7 = static_cast<uint16_t>(rom.mmc3_bank[7] & 0x3F);
+    const uint16_t r6 = static_cast<uint16_t>(bank[6] & 0x3F);
+    const uint16_t r7 = static_cast<uint16_t>(bank[7] & 0x3F);
 
     switch (cpu_addr & 0xE000) {
     case 0x8000:
-        return rom.mmc3_prg_mode_swapped() ? second_last : r6;
+        return prg_mode_swapped() ? second_last : r6;
     case 0xA000:
         return r7;
     case 0xC000:
-        return rom.mmc3_prg_mode_swapped() ? r6 : second_last;
+        return prg_mode_swapped() ? r6 : second_last;
     default:
         return last;
     }
@@ -264,8 +264,8 @@ uint8_t Mmc3::chr_read(const uint16_t addr) const
 void Mmc3::observe_a12(const uint16_t ppu_addr, const uint64_t ppu_cycle)
 {
     const bool high = (ppu_addr & 0x1000) != 0;
-    const bool was_high = rom.mmc3_a12_high;
-    rom.mmc3_a12_high = high;
+    const bool was_high = a12_high;
+    a12_high = high;
 
     if (!high) {
         // Falling edge: start the clock on how long the line stays down. A level
@@ -273,7 +273,7 @@ void Mmc3::observe_a12(const uint16_t ppu_addr, const uint64_t ppu_cycle)
         // fetches would keep resetting the timer and no edge would ever pass the
         // filter.
         if (was_high) {
-            rom.mmc3_a12_low_since = ppu_cycle;
+            a12_low_since = ppu_cycle;
         }
         return;
     }
@@ -283,8 +283,8 @@ void Mmc3::observe_a12(const uint16_t ppu_addr, const uint64_t ppu_cycle)
     }
 
     // A rising edge, but only a long enough low period makes it a real one. See
-    // ROM::mmc3_a12_filter_dots for why the short ones have to be thrown away.
-    if (ppu_cycle - rom.mmc3_a12_low_since < ROM::mmc3_a12_filter_dots) {
+    // a12_filter_dots for why the short ones have to be thrown away.
+    if (ppu_cycle - a12_low_since < a12_filter_dots) {
         return;
     }
 
@@ -312,15 +312,15 @@ void Mmc3::observe_a12(const uint16_t ppu_addr, const uint64_t ppu_cycle)
 // which pins 6-MMC3_alt's exact failure rather than hiding it.
 void Mmc3::clock_irq_counter()
 {
-    if (rom.mmc3_irq_counter == 0 || rom.mmc3_irq_reload_pending) {
-        rom.mmc3_irq_counter = rom.mmc3_irq_latch;
-        rom.mmc3_irq_reload_pending = false;
+    if (irq_counter == 0 || irq_reload_pending) {
+        irq_counter = irq_latch;
+        irq_reload_pending = false;
     } else {
-        --rom.mmc3_irq_counter;
+        --irq_counter;
     }
 
-    if (rom.mmc3_irq_counter == 0 && rom.mmc3_irq_enabled) {
-        rom.mmc3_irq_asserted = true;
-        rom.mmc3_update_irq_line();
+    if (irq_counter == 0 && irq_enabled) {
+        irq_asserted = true;
+        rom.drive_irq_line(irq_asserted);
     }
 }
