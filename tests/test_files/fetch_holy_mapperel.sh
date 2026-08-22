@@ -137,19 +137,33 @@
 # MEASURED AFTER, and this is what the test pins:
 #
 #   image             board reported     PRG         work RAM          CHR             detail
-#   M4_P128K          004 TGROM (MMC3)   128K PRG    MISSING           8K CHR RAM OK   0003
+#   M4_P128K          004 TGROM (MMC3)   128K PRG    MISSING           8K CHR RAM OK   0000
 #   M4_P256K_C256K    004 TLROM (MMC3)   256K PRG    MISSING           256K CHR ROM OK 0000
 #
-# The 0003 on M4_P128K is NOT a new defect. It is the same CHR digit the three
-# MMC1 CHR-RAM boards report above, now reproduced on a second, unrelated
-# mapper - every CHR-RAM image in the suite fails it and every CHR-ROM image
-# passes, across both mappers. That pattern is what moves the fault out of MMC1
-# and into the console's shared CHR-RAM path, and it is why adding these two
-# rows was worth more than the one question they were fetched to answer.
+# WHY blargg's mmc3_test_2 DID NOT CATCH THE MIRRORING BUG. All six of those
+# ROMs test the IRQ counter. They write $A000 once during init and never read
+# the nametables back, so mmc3_rom_tests.cpp was fully green with the polarity
+# reversed.
 #
-# WHY blargg's mmc3_test_2 DID NOT CATCH THIS. All six of those ROMs test the
-# IRQ counter. They write $A000 once during init and never read the nametables
-# back, so mmc3_rom_tests.cpp was fully green with the polarity reversed.
+#
+# THE SECOND FINDING, and the better argument for these two images. Fixing the
+# mirroring did NOT take M4_P128K to 0000 - it arrived at 0003, the CHR digit,
+# which is bit-for-bit the signature the three MMC1 CHR-RAM boards showed before
+# 58f1ce6 banked theirs. Reproduced here on a board sharing no mapper code with
+# MMC1, and on the CHR-RAM image while the CHR-ROM one read 0000.
+#
+# 58f1ce6 had banked CHR-RAM for MMC1 but deliberately left MMC3's unbanked,
+# with a comment saying real MMC3 does drive those lines so paging it was "very
+# likely right" - but that nothing in the suite measured it, and naming THESE
+# IMAGES as what would settle it. They did. Banking MMC3 CHR-RAM in 1KB units,
+# the way it banks CHR-ROM, takes M4_P128K to 0000; M4_P256K_C256K is CHR-ROM,
+# was already 0000, and stays there, so the change is confined to the RAM path.
+#
+# That is an open question closed by a ROM rather than by argument, and it is
+# why the detail column above reads 0000 on both rows instead of pinning a known
+# failure. It also means these two images now cover two distinct MMC3 subsystems
+# - nametable mirroring and CHR-RAM addressing - neither of which any other MMC3
+# oracle here reaches.
 #
 # Not committed: redistributable-but-unlicensed dumps, SHA256-pinned.
 #

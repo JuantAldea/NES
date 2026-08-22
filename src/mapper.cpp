@@ -605,17 +605,25 @@ uint8_t Mmc3::prg_read(const uint16_t addr) const
 
 uint32_t Mmc3::chr_offset(const uint16_t ppu_addr) const
 {
-    // A cartridge with no CHR-ROM uses CHR-RAM, and this board is NOT given the
-    // banking of it that MMC1 has below. Real MMC3 does drive the RAM's address
-    // lines, so paging it is very likely right - but nothing in the suite
-    // measures it, and an unmeasured "very likely" is how a wrong dummy read
-    // gets in. Identity keeps the behaviour that every green MMC3 test was
-    // written against. The Holy Mapperel M4 images would settle it.
-    if (rom.chr_1k_bank_count == 0) {
+    // The M4 images DID settle it, which is what this comment used to say they
+    // would. CHR-RAM is banked here exactly as CHR-ROM is, in 1KB units, for the
+    // same reason MMC1 banks it: the RAM sits on the cartridge behind the same
+    // mapper CHR address lines, so "no CHR-ROM" changes which chip answers and
+    // not how it is addressed.
+    //
+    // MEASURED. Holy Mapperel M4_P128K is the TGROM build - 128K PRG, 8K
+    // CHR-RAM - and with the identity mapping that stood here it reported detail
+    // 0003: both 4K halves of its CHR window failed their bank-tag readback.
+    // That is bit-for-bit the signature the three MMC1 CHR-RAM boards showed
+    // before 58f1ce6 banked theirs, on a board with no MMC1 code in its path.
+    // Banking it takes M4_P128K to 0000. M4_P256K_C256K is CHR-ROM, was already
+    // 0000, and stays there - so the change is confined to the RAM path.
+    const uint32_t banks = rom.chr_rom.empty() ? rom.chr_ram_size / 1024 : rom.chr_1k_bank_count;
+    if (banks == 0) {
         return ppu_addr & 0x1FFF;
     }
-    const uint16_t bank = chr_bank_for(ppu_addr) % rom.chr_1k_bank_count;
-    return static_cast<uint32_t>(bank) * 1024 + (ppu_addr & 0x03FF);
+    const uint32_t bank = chr_bank_for(ppu_addr) % banks;
+    return bank * 1024 + (ppu_addr & 0x03FF);
 }
 
 // A change on PPU address line A12, as the mapper sees it.

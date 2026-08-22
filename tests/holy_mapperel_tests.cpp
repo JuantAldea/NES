@@ -173,8 +173,14 @@ ScreenRun run_until_settled(Bus& console)
 // table in the fetch script.
 //
 // `detail` is the four-digit code, one digit each for WRAM, PRG ROM, IRQ and
-// CHR, in which zero is normal. Two images are pinned at a NON-zero value on
-// purpose: see the CHR-RAM note on kRoms below.
+// CHR, in which zero is normal. ALL ELEVEN ROWS ARE 0000 - do not add a
+// deliberately non-zero one without saying here how many there are and why.
+//
+// This sentence has been wrong twice, both times by naming a count. It read
+// "two images are pinned at a NON-zero value" when three rows carried 0003, and
+// it survived 58f1ce6 taking those three to 0000, at which point it described a
+// set that was empty. The count is the part that rots, so it is stated once,
+// here, rather than in prose that has to be found and updated.
 struct Expected {
     const char* name;
     const char* board;
@@ -231,14 +237,19 @@ const Expected kRoms[] = {
 // two rows are what closes that gap, and they cross-check the PRG and CHR
 // banking at the same time.
 //
-// M4_P128K's CHR digit is 3 - the SAME value the three MMC1 CHR-RAM boards
-// carry above, and that is worth more than a pinned number. The fault now
-// reproduces across two unrelated mappers, on every CHR-RAM image and on no
-// CHR-ROM image, which locates it in the console's shared CHR-RAM path rather
-// than in either mapper. M4_P256K_C256K is CHR-ROM and reports 0000, completing
-// the same pattern from the other side.
+// THEY SETTLED A SECOND QUESTION TOO, which is the better argument for them.
+// Mmc3::chr_offset used to leave CHR-RAM unbanked, with a comment saying real
+// MMC3 does drive those lines so paging it was "very likely right" - but that
+// nothing in the suite measured it, and naming these two images as what would.
+// They did: M4_P128K arrived reporting detail 0003, the CHR digit, which is
+// bit-for-bit the signature the three MMC1 CHR-RAM boards showed before 58f1ce6
+// banked theirs - reproduced on a board sharing no mapper code with MMC1.
+// Banking MMC3's CHR-RAM the same way takes it to 0000, and M4_P256K_C256K is
+// CHR-ROM, was already 0000, and stays there, so the change is confined to the
+// RAM path. Both rows are pinned at 0000 below; a regression in either surfaces
+// as the digit that names the subsystem.
 const Expected kMapper4Roms[] = {
-    {"M4_P128K", "004 TGROM (MMC3)", "128K PRG ROM", "PRG RAM MISSING", "8K CHR RAM OK", "0003"},
+    {"M4_P128K", "004 TGROM (MMC3)", "128K PRG ROM", "PRG RAM MISSING", "8K CHR RAM OK", "0000"},
     {"M4_P256K_C256K", "004 TLROM (MMC3)", "256K PRG ROM", "PRG RAM MISSING", "256K CHR ROM OK", "0000"},
 };
 
