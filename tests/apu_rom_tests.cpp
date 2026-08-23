@@ -8,8 +8,14 @@
 // still empty.
 //
 // DO NOT REACH FOR apu_mixer OR volume_tests TO COVER WHAT IS MISSING. Both
-// look like the obvious next oracles and neither is one. Measured on this
-// emulator, with no channels and no mixer implemented at all:
+// look like the obvious next oracles and neither is one.
+//
+// fetch_blargg_apu_2005.sh said so first, and from reasoning: "they verify by
+// cancelling to silence and by comparing audio recordings - neither is
+// CPU-checkable." That was right, and it was still worth measuring, because the
+// reason it is right is not the reason it looks wrong. These ROMs do not fail
+// to report - they report PASSED. Numbers, on this emulator, with no channels
+// and no mixer implemented at all:
 //
 //   apu_mixer/square     status 0 (passed) @ frame  970
 //   apu_mixer/triangle   status 0 (passed) @ frame  609
