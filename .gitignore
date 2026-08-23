@@ -104,6 +104,9 @@ tests/test_files/cpu_behaviour
 # Blargg instr_test-v5 rom_singles, fetched by tests/test_files/fetch_instr_test.sh
 tests/test_files/instr_test
 
+# Blargg instr_misc rom_singles, fetched by tests/test_files/fetch_instr_misc.sh
+tests/test_files/instr_misc
+
 # Blargg cpu_exec_space ROMs, fetched by tests/test_files/fetch_cpu_exec_space.sh
 tests/test_files/cpu_exec_space
 

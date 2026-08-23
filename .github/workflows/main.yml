@@ -45,6 +45,7 @@ jobs:
           tests/test_files/fetch_visual_roms.sh
           tests/test_files/fetch_cpu_behaviour.sh
           tests/test_files/fetch_instr_test.sh
+          tests/test_files/fetch_instr_misc.sh
           tests/test_files/fetch_cpu_exec_space.sh
           tests/test_files/fetch_mmc3.sh
           tests/test_files/fetch_holy_mapperel.sh
@@ -137,6 +138,7 @@ jobs:
           tests/test_files/fetch_visual_roms.sh
           tests/test_files/fetch_cpu_behaviour.sh
           tests/test_files/fetch_instr_test.sh
+          tests/test_files/fetch_instr_misc.sh
           tests/test_files/fetch_cpu_exec_space.sh
           tests/test_files/fetch_mmc3.sh
           tests/test_files/fetch_holy_mapperel.sh
