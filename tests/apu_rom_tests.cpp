@@ -1,9 +1,43 @@
 // blargg's apu_test suite - the oracle for building the APU.
 //
-// Every other ROM suite here guards work that is finished. This one measures
-// work in progress: the frame counter, its /IRQ and the length counters exist;
-// the envelope, the sweep, the triangle's linear counter, the channels' output,
-// the mixer and the DMC do not, and clock_quarter_frame() is still empty.
+// Every other ROM suite here guards work that is finished. This one measured
+// work in progress: when it was written the frame counter, its /IRQ and the
+// length counters existed and nothing else did. The DMC has landed since, minus
+// its CPU stall. Still missing: the envelope, the sweep, the triangle's linear
+// counter, every channel's OUTPUT, and the mixer. clock_quarter_frame() is
+// still empty.
+//
+// DO NOT REACH FOR apu_mixer OR volume_tests TO COVER WHAT IS MISSING. Both
+// look like the obvious next oracles and neither is one. Measured on this
+// emulator, with no channels and no mixer implemented at all:
+//
+//   apu_mixer/square     status 0 (passed) @ frame  970
+//   apu_mixer/triangle   status 0 (passed) @ frame  609
+//   apu_mixer/noise      status 0 (passed) @ frame 1160
+//   apu_mixer/dmc        status 0 (passed) @ frame  721
+//
+// All four pass against an emulator that cannot produce a triangle wave. They
+// DO use the $6000 protocol - signature, status byte, ASCII at $6004 - so
+// blargg_rom_harness.h reads them perfectly, and that is exactly what makes the
+// trap worth writing down. The message says what the status byte does not:
+//
+//   1. Should play short tone.
+//   2. Should be nearly silent.
+//   3. Should play short tone.
+//
+// Those are instructions to a listener. The tests generate a tone and its
+// inverse on the DMC DAC, and correctness is near-silence between two beeps - a
+// ROM cannot hear itself, so the status byte only reports that it ran to the
+// end. This is blargg's own "done" category: his readme says "Only a test which
+// prints 'done' at the end requires that you watch/listen while it runs", and
+// these are those. volume_tests is the same shape and ships a recordings/
+// directory for the same reason.
+//
+// Wiring either in as a pass/fail oracle adds tests that are green today and
+// cannot go red, which is the failure this repo exists to prevent. If the
+// channels and the mixer get written they will be the first substantial
+// subsystem here built WITHOUT an oracle, and that should be a decision taken
+// on purpose rather than discovered afterwards.
 //
 // ALL EIGHT NOW PASS, and the file records how it got there rather than only
 // where it ended. It began with three passing and five pinned to their exact

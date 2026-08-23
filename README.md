@@ -32,9 +32,19 @@ audio.
 | Display | SDL2 + Dear ImGui: the screen and the debugger in one window |
 | Controllers | Both ports at `$4016`/`$4017`, keyboard-driven. Passes blargg's `read_joy3` `test_buttons` |
 
-Next: the rest of the APU - envelope, sweep, the channels themselves, the
-mixer and the DMC. SDL is already a dependency and its audio callback is the
-natural clock for it.
+Next: the rest of the APU - envelope, sweep, the channels themselves and the
+mixer. SDL is already a dependency and its audio callback is the natural clock
+for it.
+
+**With one caveat now measured rather than assumed.** The APU suites that pass
+here - `apu_test`, `apu_reset`, `blargg_apu_2005` - are register-level. The two
+that look like they would cover waveforms and mixing, `apu_mixer` and
+`volume_tests`, are listening tests: all four `apu_mixer` ROMs report status
+`$00` against this emulator *today*, with no channels and no mixer implemented,
+because a ROM cannot hear itself and the status byte only says it ran. See the
+header of [tests/apu_rom_tests.cpp](tests/apu_rom_tests.cpp) for the numbers.
+So the audio work would be the first substantial subsystem here built without an
+oracle.
 
 ### Verification: what has and has not been exercised
 
