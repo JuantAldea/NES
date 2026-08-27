@@ -911,5 +911,380 @@ GTEST_TEST(testAPUUnits, the_linear_counter_stops_at_zero)
     EXPECT_EQ(0, apu.linear_counter_value()) << "it must stop at zero, not wrap to 255";
 }
 
+// --- phase 2: the waveform generators ---------------------------------------
+//
+// Same situation as phase 1 - no ROM can see any of this - with one difference
+// worth stating: THE MUTATION SET FOR THESE WAS WRITTEN BEFORE THE TESTS.
+//
+// Phase 1's tests were written first and mutated afterwards, and an adversarial
+// review then killed six mutants the suite had missed, because a mutation set
+// derived from the same assumptions as the tests inherits their blind spots.
+// The list these were built to kill is in the commit message; each test below
+// exists because a specific single-token change to src/apu.cpp would otherwise
+// go unnoticed.
+
+// One APU cycle is two CPU cycles for the pulses and the noise; the triangle
+// runs at the CPU rate. advance_apu() counts CPU cycles throughout.
+constexpr int cpu_cycles_per_apu_cycle = 2;
+
+// THE DUTY TABLE IS READ DOWNWARD, and the two asymmetric duties are the only
+// ones that can show it. Duty 0 must emit 0 1 0 0 0 0 0 0 and duty 3 must emit
+// 1 0 0 1 1 1 1 1 - read the table upward instead and duty 0 becomes
+// 0 0 0 0 0 0 0 1, which is the same waveform shifted, and duty 3 inverts its
+// leading run. Duties 1 and 2 are near-symmetric and would not catch it, which
+// is why they are not the fixture.
+GTEST_TEST(testAPUWaves, pulse_duty_0_emits_the_documented_waveform_in_time_order)
+{
+    Bus console;
+    APU& apu = console.apu;
+    apu.power_on();
+
+    apu.write(0x4000, 0x00);  // duty 0
+    apu.write(0x4002, 0x00);
+    apu.write(0x4003, 0x00);  // period 0 -> the sequencer steps every APU cycle
+
+    const uint8_t expected[8] = {0, 1, 0, 0, 0, 0, 0, 0};
+    for (int step = 0; step < 8; ++step) {
+        EXPECT_EQ(expected[step], apu.pulse_output(APU::pulse1)) << "duty 0, step " << step;
+        advance_apu(apu, cpu_cycles_per_apu_cycle);
+    }
+}
+
+GTEST_TEST(testAPUWaves, pulse_duty_3_emits_the_documented_waveform_in_time_order)
+{
+    Bus console;
+    APU& apu = console.apu;
+    apu.power_on();
+
+    apu.write(0x4000, 0xC0);  // duty 3
+    apu.write(0x4002, 0x00);
+    apu.write(0x4003, 0x00);
+
+    const uint8_t expected[8] = {1, 0, 0, 1, 1, 1, 1, 1};
+    for (int step = 0; step < 8; ++step) {
+        EXPECT_EQ(expected[step], apu.pulse_output(APU::pulse1)) << "duty 3, step " << step;
+        advance_apu(apu, cpu_cycles_per_apu_cycle);
+    }
+}
+
+// The timer divides: at period t the sequencer advances every t+1 APU cycles.
+//
+// MEASURED AS AN INTERVAL, not as an absolute position, because the divider's
+// starting value is not something a $4003 write sets - "The period divider is
+// not reset" - so after power-on it is whatever the preceding cycles left. The
+// interval is the documented property; the phase at any given cycle is not.
+GTEST_TEST(testAPUWaves, the_pulse_timer_advances_the_sequencer_every_t_plus_one_apu_cycles)
+{
+    Bus console;
+    APU& apu = console.apu;
+
+    apu.write(0x4000, 0x00);
+    apu.write(0x4002, 0x03);
+    apu.write(0x4003, 0x00);  // period 3 -> one step per 4 APU cycles
+
+    // Walk to the next step so the divider is at a known point, then time the
+    // two after it.
+    const uint8_t start = apu.pulse_sequence_position(APU::pulse1);
+    int guard = 0;
+    while (apu.pulse_sequence_position(APU::pulse1) == start && guard++ < 100) {
+        advance_apu(apu, cpu_cycles_per_apu_cycle);
+    }
+    ASSERT_LT(guard, 100) << "the sequencer never advanced at all";
+
+    for (int repeat = 0; repeat < 2; ++repeat) {
+        const uint8_t before = apu.pulse_sequence_position(APU::pulse1);
+        advance_apu(apu, 3 * cpu_cycles_per_apu_cycle);
+        EXPECT_EQ(before, apu.pulse_sequence_position(APU::pulse1)) << "three APU cycles is short of the period";
+        advance_apu(apu, cpu_cycles_per_apu_cycle);
+        EXPECT_EQ((before + 7) & 0x07, apu.pulse_sequence_position(APU::pulse1)) << "the fourth steps it, and DOWNWARD";
+    }
+}
+
+// The pulses run at the APU rate, so a single CPU cycle must not move them.
+GTEST_TEST(testAPUWaves, the_pulse_timer_runs_at_the_apu_rate_not_the_cpu_rate)
+{
+    Bus console;
+    APU& apu = console.apu;
+    apu.power_on();
+
+    apu.write(0x4000, 0x00);
+    apu.write(0x4002, 0x00);
+    apu.write(0x4003, 0x00);  // period 0
+
+    // Eight APU cycles is a full sequence; sixteen CPU cycles must be the same.
+    advance_apu(apu, 8 * cpu_cycles_per_apu_cycle);
+    EXPECT_EQ(0, apu.pulse_sequence_position(APU::pulse1)) << "eight steps returns to the start";
+
+    // Half that many CPU cycles is half a sequence, not a whole one.
+    advance_apu(apu, 4 * cpu_cycles_per_apu_cycle);
+    EXPECT_EQ(4, apu.pulse_sequence_position(APU::pulse1));
+}
+
+// "The sequencer is immediately restarted at the first value of the current
+// sequence ... The period divider is not reset." Both halves are asserted,
+// because an implementation that also reset the divider would pass a
+// phase-only test.
+GTEST_TEST(testAPUWaves, writing_4003_restarts_the_phase_but_not_the_timer)
+{
+    Bus console;
+    APU& apu = console.apu;
+
+    apu.write(0x4000, 0x00);
+    apu.write(0x4002, 0x07);
+    apu.write(0x4003, 0x00);  // period 7 -> one step per 8 APU cycles
+
+    // Land exactly on a step so the divider is known to be full.
+    const uint8_t start = apu.pulse_sequence_position(APU::pulse1);
+    int guard = 0;
+    while (apu.pulse_sequence_position(APU::pulse1) == start && guard++ < 100) {
+        advance_apu(apu, cpu_cycles_per_apu_cycle);
+    }
+    ASSERT_LT(guard, 100);
+
+    // Four APU cycles in: halfway through this timer period.
+    advance_apu(apu, 4 * cpu_cycles_per_apu_cycle);
+
+    apu.write(0x4003, 0x00);
+    EXPECT_EQ(0, apu.pulse_sequence_position(APU::pulse1)) << "the phase restarts at once";
+
+    // The divider kept its remaining 4 cycles rather than reloading to 8.
+    advance_apu(apu, 3 * cpu_cycles_per_apu_cycle);
+    EXPECT_EQ(0, apu.pulse_sequence_position(APU::pulse1));
+    advance_apu(apu, cpu_cycles_per_apu_cycle);
+    EXPECT_EQ(7, apu.pulse_sequence_position(APU::pulse1)) << "a reset divider would have needed 8 more, not 4";
+}
+
+// Changing the duty must not move the phase.
+GTEST_TEST(testAPUWaves, changing_the_duty_leaves_the_sequencer_position_alone)
+{
+    Bus console;
+    APU& apu = console.apu;
+    apu.power_on();
+
+    apu.write(0x4000, 0x00);
+    apu.write(0x4002, 0x00);
+    apu.write(0x4003, 0x00);
+    advance_apu(apu, 3 * cpu_cycles_per_apu_cycle);
+    const uint8_t position = apu.pulse_sequence_position(APU::pulse1);
+    ASSERT_EQ(5, position);
+
+    apu.write(0x4000, 0x80);  // duty 2
+    EXPECT_EQ(position, apu.pulse_sequence_position(APU::pulse1));
+}
+
+// THE TRIANGLE RUNS AT THE CPU RATE. At period 0 it steps every CPU cycle, so
+// N cycles advance it N steps - half that if it were clocked with the pulses.
+GTEST_TEST(testAPUWaves, the_triangle_timer_runs_at_the_cpu_rate_not_the_apu_rate)
+{
+    Bus console;
+    APU& apu = console.apu;
+    apu.power_on();
+
+    apu.write(0x4015, 0x04);  // enable the triangle's length counter
+    apu.write(0x4008, 0x7F);  // control set, large reload -> linear counter runs
+    apu.write(0x400A, 0x00);
+    apu.write(0x400B, 0x08);  // length load, period 0
+    // The linear counter needs a quarter-frame to load from the reload flag.
+    advance_apu(apu, to_first_quarter_frame);
+    ASSERT_EQ(0x7F, apu.linear_counter_value());
+
+    const uint8_t before = apu.triangle_output();
+    advance_apu(apu, 4);
+    const uint8_t after = apu.triangle_output();
+
+    // The sequence descends 15..0 then ascends 0..15, so four CPU-rate steps
+    // move the output by 4. At the APU rate it would move by 2.
+    const int delta = static_cast<int>(before) - static_cast<int>(after);
+    EXPECT_EQ(4, delta) << "four CPU cycles must be four steps, not two";
+}
+
+// The 32-step sequence itself, in order, from the top.
+GTEST_TEST(testAPUWaves, the_triangle_walks_its_32_step_sequence)
+{
+    Bus console;
+    APU& apu = console.apu;
+    apu.power_on();
+
+    apu.write(0x4015, 0x04);
+    apu.write(0x4008, 0x7F);
+    apu.write(0x400A, 0x00);
+    apu.write(0x400B, 0x08);
+    advance_apu(apu, to_first_quarter_frame);
+    ASSERT_EQ(0x7F, apu.linear_counter_value());
+
+    // Walk to sequence INDEX 0, not to output value 15: the sequence visits 15
+    // at both ends of the ramp, so stopping on the value could start the walk
+    // at index 31 and compare a rotation of the table against the table.
+    int guard = 0;
+    while (apu.triangle_sequence_position() != 0 && guard++ < 200) {
+        advance_apu(apu, 1);
+    }
+    ASSERT_LT(guard, 200) << "the triangle never reached index 0";
+    const uint8_t expected[32] = {15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5,  4,  3,  2,  1,  0,
+                                  0,  1,  2,  3,  4,  5,  6, 7, 8, 9, 10, 11, 12, 13, 14, 15};
+    for (int step = 0; step < 32; ++step) {
+        EXPECT_EQ(expected[step], apu.triangle_output()) << "triangle step " << step;
+        advance_apu(apu, 1);
+    }
+}
+
+// THE TRIANGLE FREEZES, it does not go silent. "The sequencer is clocked by the
+// timer as long as both the linear counter and the length counter are nonzero."
+// An implementation that gated the mixer instead of the clock would report 0
+// here; the hardware holds the last step, which is why Mega Man's timer-zero
+// trick pops rather than muting.
+GTEST_TEST(testAPUWaves, the_triangle_sequencer_freezes_when_the_linear_counter_is_zero)
+{
+    Bus console;
+    APU& apu = console.apu;
+    apu.power_on();
+
+    apu.write(0x4015, 0x04);
+    apu.write(0x4008, 0x02);  // control CLEAR, reload 2 -> the counter will run out
+    apu.write(0x400A, 0x00);
+    apu.write(0x400B, 0x08);
+
+    advance_apu(apu, to_first_quarter_frame);
+    ASSERT_EQ(2, apu.linear_counter_value());
+    advance_apu(apu, one_quarter_frame);
+    advance_apu(apu, one_quarter_frame);
+    ASSERT_EQ(0, apu.linear_counter_value()) << "the linear counter has run out";
+
+    // 50 cycles, NOT a multiple of 32. An earlier version of this advanced 64,
+    // which is exactly two passes of the 32-step sequence - so a sequencer that
+    // was still running landed back on the same output and the test could not
+    // tell it from a frozen one. Removing the linear-counter half of the gate
+    // passed because of that alias, and nothing else in the suite noticed.
+    const uint8_t frozen = apu.triangle_output();
+    const uint8_t frozen_index = apu.triangle_sequence_position();
+    advance_apu(apu, 50);
+    EXPECT_EQ(frozen_index, apu.triangle_sequence_position()) << "the sequencer must HOLD its step";
+    EXPECT_EQ(frozen, apu.triangle_output()) << "and therefore its output; it must not advance and must not zero";
+}
+
+// The LFSR's power-on value, tested through the only state that is reachable.
+//
+// "On power-up, the shift register is loaded with the value 1." That value is
+// not directly observable: Bus's constructor calls APU::power_on(), whose
+// documented 10-cycle delay is ten real APU::clock() calls, and the LFSR runs
+// during them - correctly, since on hardware it is free-running from power.
+// Five of those ten are APU cycles, and with no period yet selected it clocks
+// on each.
+//
+// So the assertion is on where a register seeded with 1 MUST have arrived by
+// the time anything can look. With $400E at its power-on $00 the period is 4
+// CPU cycles, so those ten cycles produce three LFSR clocks:
+// 1 -> 16384 -> 8192 -> 4096.
+//
+// That figure was not read off this implementation. It was reproduced by
+// replaying the documented algorithm from a seed of 1 in a standalone program,
+// which arrives at 4096 in 3 clocks independently. The assertion therefore pins
+// the seed, the feedback rule and the CPU-to-APU divider at once.
+//
+// A register seeded with 0 is the real hazard - it XORs to 0 forever and the
+// channel is silent for the whole run - and it would still read 0 here.
+GTEST_TEST(testAPUWaves, the_noise_shift_register_is_seeded_with_one_at_power_on)
+{
+    Bus console;
+    EXPECT_EQ(4096, console.apu.noise_shift_register())
+        << "1 advanced three times by power_on()'s ten-cycle delay; a seed of 0 would still be 0";
+}
+
+// THE FEEDBACK IS TAKEN FROM THE PRE-SHIFT BITS, and the tap is bit 1 in normal
+// mode. Both are checked by walking the documented algorithm independently here
+// and comparing step for step - computing the XOR after the shift, or tapping
+// bit 6 when the mode flag is clear, diverges within a few steps.
+GTEST_TEST(testAPUWaves, the_noise_lfsr_matches_the_documented_algorithm_in_normal_mode)
+{
+    Bus console;
+    APU& apu = console.apu;
+
+    apu.write(0x400E, 0x00);  // mode clear, period index 0 -> 4 CPU cycles
+
+    // Seeded from the live register rather than from 1: the algorithm is what
+    // is under test here, and the power-on value is pinned by its own test.
+    uint16_t reference = apu.noise_shift_register();
+    for (int step = 0; step < 40; ++step) {
+        // The wiki's three steps, written out separately from the implementation
+        // so this is a second statement of the rule rather than a copy of it.
+        const uint16_t feedback = (reference & 1u) ^ ((reference >> 1) & 1u);
+        reference = static_cast<uint16_t>(reference >> 1);
+        reference = static_cast<uint16_t>((reference & 0x3FFFu) | (feedback << 14));
+
+        advance_apu(apu, 4);
+        ASSERT_EQ(reference, apu.noise_shift_register()) << "diverged at step " << step;
+    }
+}
+
+GTEST_TEST(testAPUWaves, the_noise_lfsr_taps_bit_6_in_mode_1)
+{
+    Bus console;
+    APU& apu = console.apu;
+
+    apu.write(0x400E, 0x80);  // mode SET, period index 0
+
+    uint16_t reference = apu.noise_shift_register();
+    for (int step = 0; step < 40; ++step) {
+        const uint16_t feedback = (reference & 1u) ^ ((reference >> 6) & 1u);
+        reference = static_cast<uint16_t>(reference >> 1);
+        reference = static_cast<uint16_t>((reference & 0x3FFFu) | (feedback << 14));
+
+        advance_apu(apu, 4);
+        ASSERT_EQ(reference, apu.noise_shift_register()) << "diverged at step " << step;
+    }
+}
+
+// The period table is data rather than a formula, so a wrong entry is only
+// visible by timing a specific one. Index 4 is 64 CPU cycles.
+//
+// The interval is measured AFTER the first reload, because a $400E write does
+// not reset the divider - the timer runs out its current value first, so the
+// first gap after the write is not the new period.
+GTEST_TEST(testAPUWaves, the_noise_period_table_is_indexed_by_the_low_four_bits)
+{
+    Bus console;
+    APU& apu = console.apu;
+
+    apu.write(0x400E, 0x04);  // index 4 -> 64 CPU cycles
+
+    uint16_t value = apu.noise_shift_register();
+    int guard = 0;
+    while (apu.noise_shift_register() == value && guard++ < 5000) {
+        advance_apu(apu, 1);
+    }
+    ASSERT_LT(guard, 5000) << "the LFSR never clocked";
+
+    value = apu.noise_shift_register();
+    advance_apu(apu, 62);
+    EXPECT_EQ(value, apu.noise_shift_register()) << "62 cycles is short of the 64-cycle period";
+    advance_apu(apu, 2);
+    EXPECT_NE(value, apu.noise_shift_register()) << "and the 64th clocks it";
+}
+
+// The noise channel's silence polarity is INVERTED relative to the pulses:
+// "The mixer receives the current envelope volume except when: Bit 0 of the
+// shift register is set". For the pulses it is the sequencer output being ZERO
+// that silences. Reading this backwards mutes exactly when it should not.
+GTEST_TEST(testAPUWaves, noise_is_silent_exactly_when_shift_register_bit_0_is_set)
+{
+    Bus console;
+    APU& apu = console.apu;
+    apu.write(0x400E, 0x00);  // period index 0 -> 4 CPU cycles
+
+    // Walk the register and check the reported silence against bit 0 at every
+    // step, so both polarities are exercised rather than whichever one the
+    // power-on state happens to give.
+    int saw_silent = 0;
+    int saw_audible = 0;
+    for (int step = 0; step < 60; ++step) {
+        const bool bit0 = (apu.noise_shift_register() & 1u) != 0;
+        ASSERT_EQ(bit0, apu.noise_output_is_silent()) << "step " << step;
+        bit0 ? ++saw_silent : ++saw_audible;
+        advance_apu(apu, 4);
+    }
+    EXPECT_GT(saw_silent, 0) << "the walk never reached a silent state, so it proved nothing";
+    EXPECT_GT(saw_audible, 0) << "the walk never reached an audible state, so it proved nothing";
+}
+
 }  // namespace apu
 }  // namespace tests

@@ -141,6 +141,37 @@ public:
         return sweep_muting(pulse);
     }
 
+    // The waveform generators' live output, before the mixer exists to consume
+    // it. Same justification as the accessors above: nothing in the register
+    // file reports any of this.
+    //
+    // pulse_output is the DUTY BIT, not the volume - the gating that turns it
+    // into a mixer level (length counter, sweep muting, the envelope) is phase 3
+    // and is deliberately not folded in here, so a test of the sequencer is a
+    // test of the sequencer.
+    uint8_t pulse_output(const int pulse) const
+    {
+        assert(pulse == pulse1 || pulse == pulse2);
+        return kPulseDuty[pulses[pulse].duty][pulses[pulse].sequence];
+    }
+    uint8_t pulse_sequence_position(const int pulse) const
+    {
+        assert(pulse == pulse1 || pulse == pulse2);
+        return pulses[pulse].sequence;
+    }
+    uint8_t triangle_output() const { return kTriangleSequence[triangle_sequence]; }
+
+    // The INDEX, not the value. The sequence visits 15 and 0 twice each, so a
+    // test that walked to an output value could not tell which half of the
+    // ramp it was on.
+    uint8_t triangle_sequence_position() const { return triangle_sequence; }
+    uint16_t noise_shift_register() const { return noise_shift; }
+
+    // Bit 0 SET means silence, which is the opposite polarity from the pulse
+    // channels' "sequencer output is zero". Exposed as its own question rather
+    // than left for a caller to get backwards.
+    bool noise_output_is_silent() const { return (noise_shift & 1u) != 0; }
+
     // The memory reader, driven by the Bus: only the Bus can halt the CPU.
     //
     // A transfer is REQUESTED rather than inferred from the buffer being empty.
@@ -294,6 +325,87 @@ private:
         bool reload = false;  // set by any write to $4001/$4005
     };
 
+    // The pulse channels' waveform generator: an 11-bit down-counter driving an
+    // 8-step duty sequencer.
+    //
+    // THE SEQUENCER COUNTS DOWN, which is the part published tables disagree
+    // about and the reason the raw sequences below look wrong. nesdev: "the
+    // counter is initialized to zero but counts downward rather than upward.
+    // Thus it reads the sequence lookup table in the order 0, 7, 6, 5, 4, 3, 2,
+    // 1." Store the table as written and step the index backwards and the
+    // OUTPUT comes out in the order blargg's waveform diagrams draw - which is
+    // how this was cross-checked, since blargg gives pictures rather than a
+    // direction. Duty 0 emits 0 1 0 0 0 0 0 0 and duty 3 emits 1 0 0 1 1 1 1 1;
+    // both are asymmetric, so a table read the wrong way round is visible in
+    // them and not in duties 1 and 2.
+    //
+    // https://www.nesdev.org/wiki/APU_Pulse
+    struct PulseWave {
+        uint8_t duty = 0;      // $4000/$4004 bits 7-6
+        uint16_t timer = 0;    // counts down from the channel's period
+        uint8_t sequence = 0;  // 0-7, stepped DOWNWARD
+    };
+
+    // "The sequencer is immediately restarted at the first value of the current
+    // sequence... The period divider is not reset." Both halves matter: a $4003
+    // write must move the phase and must NOT move the timer.
+    static constexpr uint8_t kPulseDuty[4][8] = {
+        {0, 0, 0, 0, 0, 0, 0, 1},  // 12.5%
+        {0, 0, 0, 0, 0, 0, 1, 1},  // 25%
+        {0, 0, 0, 0, 1, 1, 1, 1},  // 50%
+        {1, 1, 1, 1, 1, 1, 0, 0},  // 25% negated
+    };
+
+    // The triangle's 32-step sequencer.
+    //
+    // IT TICKS AT THE CPU RATE, not the APU rate the pulses use - "Unlike the
+    // pulse channels, this timer ticks at the rate of the CPU clock rather than
+    // the APU (CPU/2) clock". Getting that wrong is a factor of two in pitch and
+    // is the same trap the frame counter's published cycle numbers carry.
+    //
+    // AND ITS SEQUENCER STOPS RATHER THAN BEING SILENCED. "The sequencer is
+    // clocked by the timer as long as both the linear counter and the length
+    // counter are nonzero" - blargg says the same. So when either counter is
+    // zero the triangle FREEZES on its current step and holds that output; it
+    // does not drop to zero and it does not keep advancing. That is the opposite
+    // of the pulse and noise channels, where the sequencer runs on underneath
+    // and only the mixer gate closes, and it is why Mega Man's timer-zero
+    // "silencing" pops instead of muting.
+    static constexpr uint8_t kTriangleSequence[32] = {15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5,  4,  3,  2,  1,  0,
+                                                      0,  1,  2,  3,  4,  5,  6, 7, 8, 9, 10, 11, 12, 13, 14, 15};
+
+    uint16_t triangle_period = 0;
+    uint16_t triangle_timer = 0;
+    uint8_t triangle_sequence = 0;
+
+    // The noise channel's 15-bit LFSR.
+    //
+    // Power-on value is 1, not 0: "On power-up, the shift register is loaded
+    // with the value 1." A zero register would XOR to zero forever and the
+    // channel would be silent for the whole run.
+    //
+    // The feedback bit is computed from the PRE-SHIFT bits and inserted at bit
+    // 14 afterwards - blargg is explicit that they are "*pre-shifted* bits 0 and
+    // 1 (mode = 0) or bits 0 and 6 (mode = 1)", and nesdev numbers the same
+    // three steps in the same order.
+    uint16_t noise_shift = 1;
+    bool noise_mode = false;  // $400E bit 7
+    // kNoisePeriods[0], which is what a power-on $400E of $00 selects. Not 0:
+    // the reload halves this and subtracts one, so a zero period would
+    // underflow to $FFFF and stall the channel for 65536 APU cycles.
+    uint16_t noise_period = 4;
+    uint16_t noise_timer = 0;
+
+    // NTSC only. "The period determines how many CPU cycles happen between
+    // shift register clocks. These periods are all even numbers because there
+    // are 2 CPU cycles in an APU cycle." PAL differs and is not modelled.
+    static constexpr uint16_t kNoisePeriods[16] = {4,   8,   16,  32,  64,  96,   128,  160,
+                                                   202, 254, 380, 508, 762, 1016, 2034, 4068};
+
+    void clock_pulse_timer(int pulse);
+    void clock_triangle_timer();
+    void clock_noise_timer();
+
     // The delta modulation channel. Unlike the length counters this one READS
     // MEMORY, which is why it is the last thing built: its memory reader stalls
     // the CPU, and the cycle-exact bus is the most heavily verified thing here.
@@ -370,6 +482,7 @@ private:
 
     Envelope envelopes[3];  // pulse1, pulse2, noise - indexed by Channel
     Sweep sweeps[2];        // pulse1, pulse2
+    PulseWave pulses[2];
 
     // Which envelope belongs to a Channel. The triangle has none, so this is
     // not the identity and must not be written as one.

@@ -245,6 +245,85 @@ void APU::clock_linear_counter()
     }
 }
 
+// One APU cycle of a pulse channel's timer.
+//
+// "this timer is updated every APU cycle (i.e., every second CPU cycle), and
+// counts t, t-1, ..., 0, t, t-1, ..., clocking the waveform generator when it
+// goes from 0 to t" - so the sequencer advances on the RELOAD, not on every
+// tick, and the waveform period is 8*(t+1) APU cycles.
+//
+// The sequence index counts DOWN. See kPulseDuty in apu.h for why, and for how
+// that was cross-checked against blargg's waveform diagrams rather than taken
+// from one source.
+void APU::clock_pulse_timer(const int pulse)
+{
+    if (pulses[pulse].timer > 0) {
+        --pulses[pulse].timer;
+        return;
+    }
+
+    pulses[pulse].timer = pulse_period[pulse];
+    pulses[pulse].sequence = static_cast<uint8_t>((pulses[pulse].sequence + 7) & 0x07);
+}
+
+// One CPU cycle of the triangle's timer - CPU, not APU. See kTriangleSequence.
+//
+// The gate is on the CLOCK, not on the output: with either counter at zero the
+// sequencer does not advance at all and the channel holds its current step.
+void APU::clock_triangle_timer()
+{
+    if (linear_counter == 0 || lengths[triangle].value == 0) {
+        return;
+    }
+
+    if (triangle_timer > 0) {
+        --triangle_timer;
+        return;
+    }
+
+    triangle_timer = triangle_period;
+    triangle_sequence = static_cast<uint8_t>((triangle_sequence + 1) & 0x1F);
+}
+
+// One APU cycle of the noise channel's timer and its shift register.
+//
+// nesdev numbers the three steps and the order is the whole content:
+//
+//   "1. Feedback is calculated as the exclusive-OR of bit 0 and one other bit:
+//       bit 6 if Mode flag is set, otherwise bit 1.
+//    2. The shift register is shifted right by one bit.
+//    3. Bit 14, the leftmost bit, is set to the feedback calculated earlier."
+//
+// blargg says the same with the emphasis on the trap: the XOR is of the
+// "*pre-shifted*" bits. Computing it after the shift is the classic version of
+// this bug and produces a sequence that is wrong but still noisy, so it sounds
+// approximately right - which is exactly why no listening test would catch it.
+void APU::clock_noise_timer()
+{
+    if (noise_timer > 0) {
+        --noise_timer;
+        return;
+    }
+
+    // HALVED, because the table is in CPU CYCLES and this divider is clocked at
+    // the APU rate. nesdev: "The period determines how many CPU cycles happen
+    // between shift register clocks. These periods are all even numbers because
+    // there are 2 CPU cycles in an APU cycle." Using the table value directly as
+    // an APU-cycle count makes every noise pitch an octave too low - the same
+    // factor of two the triangle's timer and the frame counter's published
+    // boundaries both carry, and the third time it has bitten in this file.
+    //
+    // The -1 is the ordinary divider convention: counting down from N and
+    // reloading at zero spends N+1 cycles per clock.
+    noise_timer = static_cast<uint16_t>((noise_period / 2) - 1);
+
+    const uint16_t other = noise_mode ? ((noise_shift >> 6) & 1u) : ((noise_shift >> 1) & 1u);
+    const uint16_t feedback = (noise_shift & 1u) ^ other;
+
+    noise_shift = static_cast<uint16_t>(noise_shift >> 1);
+    noise_shift = static_cast<uint16_t>((noise_shift & 0x3FFFu) | (feedback << 14));
+}
+
 // The envelopes and the triangle's linear counter.
 void APU::clock_quarter_frame()
 {
@@ -461,6 +540,22 @@ void APU::clock()
     // not take part in the 4/5-step sequence at all.
     clock_dmc();
 
+    // The waveform generators, on their own dividers and likewise independent of
+    // the 4/5-step sequence. TWO DIFFERENT RATES, and the split is the point:
+    // the pulses and the noise run at the APU rate (every second CPU cycle)
+    // while the TRIANGLE runs at the CPU rate. Clocking the triangle with the
+    // others would halve its pitch and is the documented trap.
+    //
+    // apu_cycles counts CPU cycles from power-on and its low bit is already the
+    // CPU/APU phase used for $4017 write timing, so the parity is taken from
+    // there rather than from a second counter that could drift from it.
+    clock_triangle_timer();
+    if ((apu_cycles & 1) == 0) {
+        clock_pulse_timer(pulse1);
+        clock_pulse_timer(pulse2);
+        clock_noise_timer();
+    }
+
     // A pending $4017 write takes effect here rather than at the write, having
     // been delayed 3 or 4 CPU cycles.
     if (reset_countdown > 0) {
@@ -630,12 +725,18 @@ void APU::write(const uint16_t addr, const uint8_t data)
         // the rest immediately is what the evidence supports.
         envelopes[envelope_index(pulse1)].period = data & 0x0F;
         envelopes[envelope_index(pulse1)].constant_volume = (data & 0x10) != 0;
+        // Bits 7-6. nesdev: "The duty cycle is changed ... but the sequencer's
+        // current position isn't affected."
+        pulses[pulse1].duty = (data >> 6) & 0x03;
         break;
     case 0x4004:
         lengths[pulse2].pending_halt = (data & 0x20) != 0;
         lengths[pulse2].halt_write_pending = true;
         envelopes[envelope_index(pulse2)].period = data & 0x0F;
         envelopes[envelope_index(pulse2)].constant_volume = (data & 0x10) != 0;
+        // Bits 7-6. nesdev: "The duty cycle is changed ... but the sequencer's
+        // current position isn't affected."
+        pulses[pulse2].duty = (data >> 6) & 0x03;
         break;
     case 0x4008:
         lengths[triangle].pending_halt = (data & 0x80) != 0;
@@ -643,6 +744,18 @@ void APU::write(const uint16_t addr, const uint8_t data)
         // Bits 6-0. Bit 7 is the control flag, which is the halt bit above.
         linear_reload_value = data & 0x7F;
         break;
+    // $400A/$400B carry the triangle's 11-bit period the same way $4002/$4003
+    // carry a pulse's.
+    case 0x400A:
+        triangle_period = static_cast<uint16_t>((triangle_period & 0x0700) | data);
+        break;
+
+    case 0x400E:
+        // Bit 7 is the LFSR's Mode flag; bits 3-0 index the NTSC period table.
+        noise_mode = (data & 0x80) != 0;
+        noise_period = kNoisePeriods[data & 0x0F];
+        break;
+
     case 0x400C:
         lengths[noise].pending_halt = (data & 0x20) != 0;
         lengths[noise].halt_write_pending = true;
@@ -687,12 +800,17 @@ void APU::write(const uint16_t addr, const uint8_t data)
         lengths[pulse1].load_write_pending = true;
         pulse_period[pulse1] = static_cast<uint16_t>((pulse_period[pulse1] & 0x00FF) | ((data & 0x07) << 8));
         envelopes[envelope_index(pulse1)].start = true;
+        // "The sequencer is immediately restarted at the first value of the
+        // current sequence ... The period divider is not reset." So the phase
+        // moves and pulses[].timer deliberately does not.
+        pulses[pulse1].sequence = 0;
         break;
     case 0x4007:
         lengths[pulse2].pending_load = data;
         lengths[pulse2].load_write_pending = true;
         pulse_period[pulse2] = static_cast<uint16_t>((pulse_period[pulse2] & 0x00FF) | ((data & 0x07) << 8));
         envelopes[envelope_index(pulse2)].start = true;
+        pulses[pulse2].sequence = 0;
         break;
     case 0x400B:
         lengths[triangle].pending_load = data;
@@ -701,6 +819,7 @@ void APU::write(const uint16_t addr, const uint8_t data)
         // flag instead. blargg calls this flag the "halt flag", which is NOT
         // the $4008 bit 7 that nesdev calls the halt flag - see apu.h.
         linear_reload = true;
+        triangle_period = static_cast<uint16_t>((triangle_period & 0x00FF) | ((data & 0x07) << 8));
         break;
     case 0x400F:
         lengths[noise].pending_load = data;
