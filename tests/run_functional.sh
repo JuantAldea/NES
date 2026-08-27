@@ -34,6 +34,11 @@
 # and share no state with any of them. Those all start at once. Everything that
 # consumes a build waits for its own tree and nothing else.
 #
+# THEY START AT ONCE, BUT THEY SHARE ONE JOB BUDGET, and that is not a tuning
+# preference - without it this script OOM-killed the machine it ran on. Starting
+# four builds at once and letting each pick its own -j means nproc^2 compilers,
+# not nproc. See total_jobs() below for the measurement and the arithmetic.
+#
 # The sanitizer suite is run SHARDED, through run_tests.sh, not as one process.
 # Measured: 297s as a single process against 57s sharded, a 5.2x difference
 # that is entirely "one core versus all of them". A single-process sanitizer run
@@ -125,7 +130,49 @@ job() {
 rc_of() { cat "$OUT/$1.rc" 2>/dev/null || echo 99; }
 ms_of() { cat "$OUT/$1.ms" 2>/dev/null || echo 0; }
 
-build_tree() { cmake -S "$ROOT" -B "$1" -G Ninja "$3" >/dev/null 2>&1 && cmake --build "$1" && [ -x "$1/$2" ]; }
+# How many compiler processes this machine can afford AT ONCE, across every
+# concurrent build below.
+#
+# THIS EXISTS BECAUSE THE SCRIPT OOM-KILLED THE MACHINE. Four build jobs start
+# together and Ninja defaults each to nproc, so the real figure was nproc^2
+# bounded only by the number of translation units - 128 concurrent compiles on a
+# 32-core box, and 160 with --full. MEASURED on this project: a test TU peaks
+# around 350MB (holy_mapperel_tests 350, memory_tests 334, ppu.cpp 192), so 128
+# of them want ~45GB. The machine has 60GB, NO SWAP, and a desktop already
+# holding 39GB of it - about 21GB free. It did not survive.
+#
+# Cores alone are the wrong budget, which is why this reads MemAvailable: the
+# core count did not change when the machine started dying, the free memory did.
+# 450MB per job is the measured peak plus headroom.
+#
+# NES_MAX_JOBS overrides it outright.
+total_jobs() {
+    _cores=$(nproc 2>/dev/null || echo 4)
+    if [ -n "${NES_MAX_JOBS:-}" ]; then
+        echo "$NES_MAX_JOBS"
+        return
+    fi
+    _avail_kb=$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo 2>/dev/null)
+    [ -n "$_avail_kb" ] || { echo "$_cores"; return; }
+    _by_mem=$(( _avail_kb / 1024 / 450 ))
+    [ "$_by_mem" -lt 2 ] && _by_mem=2
+    [ "$_by_mem" -lt "$_cores" ] && echo "$_by_mem" || echo "$_cores"
+}
+
+# The budget above, divided between the builds that run at the same time. Ninja
+# is told explicitly rather than left to its default, which is the whole point.
+BUILD_JOBS=1
+set_build_jobs() {
+    _total=$(total_jobs)
+    _share=$(( _total / $1 ))
+    [ "$_share" -lt 1 ] && _share=1
+    BUILD_JOBS=$_share
+}
+
+build_tree() {
+    cmake -S "$ROOT" -B "$1" -G Ninja "$3" >/dev/null 2>&1 &&
+        cmake --build "$1" -j"$BUILD_JOBS" && [ -x "$1/$2" ]
+}
 
 # Runs every fetch script IN A SANDBOX, leaving tests/test_files untouched.
 #
@@ -187,7 +234,7 @@ BUILD=${NES_BUILD_DIR:-$ROOT/build}
 # The incremental build is ~1s against a ~9s suite, so there was never a cost
 # worth trading for it.
 suite_job() {
-    if ! cmake --build "$BUILD" >"$OUT/suite-build.log" 2>&1; then
+    if ! cmake --build "$BUILD" -j"$BUILD_JOBS" >"$OUT/suite-build.log" 2>&1; then
         echo "BUILD FAILED - see $OUT/suite-build.log"
         return 1
     fi
@@ -213,7 +260,7 @@ ASAN_TREE=${NES_ASAN_DIR:-$ROOT/build-asan}
 asan_job() {
     cmake -S "$ROOT" -B "$ASAN_TREE" -G Ninja -DNES_BUILD_FRONTEND=OFF \
         -DNES_SANITIZE=address,undefined >/dev/null 2>&1 || return 1
-    cmake --build "$ASAN_TREE" >/dev/null 2>&1 || return 1
+    cmake --build "$ASAN_TREE" -j"$BUILD_JOBS" >/dev/null 2>&1 || return 1
     NES_TEST_BIN="$ASAN_TREE/tests/tests" \
         ASAN_OPTIONS=detect_leaks=1:detect_stack_use_after_return=1 \
         UBSAN_OPTIONS=print_stacktrace=1:report_error_type=1 \
@@ -224,7 +271,19 @@ asan_job() {
 # blocks anything - it only delays PRINTING. Before this the test suite sat idle
 # from 41s to 56.4s waiting for an analyzer it does not depend on, and the
 # sanitizer suite waited from 46.7s for the same reason.
-printf 'launching every independent job at once...\n'
+# How many builds will be in flight at once, so the job budget can be split
+# between them. suite always builds; the three trees only with WITH_TREES; asan
+# only with --full. scan-build is counted because run_scan_build.sh builds too.
+CONCURRENT_BUILDS=1
+[ "$WITH_TREES" -eq 1 ] && CONCURRENT_BUILDS=$(( CONCURRENT_BUILDS + 2 ))
+[ "$WITH_TREES" -eq 1 ] && command -v scan-build >/dev/null 2>&1 &&
+    CONCURRENT_BUILDS=$(( CONCURRENT_BUILDS + 1 ))
+[ "$WITH_SANITIZERS" -eq 1 ] && CONCURRENT_BUILDS=$(( CONCURRENT_BUILDS + 1 ))
+set_build_jobs "$CONCURRENT_BUILDS"
+export NES_SCAN_JOBS=$BUILD_JOBS
+
+printf 'launching every independent job at once (%s builds, -j%s each, %s total)...\n' \
+    "$CONCURRENT_BUILDS" "$BUILD_JOBS" "$(( CONCURRENT_BUILDS * BUILD_JOBS ))"
 
 job suite suite_job
 if [ "$WITH_TREES" -eq 1 ]; then
@@ -340,11 +399,40 @@ elif [ -z "${DISPLAY:-}" ] && [ -z "${WAYLAND_DISPLAY:-}" ]; then
 elif ! command -v xdotool >/dev/null 2>&1 || ! command -v import >/dev/null 2>&1; then
     report SKIP "frontend smoke test" "needs xdotool and ImageMagick"
 else
+    # One cartridge per SUPPORTED mapper, and the list is meant to stay that
+    # way - it covered four of ten for a while, so a new board could be added,
+    # crash the frontend on load, and still see a green functional pass.
+    #
+    # Seven of these are Holy Mapperel images, which are fetched rather than
+    # user-supplied, so only mapper0 can skip on a clean checkout. All seven are
+    # deliberately the NON-BATTERY variants: a battery cartridge here would
+    # write a .sav into a fetched ROM directory, and those directories have
+    # their file count asserted by the fetch scripts.
+    #
+    # mapper4 WAS 4-scanline_timing, and the reason to change it is CAPTURE
+    # TIMING, not the ROM. Measured by running it out: it draws "4-scanline_timing
+    # / Passed" and stops at frame 344, where $ECB5 holds F0 FE - BEQ to itself,
+    # blargg's terminal spin. So it renders a perfectly good verdict; it just does
+    # it around frame 310, and this section screenshots at roughly frame 200 with
+    # rendering still off. Every run photographed a black screen, in the one check
+    # whose output exists to be looked at.
+    #
+    # Waiting six seconds per entry instead of three would fix it and cost thirty
+    # seconds across the ten. The Holy Mapperel image settles at frame 87 and
+    # draws a board report, which is both faster and consistent with the other
+    # nine. The MMC3 IRQ path those blargg ROMs cover is asserted by
+    # mmc3_rom_tests.cpp, which is where it belongs - this is a smoke test.
     for entry in \
         "mapper0:$ROOT/tests/test_files/local/smb.nes" \
+        "mapper1:$ROOT/tests/test_files/holy_mapperel/M1_P128K.nes" \
         "mapper2:$ROOT/tests/test_files/visual/240pee.nes" \
         "mapper3:$ROOT/tests/test_files/ppu_read_buffer/test_ppu_read_buffer.nes" \
-        "mapper4:$ROOT/tests/test_files/mmc3/4-scanline_timing.nes"; do
+        "mapper4:$ROOT/tests/test_files/holy_mapperel/M4_P256K_C256K.nes" \
+        "mapper7:$ROOT/tests/test_files/holy_mapperel/M7_P128K.nes" \
+        "mapper9:$ROOT/tests/test_files/holy_mapperel/M9_P128K_C64K.nes" \
+        "mapper10:$ROOT/tests/test_files/holy_mapperel/M10_P128K_C64K_W8K.nes" \
+        "mapper69:$ROOT/tests/test_files/holy_mapperel/M69_P128K_C64K_W8K.nes" \
+        "mapper118:$ROOT/tests/test_files/holy_mapperel/M118_P128K_C64K.nes"; do
         tag=${entry%%:*}
         rom=${entry#*:}
         [ -f "$rom" ] || {

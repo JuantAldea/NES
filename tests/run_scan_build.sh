@@ -95,5 +95,17 @@ scan-build -o "$REPORTS" \
 # Same principle as `target_compile_options(imgui PRIVATE -w)`: third-party
 # code is not held to this project's standards, and must not bury our own
 # findings.
+# NES_SCAN_JOBS is set by run_functional.sh, which runs this beside four other
+# builds and hands each a share of one job budget - see total_jobs() there.
+# Unset when this is run standalone, which leaves Ninja its own default.
+#
+# The expansion sits on the SAME LINE as the command on purpose. A comment
+# placed after a `\` continuation swallows the command instead of documenting
+# it: the shell continues onto the comment line, `#` eats the rest, scan-build
+# is left with nothing to run, and the cmake below executes as a separate
+# command - unanalysed. That is a green "No bugs found" over an analysis that
+# never happened, which is the exact failure this script exists to prevent. It
+# was caught by run_functional.sh reporting the analyzer finishing in 3.5s
+# instead of 206s.
 scan-build -o "$REPORTS" --exclude "$BUILD/_deps" --status-bugs \
-    cmake --build "$BUILD"
+    cmake --build "$BUILD" ${NES_SCAN_JOBS:+-j"$NES_SCAN_JOBS"}
