@@ -181,12 +181,169 @@ void APU::set_frame_irq(const bool asserted)
     bus->cpu.set_IRQ_line(CPU::IRQSource::apu_frame_counter, frame_irq_flag);
 }
 
-// The envelope and linear counter clock. Neither exists yet.
-void APU::clock_quarter_frame() {}
+// One envelope, one quarter-frame clock.
+//
+// nesdev, verbatim, and the two paragraphs are in this order for a reason - the
+// start-flag branch is EXCLUSIVE, so a clock that consumes the start flag does
+// not also clock the divider:
+//
+//   "if the start flag is clear, the divider is clocked, otherwise the start
+//    flag is cleared, the decay level counter is loaded with 15, and the
+//    divider's period is immediately reloaded"
+//
+//   "When the divider is clocked while at 0, it is loaded with V and clocks the
+//    decay level counter. Then one of two actions occurs: If the counter is
+//    non-zero, it is decremented, otherwise if the loop flag is set, the decay
+//    level counter is loaded with 15."
+//
+// `loop` is passed in rather than stored: it is the length counter's halt bit,
+// the same physical bit 5, and duplicating it here would let the two drift.
+void APU::clock_envelope(Envelope& envelope, const bool loop)
+{
+    if (envelope.start) {
+        envelope.start = false;
+        envelope.decay = 15;
+        envelope.divider = envelope.period;
+        return;
+    }
 
-// The length counter and sweep clock. The sweep does not exist yet.
+    if (envelope.divider > 0) {
+        --envelope.divider;
+        return;
+    }
+
+    envelope.divider = envelope.period;
+    if (envelope.decay > 0) {
+        --envelope.decay;
+    } else if (loop) {
+        envelope.decay = 15;
+    }
+}
+
+// The triangle's linear counter, one quarter-frame clock. nesdev and blargg
+// give the same two steps in the same order:
+//
+//   "1. If the linear counter reload flag is set, the linear counter is
+//       reloaded with the counter reload value, otherwise if the linear counter
+//       is non-zero, it is decremented.
+//    2. If the control flag is clear, the linear counter reload flag is
+//       cleared."
+//
+// Step 2 is why holding the control flag set makes every $4008 write reassert
+// on the next clock, indefinitely: the reload flag never self-clears in that
+// mode. The control flag is lengths[triangle].halt - one bit, two units.
+void APU::clock_linear_counter()
+{
+    if (linear_reload) {
+        linear_counter = linear_reload_value;
+    } else if (linear_counter > 0) {
+        --linear_counter;
+    }
+
+    if (!lengths[triangle].halt) {
+        linear_reload = false;
+    }
+}
+
+// The envelopes and the triangle's linear counter.
+void APU::clock_quarter_frame()
+{
+    clock_envelope(envelopes[envelope_index(pulse1)], lengths[pulse1].halt);
+    clock_envelope(envelopes[envelope_index(pulse2)], lengths[pulse2].halt);
+    clock_envelope(envelopes[envelope_index(noise)], lengths[noise].halt);
+    clock_linear_counter();
+}
+
+// Where the sweep would move this channel's period.
+//
+// The zero clamp below is the WIKI'S RULE, not a local choice about unsigned
+// arithmetic: "The target period is the sum of the current period and the
+// change amount, clamped to zero if this sum is negative." An earlier version
+// of this comment presented it as an implementation decision to avoid a
+// uint16_t wrap, which would have read to the next person as negotiable.
+//
+// THE ONE LINE IN THIS FILE MOST LIKELY TO BE WRITTEN BACKWARDS. Pulse 1 adds
+// the ones' complement of the change amount and pulse 2 adds the two's, so
+// pulse 1 subtracts one MORE. nesdev states it as "-c - 1" against "-c";
+// blargg states the same asymmetry as the second channel's inverted value being
+// "incremented by 1". Two independent sources, and no oracle here to catch it
+// if this is inverted - which is exactly why both are quoted.
+uint16_t APU::sweep_target(const int pulse) const
+{
+    const uint16_t period = pulse_period[pulse];
+    const uint16_t change = static_cast<uint16_t>(period >> sweeps[pulse].shift);
+
+    if (!sweeps[pulse].negate) {
+        return static_cast<uint16_t>(period + change);
+    }
+
+    // Pulse 1 is the ones' complement channel. Clamped at 0 rather than allowed
+    // to wrap: the adder is 11 bits and a negative result cannot be represented,
+    // and a wrapped uint16_t would read as an enormous period and mute the
+    // channel through the wrong branch below.
+    const uint16_t subtract = static_cast<uint16_t>(change + (pulse == pulse1 ? 1u : 0u));
+    return subtract > period ? 0u : static_cast<uint16_t>(period - subtract);
+}
+
+// nesdev: "Muting happens regardless of whether the sweep unit is disabled
+// (because either the Enabled flag or the Shift count are zero) and regardless
+// of whether the sweep divider is outputting a clock signal."
+//
+// So this consults neither `enabled` nor `shift`, deliberately. It is also why
+// the target is computed continuously rather than cached at the last sweep
+// clock - a channel can be silenced by a sweep unit that is switched off, which
+// is why "several publishers' NES games never seem to use the bottom octave of
+// the pulse waves".
+//
+// Strictly less than 8 and strictly greater than $7FF: both boundaries are
+// inclusive on the audible side.
+bool APU::sweep_muting(const int pulse) const { return pulse_period[pulse] < 8 || sweep_target(pulse) > 0x7FF; }
+
+// One sweep unit, one half-frame clock. nesdev gives the two steps in this
+// order, and the divider-is-zero test in step 1 uses the value the counter held
+// COMING IN.
+//
+// An earlier version of this comment justified that with a case where the two
+// orderings AGREE, which is no justification at all: at P=0 a reload-first
+// implementation sets the divider back to 0 and the test still passes, so both
+// update on every clock. The real difference is at P>0 - reload-first makes
+// step 1 see a non-zero divider and SKIPS the first period update entirely,
+// costing a whole half-frame of pitch on every $4001 write. Pinned by
+// sweep_updates_the_period_on_the_first_half_frame_after_a_write.
+//
+// Step 1 is abridged here; the wiki's full clause continues "...and the sweep
+// unit IS muting the channel: the pulse's period remains unchanged, but the
+// sweep unit's divider continues to count down and reload the divider's period
+// as normal." That is why the two ifs below are independent rather than nested.
+//
+//   "1. If the divider's counter is zero, the sweep is enabled, the shift count
+//       is nonzero, and the sweep unit is not muting the channel: The pulse's
+//       period is set to the target period. [...]
+//    2. If the divider's counter is zero or the reload flag is true: The
+//       divider counter is set to P and the reload flag is cleared. Otherwise
+//       the divider counter is decremented."
+void APU::clock_sweep(const int pulse)
+{
+    Sweep& sweep = sweeps[pulse];
+
+    if (sweep.divider == 0 && sweep.enabled && sweep.shift != 0 && !sweep_muting(pulse)) {
+        pulse_period[pulse] = sweep_target(pulse);
+    }
+
+    if (sweep.divider == 0 || sweep.reload) {
+        sweep.divider = sweep.period;
+        sweep.reload = false;
+    } else {
+        --sweep.divider;
+    }
+}
+
+// The length counters and the sweeps.
 void APU::clock_half_frame()
 {
+    clock_sweep(pulse1);
+    clock_sweep(pulse2);
+
     for (LengthCounter& counter : lengths) {
         // Recorded for apply_pending_loads, which must decide on the value as
         // it was when the clock arrived, not as it is afterwards.
@@ -466,36 +623,89 @@ void APU::write(const uint16_t addr, const uint8_t data)
     case 0x4000:
         lengths[pulse1].pending_halt = (data & 0x20) != 0;
         lengths[pulse1].halt_write_pending = true;
+        // Bits 3-0 are the envelope period AND the constant volume, bit 4
+        // chooses which of those two the mixer sees. Neither is deferred the
+        // way the halt bit is: 10.len_halt_timing pins the halt bit's one-cycle
+        // delay and says nothing about the rest of the register, so applying
+        // the rest immediately is what the evidence supports.
+        envelopes[envelope_index(pulse1)].period = data & 0x0F;
+        envelopes[envelope_index(pulse1)].constant_volume = (data & 0x10) != 0;
         break;
     case 0x4004:
         lengths[pulse2].pending_halt = (data & 0x20) != 0;
         lengths[pulse2].halt_write_pending = true;
+        envelopes[envelope_index(pulse2)].period = data & 0x0F;
+        envelopes[envelope_index(pulse2)].constant_volume = (data & 0x10) != 0;
         break;
     case 0x4008:
         lengths[triangle].pending_halt = (data & 0x80) != 0;
         lengths[triangle].halt_write_pending = true;
+        // Bits 6-0. Bit 7 is the control flag, which is the halt bit above.
+        linear_reload_value = data & 0x7F;
         break;
     case 0x400C:
         lengths[noise].pending_halt = (data & 0x20) != 0;
         lengths[noise].halt_write_pending = true;
+        envelopes[envelope_index(noise)].period = data & 0x0F;
+        envelopes[envelope_index(noise)].constant_volume = (data & 0x10) != 0;
+        break;
+
+    // The sweep registers. EPPP.NSSS, and any write sets the reload flag.
+    case 0x4001:
+        sweeps[pulse1].enabled = (data & 0x80) != 0;
+        sweeps[pulse1].period = (data >> 4) & 0x07;
+        sweeps[pulse1].negate = (data & 0x08) != 0;
+        sweeps[pulse1].shift = data & 0x07;
+        sweeps[pulse1].reload = true;
+        break;
+    case 0x4005:
+        sweeps[pulse2].enabled = (data & 0x80) != 0;
+        sweeps[pulse2].period = (data >> 4) & 0x07;
+        sweeps[pulse2].negate = (data & 0x08) != 0;
+        sweeps[pulse2].shift = data & 0x07;
+        sweeps[pulse2].reload = true;
+        break;
+
+    // The pulse timer periods. Low eight bits here, high three in $4003/$4007
+    // below - and the sweep unit rewrites them, which is why they are not the
+    // register value but state of their own.
+    case 0x4002:
+        pulse_period[pulse1] = static_cast<uint16_t>((pulse_period[pulse1] & 0x0700) | data);
+        break;
+    case 0x4006:
+        pulse_period[pulse2] = static_cast<uint16_t>((pulse_period[pulse2] & 0x0700) | data);
         break;
 
     // The length loads.
+    // Each also sets its channel's restart flag. nesdev lists the side effects
+    // of $4003/$4007 as "The sequencer is immediately restarted at the first
+    // value of the current sequence. The envelope is also restarted. The period
+    // divider is not reset." - so the envelope start flag is set HERE, and is
+    // consumed by the next quarter-frame clock rather than at the write.
     case 0x4003:
         lengths[pulse1].pending_load = data;
         lengths[pulse1].load_write_pending = true;
+        pulse_period[pulse1] = static_cast<uint16_t>((pulse_period[pulse1] & 0x00FF) | ((data & 0x07) << 8));
+        envelopes[envelope_index(pulse1)].start = true;
         break;
     case 0x4007:
         lengths[pulse2].pending_load = data;
         lengths[pulse2].load_write_pending = true;
+        pulse_period[pulse2] = static_cast<uint16_t>((pulse_period[pulse2] & 0x00FF) | ((data & 0x07) << 8));
+        envelopes[envelope_index(pulse2)].start = true;
         break;
     case 0x400B:
         lengths[triangle].pending_load = data;
         lengths[triangle].load_write_pending = true;
+        // The triangle has no envelope; $400B sets the linear counter's reload
+        // flag instead. blargg calls this flag the "halt flag", which is NOT
+        // the $4008 bit 7 that nesdev calls the halt flag - see apu.h.
+        linear_reload = true;
         break;
     case 0x400F:
         lengths[noise].pending_load = data;
         lengths[noise].load_write_pending = true;
+        envelopes[envelope_index(noise)].start = true;
         break;
 
     case FRAMECOUNTER: {

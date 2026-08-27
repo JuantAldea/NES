@@ -517,5 +517,399 @@ GTEST_TEST(testAPU, a_reload_coinciding_with_the_clock_uses_the_pre_clock_counte
            "  LengthCounter::value_before_clock.";
 }
 
+// --- the frame-counter units: envelope, sweep, linear counter ---------------
+//
+// NONE OF THESE HAS A ROM ORACLE, and that is not an oversight in this file.
+// The CPU cannot read an envelope's decay level, a sweep's divider or the
+// triangle's linear counter through any register, so no ROM reporting through
+// $6000 can test them. The 25 APU ROMs that pass here cover the length counters
+// and the frame IRQ, which ARE visible. apu_mixer and volume_tests look like
+// the missing oracles and are not - see the header of apu_rom_tests.cpp.
+//
+// So these are written from two documents that agree with each other, and are
+// checked by MUTATION instead: each was confirmed to fail when the behaviour it
+// names is broken. Without that step a test written from the same model as the
+// code proves only that the model was applied twice.
+
+// APU::clock() alone is the unit under test; stepping the whole console to
+// reach a quarter-frame boundary would drag the CPU and PPU in with it.
+void advance_apu(APU& apu, const int cpu_cycles)
+{
+    for (int i = 0; i < cpu_cycles; ++i) {
+        apu.clock();
+    }
+}
+
+// MEASURED, by clocking a V=0 envelope one cycle at a time and recording when
+// its decay moved: the first quarter-frame clock after power_on() lands at CPU
+// cycle 7451, and the rest follow every 7458.
+//
+// The figures usually quoted for these - 3729, 7457, 11186, 14915 - are APU
+// CYCLES, and the APU divides the CPU clock by two. Writing them here as CPU
+// cycles made every one of these tests fail on its first run, which is the same
+// factor-of-two trap the triangle's timer carries. The 7451 rather than 7457 is
+// power_on_delay and the divider's phase.
+//
+// THE GAPS ARE NOT CONSTANT, and an earlier version of this comment said they
+// were. Measured: 7456, 7458, 7458, 7458, then 7456 again - the pattern repeats
+// every four clocks because the real boundaries fall on APU HALF-cycles and the
+// four of them sum to 29830, the mode-0 period.
+//
+// So a step of 7458 gains 2 cycles per frame sequence rather than holding
+// station. That is still safe here - the margin starts at 9 and GROWS, reaching
+// about 17 over the longest test - but it is safe by drifting the right way,
+// not by not drifting, and the difference matters to whoever tunes this next.
+constexpr int to_first_quarter_frame = 7460;
+constexpr int one_quarter_frame = 7458;
+
+GTEST_TEST(testAPUUnits, envelope_start_flag_loads_decay_to_15_on_the_next_clock)
+{
+    Bus console;
+    APU& apu = console.apu;
+    apu.power_on();
+
+    apu.write(0x4000, 0x03);
+    // $4003 sets the start flag. nesdev lists "The envelope is also restarted"
+    // among its side effects - but not now: it is consumed on the NEXT
+    // quarter-frame clock.
+    apu.write(0x4003, 0x08);
+    EXPECT_EQ(0, apu.envelope_decay(APU::pulse1)) << "the start flag must not act at the write";
+
+    advance_apu(apu, to_first_quarter_frame);
+    EXPECT_EQ(15, apu.envelope_decay(APU::pulse1)) << "the first quarter-frame clock reloads decay to 15";
+}
+
+GTEST_TEST(testAPUUnits, envelope_decay_steps_once_per_clock_when_the_period_is_zero)
+{
+    Bus console;
+    APU& apu = console.apu;
+    apu.power_on();
+
+    apu.write(0x4000, 0x00);  // V = 0: the divider reloads to 0, so every clock steps
+    apu.write(0x4003, 0x08);
+
+    advance_apu(apu, to_first_quarter_frame);
+    ASSERT_EQ(15, apu.envelope_decay(APU::pulse1));
+
+    advance_apu(apu, one_quarter_frame);
+    EXPECT_EQ(14, apu.envelope_decay(APU::pulse1));
+    advance_apu(apu, one_quarter_frame);
+    EXPECT_EQ(13, apu.envelope_decay(APU::pulse1));
+}
+
+GTEST_TEST(testAPUUnits, constant_volume_selects_the_source_but_the_decay_still_runs)
+{
+    Bus console;
+    APU& apu = console.apu;
+    apu.power_on();
+
+    // nesdev: "The constant volume flag has no effect besides selecting the
+    // volume source; the decay level will still be updated when constant volume
+    // is selected." Gating the envelope clock on this bit is the documented
+    // trap, so this asserts both halves.
+    apu.write(0x4000, 0x17);  // constant volume, V = 7
+    apu.write(0x4003, 0x08);
+    advance_apu(apu, to_first_quarter_frame);
+
+    EXPECT_EQ(7, apu.envelope_volume(APU::pulse1)) << "constant volume reports the period field";
+    EXPECT_EQ(15, apu.envelope_decay(APU::pulse1)) << "and the decay was still reloaded underneath";
+}
+
+GTEST_TEST(testAPUUnits, the_envelope_loop_flag_is_the_length_counter_halt_bit)
+{
+    Bus console;
+    APU& apu = console.apu;
+    apu.power_on();
+
+    // Bit 5 of $4000, and this is the one assertion here with an oracle behind
+    // it: the same bit halts the length counter, so decoding it at the wrong
+    // position would break blargg's 1-len_ctr as well as this.
+    apu.write(0x4015, 0x01);
+    apu.write(0x4000, 0x20);  // loop/halt set, V = 0
+    apu.write(0x4003, 0x08);
+
+    advance_apu(apu, to_first_quarter_frame);
+    ASSERT_EQ(15, apu.envelope_decay(APU::pulse1));
+
+    for (int i = 0; i < 15; ++i) {
+        advance_apu(apu, one_quarter_frame);
+    }
+    EXPECT_EQ(0, apu.envelope_decay(APU::pulse1));
+    advance_apu(apu, one_quarter_frame);
+    EXPECT_EQ(15, apu.envelope_decay(APU::pulse1)) << "loop set: the decay reloads rather than sticking at 0";
+}
+
+// THE ASYMMETRY, pinned with the documentation's own worked example rather than
+// with numbers taken from this implementation: nesdev says "Making 20 negative
+// produces a change amount of -21" on pulse 1 and "-20" on pulse 2, and blargg
+// reaches the same result from the other side ("on the second square channel,
+// the inverted value is incremented by 1").
+GTEST_TEST(testAPUUnits, pulse1_negates_with_ones_complement_and_pulse2_with_twos)
+{
+    Bus console;
+    APU& apu = console.apu;
+    apu.power_on();
+
+    apu.write(0x4002, 0x80);
+    apu.write(0x4003, 0x02);  // period 0x280 = 640, so 640 >> 5 = 20
+    apu.write(0x4001, 0x0D);  // negate, shift 5
+    ASSERT_EQ(640, apu.pulse_timer_period(APU::pulse1));
+    EXPECT_EQ(640 - 21, apu.sweep_target_period(APU::pulse1)) << "pulse 1 subtracts c + 1";
+
+    apu.write(0x4006, 0x80);
+    apu.write(0x4007, 0x02);
+    apu.write(0x4005, 0x0D);
+    ASSERT_EQ(640, apu.pulse_timer_period(APU::pulse2));
+    EXPECT_EQ(640 - 20, apu.sweep_target_period(APU::pulse2)) << "pulse 2 subtracts c";
+}
+
+// nesdev: "Muting happens regardless of whether the sweep unit is disabled
+// (because either the Enabled flag or the Shift count are zero) and regardless
+// of whether the sweep divider is outputting a clock signal."
+GTEST_TEST(testAPUUnits, a_disabled_sweep_still_mutes_on_target_overflow)
+{
+    Bus console;
+    APU& apu = console.apu;
+    apu.power_on();
+
+    // $4001 never written: enabled false, shift 0. With shift 0 the change
+    // amount is the period itself, so anything from $400 up doubles past $7FF -
+    // the wiki's explanation for why games avoid the pulse channels' bottom
+    // octave.
+    apu.write(0x4002, 0x00);
+    apu.write(0x4003, 0x04);  // period 0x400
+    ASSERT_EQ(0x400, apu.pulse_timer_period(APU::pulse1));
+    EXPECT_TRUE(apu.sweep_is_muting(APU::pulse1)) << "target 0x800 exceeds 0x7FF; the sweep being off is irrelevant";
+}
+
+GTEST_TEST(testAPUUnits, sweep_muting_boundaries_are_strict)
+{
+    Bus console;
+    APU& apu = console.apu;
+    apu.power_on();
+
+    // Negate on so the target cannot overflow and only the period floor is
+    // under test. "If the current period is less than 8" - 8 itself is audible.
+    apu.write(0x4001, 0x08);
+
+    apu.write(0x4002, 0x07);
+    apu.write(0x4003, 0x00);
+    EXPECT_TRUE(apu.sweep_is_muting(APU::pulse1)) << "period 7 is below the floor";
+
+    apu.write(0x4002, 0x08);
+    apu.write(0x4003, 0x00);
+    EXPECT_FALSE(apu.sweep_is_muting(APU::pulse1)) << "period 8 is exactly the floor and is audible";
+}
+
+GTEST_TEST(testAPUUnits, linear_counter_reloads_then_decrements_when_control_is_clear)
+{
+    Bus console;
+    APU& apu = console.apu;
+    apu.power_on();
+
+    apu.write(0x4008, 0x0A);  // control clear, reload value 10
+    apu.write(0x400B, 0x00);  // sets the reload flag
+
+    advance_apu(apu, to_first_quarter_frame);
+    EXPECT_EQ(10, apu.linear_counter_value()) << "the reload flag loads the counter on the first clock";
+
+    advance_apu(apu, one_quarter_frame);
+    EXPECT_EQ(9, apu.linear_counter_value()) << "control clear: step 2 cleared the flag, so it counts down";
+    advance_apu(apu, one_quarter_frame);
+    EXPECT_EQ(8, apu.linear_counter_value());
+}
+
+GTEST_TEST(testAPUUnits, a_set_control_flag_makes_the_linear_counter_reload_forever)
+{
+    Bus console;
+    APU& apu = console.apu;
+    apu.power_on();
+
+    // "the reload flag is not cleared unless the control flag is also clear",
+    // so with bit 7 held set the counter reasserts its reload value on every
+    // clock instead of counting down. Both sources state this explicitly.
+    apu.write(0x4008, 0x8A);
+    apu.write(0x400B, 0x00);
+
+    advance_apu(apu, to_first_quarter_frame);
+    ASSERT_EQ(10, apu.linear_counter_value());
+    advance_apu(apu, one_quarter_frame);
+    EXPECT_EQ(10, apu.linear_counter_value()) << "control set: the reload flag never clears, so it never counts down";
+    advance_apu(apu, one_quarter_frame);
+    EXPECT_EQ(10, apu.linear_counter_value());
+}
+
+// --- gaps found by adversarial review, not by writing more of the same -------
+//
+// The tests above were checked by mutation and six of seven mutants died, which
+// read as good coverage and was not. A review that fetched the sources itself
+// and built its OWN mutants killed only four of ten: clock_sweep turned out to
+// be executed by no test in any state where it could do anything, the $4001
+// Enabled and period fields were never written non-zero, and two tests asserted
+// less than their names claimed. These close those.
+//
+// MEASURED, the same way the quarter-frame constants were: half-frame clocks
+// land at CPU cycle 14907, then 29823, then 44737 - gaps of 14916 and 14914,
+// alternating for the same half-cycle reason the quarter-frames do. Only a few
+// steps are taken here so the drift never matters.
+constexpr int to_first_half_frame = 14910;
+constexpr int one_half_frame = 14915;
+
+// clock_sweep, step ordering. THE REVIEW'S FIRST FINDING: swapping the two
+// steps used to pass all 998 cases.
+//
+// With the divider period P = 0 and the reload flag set by the $4001 write, the
+// divider is zero coming into the first half-frame clock, so step 1 must update
+// the period THERE. An implementation that reloads the divider first sees a
+// non-zero counter and skips this update entirely.
+GTEST_TEST(testAPUUnits, sweep_updates_the_period_on_the_first_half_frame_after_a_write)
+{
+    Bus console;
+    APU& apu = console.apu;
+    apu.power_on();
+
+    apu.write(0x4002, 0x00);
+    apu.write(0x4003, 0x02);  // period 0x200 = 512
+    apu.write(0x4001, 0x81);  // enabled, P = 0, negate clear, shift 1
+    ASSERT_EQ(512, apu.pulse_timer_period(APU::pulse1));
+
+    advance_apu(apu, to_first_half_frame);
+    EXPECT_EQ(768, apu.pulse_timer_period(APU::pulse1)) << "512 + (512 >> 1); a reload-first ordering would skip this";
+
+    advance_apu(apu, one_half_frame);
+    EXPECT_EQ(1152, apu.pulse_timer_period(APU::pulse1)) << "and again on the next half-frame at P = 0";
+}
+
+// The divider period field really is bits 6-4, and P means P+1 clocks. With
+// P = 1 the period must move on every SECOND half-frame, not every one.
+GTEST_TEST(testAPUUnits, sweep_divider_period_field_is_bits_6_to_4)
+{
+    Bus console;
+    APU& apu = console.apu;
+    apu.power_on();
+
+    apu.write(0x4002, 0x00);
+    apu.write(0x4003, 0x02);  // period 512
+    apu.write(0x4001, 0x91);  // enabled, P = 1, shift 1
+
+    advance_apu(apu, to_first_half_frame);
+    ASSERT_EQ(768, apu.pulse_timer_period(APU::pulse1)) << "the reload flag forces the first update";
+
+    advance_apu(apu, one_half_frame);
+    EXPECT_EQ(768, apu.pulse_timer_period(APU::pulse1)) << "P = 1: this clock only decrements the divider";
+
+    advance_apu(apu, one_half_frame);
+    EXPECT_EQ(1152, apu.pulse_timer_period(APU::pulse1)) << "and the one after it updates";
+}
+
+// The Enabled bit is bit 7 and is read the right way round. Inverting it used
+// to pass every test in the repository.
+GTEST_TEST(testAPUUnits, a_sweep_with_the_enable_bit_clear_never_moves_the_period)
+{
+    Bus console;
+    APU& apu = console.apu;
+    apu.power_on();
+
+    apu.write(0x4002, 0x00);
+    apu.write(0x4003, 0x02);
+    // Identical to the test above except bit 7, and negate set so the target
+    // cannot overflow and mute the channel for an unrelated reason.
+    apu.write(0x4001, 0x09);  // NOT enabled, shift 1, negate
+
+    advance_apu(apu, to_first_half_frame);
+    EXPECT_EQ(512, apu.pulse_timer_period(APU::pulse1)) << "disabled: the period must not move";
+    advance_apu(apu, one_half_frame);
+    EXPECT_EQ(512, apu.pulse_timer_period(APU::pulse1));
+}
+
+// THE MUTING CEILING, at exactly the boundary. "If at any time the target
+// period is greater than $7FF" - so a target of exactly $7FF is audible. The
+// only ceiling case tested before was $800, one step past, which left an
+// off-by-one invisible.
+GTEST_TEST(testAPUUnits, a_target_of_exactly_7ff_does_not_mute)
+{
+    Bus console;
+    APU& apu = console.apu;
+    apu.power_on();
+
+    apu.write(0x4002, 0x55);
+    apu.write(0x4003, 0x05);  // period 0x555 = 1365
+    apu.write(0x4001, 0x01);  // negate clear, shift 1 -> target 1365 + 682 = 2047
+    ASSERT_EQ(0x555, apu.pulse_timer_period(APU::pulse1));
+    ASSERT_EQ(0x7FF, apu.sweep_target_period(APU::pulse1));
+    EXPECT_FALSE(apu.sweep_is_muting(APU::pulse1)) << "0x7FF is exactly the ceiling and is audible";
+}
+
+// The decay is CLOCKED under constant volume, not merely reloaded by the start
+// flag. The earlier test asserted decay == 15 one quarter-frame after a write,
+// which the start branch supplies unconditionally - so an implementation that
+// skipped the whole envelope clock whenever constant volume was set passed it.
+GTEST_TEST(testAPUUnits, the_decay_keeps_counting_while_constant_volume_is_selected)
+{
+    Bus console;
+    APU& apu = console.apu;
+    apu.power_on();
+
+    apu.write(0x4000, 0x1F);  // constant volume, V = 15 -> divider period 15
+    apu.write(0x4003, 0x08);
+
+    advance_apu(apu, to_first_quarter_frame);
+    ASSERT_EQ(15, apu.envelope_decay(APU::pulse1)) << "the start flag reloaded it";
+    EXPECT_EQ(15, apu.envelope_volume(APU::pulse1)) << "and the mixer sees the constant, not the decay";
+
+    // V = 15, so the decay steps once every 16 quarter-frames.
+    for (int i = 0; i < 16; ++i) {
+        advance_apu(apu, one_quarter_frame);
+    }
+    EXPECT_EQ(14, apu.envelope_decay(APU::pulse1)) << "the decay must still be running underneath";
+    EXPECT_EQ(15, apu.envelope_volume(APU::pulse1)) << "while the reported volume stays the constant";
+}
+
+// The loop flag's NEGATIVE case. Every earlier envelope test ran with loop set
+// or never reached zero, so an implementation that always reloaded to 15 -
+// making every envelope loop forever, the most audible envelope error there is -
+// passed the whole suite.
+GTEST_TEST(testAPUUnits, a_non_looping_envelope_sticks_at_zero)
+{
+    Bus console;
+    APU& apu = console.apu;
+    apu.power_on();
+
+    apu.write(0x4015, 0x01);
+    apu.write(0x4000, 0x00);  // loop/halt CLEAR, V = 0
+    apu.write(0x4003, 0x08);
+
+    advance_apu(apu, to_first_quarter_frame);
+    ASSERT_EQ(15, apu.envelope_decay(APU::pulse1));
+
+    for (int i = 0; i < 15; ++i) {
+        advance_apu(apu, one_quarter_frame);
+    }
+    ASSERT_EQ(0, apu.envelope_decay(APU::pulse1));
+
+    advance_apu(apu, one_quarter_frame);
+    EXPECT_EQ(0, apu.envelope_decay(APU::pulse1)) << "loop clear: the decay stays at 0 rather than reloading";
+    advance_apu(apu, one_quarter_frame);
+    EXPECT_EQ(0, apu.envelope_decay(APU::pulse1));
+}
+
+// The linear counter stops at zero rather than wrapping to 255.
+GTEST_TEST(testAPUUnits, the_linear_counter_stops_at_zero)
+{
+    Bus console;
+    APU& apu = console.apu;
+    apu.power_on();
+
+    apu.write(0x4008, 0x01);  // control clear, reload value 1
+    apu.write(0x400B, 0x00);
+
+    advance_apu(apu, to_first_quarter_frame);
+    ASSERT_EQ(1, apu.linear_counter_value());
+    advance_apu(apu, one_quarter_frame);
+    EXPECT_EQ(0, apu.linear_counter_value());
+    advance_apu(apu, one_quarter_frame);
+    EXPECT_EQ(0, apu.linear_counter_value()) << "it must stop at zero, not wrap to 255";
+}
+
 }  // namespace apu
 }  // namespace tests

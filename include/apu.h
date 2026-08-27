@@ -109,6 +109,38 @@ public:
     // worth being able to assert on directly rather than only through timing.
     uint16_t dmc_bytes_remaining() const { return dmc.bytes_remaining; }
 
+    // Inspection for the units NO REGISTER REPORTS. The length counters get
+    // accessors because reading $4015 would acknowledge an IRQ; these get them
+    // because there is nothing to read at all - the envelope, the sweep and the
+    // linear counter are invisible to the CPU, which is precisely why no test
+    // ROM can cover them and why the tests that do have to reach in here.
+    uint8_t envelope_volume(const int channel) const
+    {
+        assert(channel == pulse1 || channel == pulse2 || channel == noise);
+        return envelopes[envelope_index(channel)].volume();
+    }
+    uint8_t envelope_decay(const int channel) const
+    {
+        assert(channel == pulse1 || channel == pulse2 || channel == noise);
+        return envelopes[envelope_index(channel)].decay;
+    }
+    uint8_t linear_counter_value() const { return linear_counter; }
+    uint16_t pulse_timer_period(const int pulse) const
+    {
+        assert(pulse == pulse1 || pulse == pulse2);
+        return pulse_period[pulse];
+    }
+    uint16_t sweep_target_period(const int pulse) const
+    {
+        assert(pulse == pulse1 || pulse == pulse2);
+        return sweep_target(pulse);
+    }
+    bool sweep_is_muting(const int pulse) const
+    {
+        assert(pulse == pulse1 || pulse == pulse2);
+        return sweep_muting(pulse);
+    }
+
     // The memory reader, driven by the Bus: only the Bus can halt the CPU.
     //
     // A transfer is REQUESTED rather than inferred from the buffer being empty.
@@ -184,6 +216,84 @@ private:
         uint8_t value_before_clock = 0;
     };
 
+    // The envelope generator: pulse 1, pulse 2 and the noise channel have one.
+    //
+    // NO ROM ORACLE COVERS THIS UNIT, and that is a statement about the whole
+    // catalogue rather than an admission about this file. Nothing reads an
+    // envelope back - the CPU cannot see a decay level through any register - so
+    // the 25 APU ROMs that pass here cannot test it, and apu_mixer and
+    // volume_tests are listening tests (see apu_rom_tests.cpp). The algorithm
+    // below is transcribed from two independent sources that agree word for
+    // word, and the tests are checked by mutation instead of by hardware:
+    //
+    //   nesdev https://www.nesdev.org/wiki/APU_Envelope
+    //   blargg https://www.nesdev.org/apu_ref.txt
+    //
+    // ONE PART OF IT IS ORACLE-COVERED, though, and it is the part most likely
+    // to be wired wrong: the loop flag IS the length counter's halt flag, the
+    // same physical bit 5 of $4000/$4004/$400C. So a mistake there moves a
+    // length counter, and blargg's 1-len_ctr and 01.len_ctr would catch it.
+    // That is why this struct does not own the bit - LengthCounter::halt does,
+    // and the envelope reads it.
+    struct Envelope {
+        // "if the start flag is clear, the divider is clocked, otherwise the
+        // start flag is cleared, the decay level counter is loaded with 15, and
+        // the divider's period is immediately reloaded". Set by a write to the
+        // channel's FOURTH register ($4003/$4007/$400F), and consumed on the
+        // next quarter-frame clock rather than at the write.
+        bool start = false;
+
+        // Bits 3-0 of $4000/$4004/$400C. One field, two jobs: the divider's
+        // period (reloading to V, so V+1 quarter-frames per decay step) and,
+        // when constant_volume is set, the output level itself.
+        uint8_t period = 0;
+
+        uint8_t divider = 0;
+        uint8_t decay = 0;
+
+        // Bit 4. "The constant volume flag has no effect besides selecting the
+        // volume source; the decay level will still be updated when constant
+        // volume is selected." Gating the clock on this bit is the trap.
+        bool constant_volume = false;
+
+        // What the mixer receives. `loop` is not held here - it is the length
+        // counter's halt flag, passed in, for the reason in the comment above.
+        uint8_t volume() const { return constant_volume ? period : decay; }
+    };
+
+    // The sweep unit: pulse 1 and pulse 2 only ($4001/$4005).
+    //
+    // Also unreachable by any oracle here, and transcribed from the same two
+    // sources - https://www.nesdev.org/wiki/APU_Sweep and blargg's apu_ref.txt.
+    //
+    // THEY DO NOT AGREE WORD FOR WORD ON THIS UNIT, unlike the envelope and the
+    // linear counter, and saying they did was an overclaim. blargg describes the
+    // divider as "first clocked and then if there was a write to the sweep
+    // register since the last sweep clock, the divider is reset" - clock-then-
+    // reset, where nesdev is test-then-reload - and states the mute condition on
+    // "the result of the shifter" rather than on a target period. The two are
+    // behaviourally equivalent, because blargg's "clocking a divider" includes
+    // its reload at zero. Named rather than smoothed over, per this repo's rule
+    // about divergent sources.
+    //
+    // They do agree exactly on the part that is easiest to invert:
+    //
+    //   PULSE 1 ADDS THE ONES' COMPLEMENT (-c - 1), PULSE 2 THE TWO'S (-c).
+    //
+    // nesdev: "Making 20 negative produces a change amount of -21" on pulse 1
+    // and "-20" on pulse 2. blargg reaches the same asymmetry from the other
+    // end: "on the second square channel, the inverted value is incremented by
+    // 1". Two independent statements of one fact, which is why it is written
+    // down here rather than left to the code to imply.
+    struct Sweep {
+        bool enabled = false;
+        uint8_t period = 0;   // bits 6-4; the divider reloads to this, so P+1 clocks
+        bool negate = false;  // bit 3
+        uint8_t shift = 0;    // bits 2-0
+        uint8_t divider = 0;
+        bool reload = false;  // set by any write to $4001/$4005
+    };
+
     // The delta modulation channel. Unlike the length counters this one READS
     // MEMORY, which is why it is the last thing built: its memory reader stalls
     // the CPU, and the cycle-exact bus is the most heavily verified thing here.
@@ -243,6 +353,60 @@ private:
 
     // Shared by power_on() and reset(), which differ only in the value written.
     void restart_frame_counter(uint8_t value_written_to_4017);
+
+    // The triangle's linear counter ($4008, reloaded via $400B).
+    //
+    // TWO SOURCES, TWO NAMES FOR ONE FLAG, and the collision is worth stating
+    // because it is a live trap when reading either document beside this code:
+    // blargg's apu_ref.txt calls the internal reload flag the "halt flag", while
+    // nesdev calls $4008 bit 7 - a different flag entirely - the "length counter
+    // halt flag". `reload` below is blargg's halt flag; `control` is bit 7.
+    //
+    // control is the SAME BIT as lengths[triangle].halt, so it is not stored
+    // here either, for the reason the envelope's loop flag is not.
+    uint8_t linear_counter = 0;
+    uint8_t linear_reload_value = 0;
+    bool linear_reload = false;
+
+    Envelope envelopes[3];  // pulse1, pulse2, noise - indexed by Channel
+    Sweep sweeps[2];        // pulse1, pulse2
+
+    // Which envelope belongs to a Channel. The triangle has none, so this is
+    // not the identity and must not be written as one.
+    //
+    // The assert is the point: triangle == 2 and so does noise's envelope index,
+    // meaning envelope_index(triangle) would silently hand back the NOISE
+    // envelope. Nothing does that today - every caller passes a literal - but a
+    // mixer looping over Channel is the obvious next caller and would get no
+    // diagnostic at all.
+    static int envelope_index(int channel)
+    {
+        assert(channel == pulse1 || channel == pulse2 || channel == noise);
+        return channel == noise ? 2 : channel;
+    }
+
+    void clock_envelope(Envelope& envelope, bool loop);
+    void clock_linear_counter();
+    void clock_sweep(int pulse);
+
+    // The 11-bit period a sweep would move the channel to, computed from the
+    // CURRENT period. Public to the class rather than folded into clock_sweep
+    // because muting consults it CONTINUOUSLY - "a target period overflow from
+    // the sweep unit's adder can silence a channel even when the sweep unit is
+    // disabled and even when the sweep divider is not outputting a clock
+    // signal" - not only when the divider fires.
+    uint16_t sweep_target(int pulse) const;
+
+    // "Muting happens regardless of whether the sweep unit is disabled ... and
+    // regardless of whether the sweep divider is outputting a clock signal."
+    // Period < 8, or target > $7FF. Strictly less and strictly greater: $7FF
+    // itself is fine and 8 itself is fine.
+    bool sweep_muting(int pulse) const;
+
+    // The pulse channels' 11-bit timer periods, which the sweep unit rewrites.
+    // Here rather than on a channel struct because the sweep and the muting
+    // test both need them before any waveform generator exists to own them.
+    uint16_t pulse_period[2] = {0, 0};
 
     void clock_sequencer();
     void apply_pending_halts();
