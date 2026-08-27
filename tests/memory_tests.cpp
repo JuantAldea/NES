@@ -2,6 +2,7 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <iterator>
 #include <new>
 #include <string>
 #include <vector>
@@ -509,6 +510,174 @@ GTEST_TEST(testMemory, ppu_and_apu_register_sweep_does_not_abort)
         console.write(static_cast<uint16_t>(addr), 0x00);
     }
     SUCCEED();
+}
+
+// --- battery-backed saves ---------------------------------------------------
+//
+// The first feature here with NO ORACLE. No test ROM in this repo writes a save
+// file, so unlike every mapper these tests are written from the model rather
+// than checked against hardware - the weaker kind of evidence, and worth saying
+// out loud. What they can still do is pin the failure modes that DESTROY DATA,
+// which is the only irreversible thing this emulator does.
+//
+// SyntheticRom removes its .nes; the .sav is this fixture's to clean up.
+struct SaveFile {
+    explicit SaveFile(const std::string& rom_path) : path(Bus::battery_save_path(rom_path))
+    {
+        std::remove(path.c_str());
+    }
+    ~SaveFile() { std::remove(path.c_str()); }
+
+    SaveFile(const SaveFile&) = delete;
+    SaveFile& operator=(const SaveFile&) = delete;
+
+    bool exists() const { return std::ifstream(path).good(); }
+
+    std::vector<uint8_t> contents() const
+    {
+        std::ifstream in(path, std::ios::binary);
+        return std::vector<uint8_t>(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    }
+
+    std::string path;
+};
+
+// flags6 bit 1 is the battery, and in an iNES 1.0 image that is the whole
+// declaration - the loader gives it 8KB of NVRAM. NROM with two PRG banks so
+// nothing about banking is in the way.
+void write_battery_rom(SyntheticRom& rom_file)
+{
+    rom_file.write(/*prg_banks=*/2, /*chr_banks=*/1, /*flags6=*/0x02, /*flags7=*/0x00);
+}
+
+GTEST_TEST(testMemory, battery_ram_survives_a_reload)
+{
+    SyntheticRom rom_file("battery_roundtrip_test.nes");
+    write_battery_rom(rom_file);
+    SaveFile save(rom_file.path);
+
+    {
+        Bus console;
+        ASSERT_TRUE(console.load_cartridge(rom_file.path));
+        ASSERT_TRUE(console.rom.has_battery);
+        console.write(0x6000, 0x4A);
+        console.write(0x6001, 0x55);
+        console.write(0x7FFF, 0x99);
+        ASSERT_TRUE(console.save_battery_ram());
+    }
+
+    ASSERT_TRUE(save.exists()) << "no save written to " << save.path;
+    EXPECT_EQ(8u * 1024u, save.contents().size()) << "the file is the declared NVRAM size, not the 32KB device";
+
+    Bus reloaded;
+    ASSERT_TRUE(reloaded.load_cartridge(rom_file.path));
+    EXPECT_EQ(0x4A, reloaded.read(0x6000));
+    EXPECT_EQ(0x55, reloaded.read(0x6001));
+    EXPECT_EQ(0x99, reloaded.read(0x7FFF));
+}
+
+// A cartridge with no battery must leave nothing behind, or every ROM ever
+// loaded litters the directory it came from - including the fetched test-ROM
+// directories, whose fetch scripts assert how many files they hold.
+GTEST_TEST(testMemory, a_cartridge_without_a_battery_writes_no_save)
+{
+    SyntheticRom rom_file("no_battery_test.nes");
+    rom_file.write(/*prg_banks=*/2, /*chr_banks=*/1, /*flags6=*/0x00, /*flags7=*/0x00);
+    SaveFile save(rom_file.path);
+
+    Bus console;
+    ASSERT_TRUE(console.load_cartridge(rom_file.path));
+    ASSERT_FALSE(console.rom.has_battery);
+    console.write(0x6000, 0x4A);
+    EXPECT_TRUE(console.save_battery_ram());
+
+    EXPECT_FALSE(save.exists()) << "wrote " << save.path << " for a cartridge with no battery";
+}
+
+// WHAT THE DIRTY FLAG IS ACTUALLY FOR, which is not what it first looks like.
+//
+// The tempting claim is "it stops an untouched cartridge overwriting a good
+// save". That claim is untestable here, and the attempt to test it was kept
+// green by the thing it was meant to catch: load_cartridge restores the file
+// INTO the work RAM, so writing that RAM straight back is a no-op and the file
+// survives either way. Deleting the guard did not fail that test. It is gone.
+//
+// The guard earns its place on a cartridge with NO save yet: without it, merely
+// opening a battery-backed game and closing it deposits 8KB of zeroes beside
+// the ROM. That is how .sav files would appear in the fetched test-ROM
+// directories, whose fetch scripts assert how many files they hold - so this is
+// also what keeps the suite from breaking its own fixtures.
+GTEST_TEST(testMemory, opening_a_battery_game_without_playing_it_writes_nothing)
+{
+    SyntheticRom rom_file("battery_untouched_test.nes");
+    write_battery_rom(rom_file);
+    SaveFile save(rom_file.path);
+
+    Bus console;
+    ASSERT_TRUE(console.load_cartridge(rom_file.path));
+    ASSERT_TRUE(console.rom.has_battery);
+    // Reading is not writing, and neither is a write the board swallowed.
+    EXPECT_EQ(0x00, console.read(0x6000));
+    EXPECT_TRUE(console.save_battery_ram());
+
+    EXPECT_FALSE(save.exists()) << "opening a battery game and closing it left " << save.path;
+}
+
+// The restore path must not itself mark the RAM dirty - if it did, the guard
+// above would be defeated by the load that precedes every session.
+GTEST_TEST(testMemory, restoring_a_save_does_not_mark_the_work_ram_dirty)
+{
+    SyntheticRom rom_file("battery_restore_test.nes");
+    write_battery_rom(rom_file);
+    SaveFile save(rom_file.path);
+
+    const std::vector<uint8_t> precious(8 * 1024, 0x3C);
+    {
+        std::ofstream out(save.path, std::ios::binary | std::ios::trunc);
+        out.write(reinterpret_cast<const char*>(precious.data()), static_cast<std::streamsize>(precious.size()));
+    }
+
+    Bus console;
+    ASSERT_TRUE(console.load_cartridge(rom_file.path));
+    EXPECT_EQ(0x3C, console.read(0x6000)) << "the save was not restored";
+    EXPECT_FALSE(console.prg_ram_dirty) << "restoring a save marked the cartridge as written to";
+    EXPECT_EQ(precious, save.contents()) << "the file changed without the game writing to it";
+}
+
+// Swapping cartridges must not carry work RAM across. This was true of nothing
+// before saves existed - Bus::load_cartridge only called rom.load - and it is
+// the bug that would have written game A's data into game B's .sav.
+GTEST_TEST(testMemory, work_ram_does_not_survive_a_cartridge_swap)
+{
+    SyntheticRom first("swap_a_test.nes");
+    write_battery_rom(first);
+    SyntheticRom second("swap_b_test.nes");
+    write_battery_rom(second);
+    SaveFile save_a(first.path);
+    SaveFile save_b(second.path);
+
+    Bus console;
+    ASSERT_TRUE(console.load_cartridge(first.path));
+    console.write(0x6000, 0x7E);
+    ASSERT_EQ(0x7E, console.read(0x6000));
+
+    ASSERT_TRUE(console.load_cartridge(second.path));
+    EXPECT_EQ(0x00, console.read(0x6000)) << "cartridge B booted holding cartridge A's work RAM";
+
+    // And A's data went to A's file on the way out, rather than being lost.
+    EXPECT_TRUE(save_a.exists());
+    EXPECT_FALSE(save_b.exists()) << "B was never written to, so it has no save";
+}
+
+GTEST_TEST(testMemory, save_path_replaces_a_nes_extension_and_appends_otherwise)
+{
+    EXPECT_EQ("/games/Zelda.sav", Bus::battery_save_path("/games/Zelda.nes"));
+    EXPECT_EQ("Zelda.sav", Bus::battery_save_path("Zelda.nes"));
+    // Not a .nes: nothing here is entitled to throw away someone else's suffix.
+    EXPECT_EQ("/games/Zelda.rom.sav", Bus::battery_save_path("/games/Zelda.rom"));
+    EXPECT_EQ("/games/Zelda.sav", Bus::battery_save_path("/games/Zelda"));
+    // The dot belongs to a DIRECTORY, so the file has no extension to replace.
+    EXPECT_EQ("/home/a.b/rom.sav", Bus::battery_save_path("/home/a.b/rom"));
 }
 
 }  // namespace tests

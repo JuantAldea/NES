@@ -40,6 +40,11 @@ int main(int argc, char** argv)
             }
         }
         if (executed && previous_pc == console.cpu.registers.PC) {
+            // A trap is this driver's only exit, so it is also its only chance
+            // to write a save. It costs two lines and it is the difference
+            // between "the CLI does not persist" being a decision and being an
+            // omission nobody noticed.
+            console.save_battery_ram();
             std::cerr << "TRAP " << std::hex << previous_pc << std::endl;
             return previous_pc;
         }

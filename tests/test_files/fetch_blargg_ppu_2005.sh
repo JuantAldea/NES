@@ -60,7 +60,7 @@ echo "$ROMS" | while read -r name want; do
     echo "ok: $name.nes"
 done
 
-count=$(ls "$DEST" | wc -l | tr -d ' ')
+count=$(ls -1 "$DEST"/*.nes 2>/dev/null | wc -l | tr -d ' ')
 if [ "$count" -ne 3 ]; then
     echo "incomplete: $count/3 files present in $DEST" >&2
     exit 1

@@ -1,5 +1,9 @@
 #include "../include/bus.h"
 
+#include <algorithm>
+#include <fstream>
+#include <iostream>
+
 Bus::Bus()
     : cpu{std::bind(&Bus::read, this, std::placeholders::_1),
           std::bind(&Bus::write, this, std::placeholders::_1, std::placeholders::_2)},
@@ -36,7 +40,93 @@ void Bus::reset()
     cpu.reset();
 }
 
-bool Bus::load_cartridge(const std::string& path) { return rom.load(path); }
+// A cartridge's save file: Zelda.nes -> Zelda.sav, beside the ROM.
+//
+// Replaces a .nes extension rather than appending to it, which is what every
+// other emulator does and therefore what an existing save is already called.
+// Anything else gets .sav appended, because a path with no extension - or with
+// someone else's - has no part this is entitled to throw away.
+std::string Bus::battery_save_path(const std::string& rom_path)
+{
+    const size_t dot = rom_path.find_last_of('.');
+    const size_t slash = rom_path.find_last_of("/\\");
+
+    // A dot before the last separator belongs to a DIRECTORY name, not to the
+    // file - "/home/a.b/rom" must not become "/home/a.sav".
+    const bool has_extension = dot != std::string::npos && (slash == std::string::npos || dot > slash);
+    if (has_extension && rom_path.compare(dot, std::string::npos, ".nes") == 0) {
+        return rom_path.substr(0, dot) + ".sav";
+    }
+    return rom_path + ".sav";
+}
+
+bool Bus::load_cartridge(const std::string& path)
+{
+    // The outgoing cartridge first - see the header. Its result is deliberately
+    // not consulted: failing to save game A is not a reason to refuse to load
+    // game B, and save_battery_ram has already complained on stderr.
+    save_battery_ram();
+
+    // Work RAM does NOT survive a cartridge swap, and used to. Nothing cleared
+    // it, so game B booted seeing game A's save data at $6000 - harmless while
+    // nothing wrote it to disk, and silent corruption of B's .sav the moment
+    // something did. A cartridge swap is a power cycle for everything on the
+    // cartridge, which the work RAM is.
+    prg_ram.memory.fill(0);
+    prg_ram_dirty = false;
+    cartridge_path.clear();
+
+    if (!rom.load(path)) {
+        return false;
+    }
+    cartridge_path = path;
+
+    if (rom.prg_nvram_size == 0) {
+        return true;
+    }
+
+    // Restore. A missing file is the normal case for a game's first run, so it
+    // is not reported; a short one is restored as far as it goes, because a
+    // truncated save is still worth more to a player than none.
+    std::ifstream save(battery_save_path(path), std::ios::binary);
+    if (!save) {
+        return true;
+    }
+    const size_t want = std::min<size_t>(rom.prg_nvram_size, PrgRAM::SIZE);
+    save.read(reinterpret_cast<char*>(prg_ram.memory.data()), static_cast<std::streamsize>(want));
+
+    return true;
+}
+
+bool Bus::save_battery_ram()
+{
+    if (cartridge_path.empty() || rom.prg_nvram_size == 0 || !prg_ram_dirty) {
+        return true;
+    }
+
+    // WHICH BYTES ARE BATTERY-BACKED is only a question when a header declares
+    // both kinds, which NES 2.0 byte 10 can do and no board implemented here
+    // does. ROM::prg_ram_offset folds both into one flat array and nothing says
+    // where the join is, so this takes the low end and says so rather than
+    // inventing a split the format does not describe. Revisit with a board that
+    // actually carries both.
+    const size_t bytes = std::min<size_t>(rom.prg_nvram_size, PrgRAM::SIZE);
+
+    const std::string path = battery_save_path(cartridge_path);
+    std::ofstream save(path, std::ios::binary | std::ios::trunc);
+    if (!save) {
+        std::cerr << "could not open '" << path << "' to save battery RAM\n";
+        return false;
+    }
+    save.write(reinterpret_cast<const char*>(prg_ram.memory.data()), static_cast<std::streamsize>(bytes));
+    if (!save) {
+        std::cerr << "could not write battery RAM to '" << path << "'\n";
+        return false;
+    }
+
+    prg_ram_dirty = false;
+    return true;
+}
 
 // Single address decode used by both read() and write(). This is the only
 // place CPU addresses get mapped to a device + effective (mirrored) address,
@@ -151,6 +241,14 @@ void Bus::write(const uint16_t addr, const uint8_t data)
 
     const DecodedAddress d = decode(addr, Access::Write);
     if (d.device) {
+        // Every route to the work RAM passes through here, so this is the one
+        // place that can answer "has this cartridge been written to". Compared
+        // against the pointer rather than the address range because decode() has
+        // already resolved the mapper's enable and write-protect bits: a write
+        // the board swallowed did not reach the chip and must not count.
+        if (d.device == &prg_ram) {
+            prg_ram_dirty = true;
+        }
         d.device->write(d.effective_addr, data);
     }
     // Open-bus ranges (no device): writes are discarded.

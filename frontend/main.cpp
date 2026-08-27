@@ -305,6 +305,13 @@ int main(int argc, char** argv)
         SDL_RenderPresent(renderer);
     }
 
+    // Before tearing anything down, and before the Bus goes out of scope: this
+    // is the only point at which a game that has been saving all session gets
+    // its work RAM onto disk. The loop above exits on window close, which is
+    // how a player normally leaves - so a flush placed any later, or left to a
+    // destructor, would be a flush that never ran.
+    console.save_battery_ram();
+
     ImGui_ImplSDLRenderer2_Shutdown();
     ImGui_ImplSDL2_Shutdown();
     ImGui::DestroyContext();

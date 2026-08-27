@@ -14,7 +14,30 @@ public:
     void write(const uint16_t addr, const uint8_t data);
     void write_ram(const uint16_t start_addr, const size_t n_bytes, const uint8_t* bytes);
     uint8_t read(const uint16_t addr);
+    // Inserts a cartridge, and restores its battery-backed save if it has one.
+    //
+    // Flushes the OUTGOING cartridge's save first. That is not a nicety: this is
+    // the drag-and-drop path in the frontend, so without it every ROM swap
+    // discards whatever the previous game had written.
     bool load_cartridge(const std::string& path);
+
+    // Writes the battery-backed work RAM to `<rom>.sav`, beside the cartridge.
+    //
+    // NOT called from the destructor, deliberately. Every ROM-backed test builds
+    // a Bus and several load battery images, so a destructor that wrote files
+    // would scatter .sav files through tests/test_files/ on every suite run -
+    // and the fetch scripts assert how many files their directory holds. Saving
+    // is an application-level act, so the two applications ask for it.
+    //
+    // Returns false only when there was something to write and writing failed;
+    // "this cartridge has no battery" and "nothing was written to it" are both
+    // true, because neither is an error the caller can act on.
+    bool save_battery_ram();
+
+    // Where `<rom>.sav` goes for a given cartridge path: the ROM's own name with
+    // a .nes extension replaced, or .sav appended if it has none. Exposed for
+    // the tests, which have to look at the file this produced.
+    static std::string battery_save_path(const std::string& rom_path);
 
     // The RESET button: what the whole machine does, as distinct from
     // CPU::reset(), which is only the processor's share of it.
@@ -32,6 +55,17 @@ public:
     // at Bus::write rather than reported by the CPU, which has no notion of it -
     // see the comment in Bus::clock.
     bool cpu_wrote_this_cycle = false;
+
+    // The cartridge currently inserted, and whether anything has written to its
+    // work RAM since it was loaded.
+    //
+    // The dirty flag is what stops a game that never saved from having its
+    // untouched (or freshly restored) RAM written back over a good .sav - and
+    // more to the point, stops a cartridge that failed to boot from replacing
+    // real save data with zeroes. Set in Bus::write, which is the only path the
+    // CPU reaches PRG-RAM through.
+    std::string cartridge_path;
+    bool prg_ram_dirty = false;
 
     uint64_t total_cycles = 0;
 

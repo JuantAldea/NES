@@ -78,7 +78,7 @@ check for regressions with `tests/test_counts.sh --check`.
 | `testBusRunFrame` | 3 | yes |
 | `testCPU` | 2 | yes |
 | `testDMA` | 3 | yes |
-| `testMemory` | 25 | yes |
+| `testMemory` | 31 | yes |
 | `testPPUFrame` | 9 | yes |
 | `testPPUMemory` | 22 | yes |
 | `testPPURegisters` | 26 | yes |
@@ -92,9 +92,9 @@ check for regressions with `tests/test_counts.sh --check`.
 
 | | Cases |
 |---|---:|
-| Registered | 983 |
+| Registered | 989 |
 | Skipped in CI | 517 |
-| **Executed in CI** | **466** |
+| **Executed in CI** | **472** |
 
 Skipped in CI: the 512 per-opcode SingleStepTests need 1.1 GB of vectors CI
 does not fetch, and `commercialRom` needs a cartridge dump nothing here will
