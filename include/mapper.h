@@ -138,6 +138,14 @@ public:
     // has to repeat the bound.
     virtual uint16_t prg_ram_offset(const uint16_t cpu_addr) const;
 
+    // Does this board need a tick on every CPU cycle? Asked once, at load, and
+    // cached on ROM - the alternative is a virtual call on the emulator's
+    // hottest path for the seven boards out of eight that would ignore it.
+    virtual bool wants_cpu_clock() const { return false; }
+
+    // One M2 cycle. Only reached when wants_cpu_clock() returned true.
+    virtual void clock_cpu_cycle() {}
+
     // A completed PPU read from $0000-$1FFF, reported AFTER the byte was
     // served. MMC2 and MMC4 change CHR bank when particular tiles are fetched,
     // and the triggering read itself comes from the old bank.
@@ -335,6 +343,76 @@ public:
 
 protected:
     bool lower_window_latches(const uint16_t ppu_addr, uint8_t& which) const override;
+};
+
+// FME-7 (69), Sunsoft JLROM/JSROM. Batman: Return of the Joker, Gimmick!.
+//
+// A COMMAND/PARAMETER PAIR rather than a register per address: $8000 selects
+// which of fourteen registers the next $A000 write lands in. That is a
+// different shape from every other board here - MMC1 serialises one register
+// over five writes, MMC3 has a select/data pair for eight of its registers but
+// decodes the rest by address, and this decodes nothing by address at all.
+//
+// AND IT IS THE FIRST BOARD THAT COUNTS CPU CYCLES. MMC3's counter watches PPU
+// A12 and therefore counts scanlines by accident; this one is a 16-bit
+// down-counter clocked by M2, so it measures time regardless of what the PPU is
+// doing - it fires with rendering off, mid-frame, or during a long DMA. That is
+// why Mapper::wants_cpu_clock exists.
+class Fme7 final : public Mapper
+{
+public:
+    using Mapper::Mapper;
+
+    void cpu_write(const uint16_t addr, const uint8_t data) override;
+    uint8_t prg_read(const uint16_t addr) const override;
+    uint32_t chr_offset(const uint16_t ppu_addr) const override;
+
+    bool wants_cpu_clock() const override { return true; }
+    void clock_cpu_cycle() override;
+
+    // $8000, low nibble: which register the next $A000 write addresses.
+    uint8_t command = 0;
+
+    // Commands $0-$7: eight 1KB CHR banks, one per 1KB of pattern space.
+    uint8_t chr[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+
+    // Commands $9-$B: 8KB PRG banks at $8000, $A000 and $C000. $E000-$FFFF is
+    // wired to the last bank, so the vectors cannot be switched away.
+    uint8_t prg[3] = {0, 0, 0};
+
+    // Command $8, the $6000-$7FFF window:
+    //
+    //   bit 6  1 selects work RAM, 0 selects PRG-ROM
+    //   bit 7  with bit 6 set, enables the RAM
+    //   0-5    the bank, used only in the ROM case
+    //
+    // Bit 6 selects and bit 7 enables, in that order - see write_register for
+    // the evidence, because the obvious reading of the two is the wrong one.
+    //
+    // This is the only board here that can put PRG-ROM in that window, and
+    // supporting it is what made Bus::decode ask the cartridge about $6000
+    // before assuming work RAM (ROM::prg_rom_at_6000). Before that it could
+    // not, and this register was implemented as "ROM selected means open bus"
+    // - which cost three of the four digits of the M69 oracle's detail code,
+    // not the one it looked like. See the M69 rows in
+    // tests/holy_mapperel_tests.cpp.
+    uint8_t prg_ram_control = 0;
+
+    // Command $D: bit 7 runs the counter, bit 0 lets it assert /IRQ. Writing
+    // the register also acknowledges a pending assertion, which is how a
+    // handler clears it - there is no separate acknowledge port.
+    bool irq_counter_enabled = false;
+    bool irq_enabled = false;
+
+    // Commands $E and $F: the low and high halves of a 16-bit down-counter that
+    // ticks once per CPU cycle and asserts on the $0000 -> $FFFF wrap. It keeps
+    // counting afterwards rather than stopping, so a handler that does not
+    // reload gets an interrupt every 65536 cycles.
+    uint16_t irq_counter = 0;
+    bool irq_asserted = false;
+
+private:
+    void write_register(const uint8_t value);
 };
 
 // AxROM (7): one 32KB PRG window covering the whole of $8000-$FFFF, and

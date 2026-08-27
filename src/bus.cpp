@@ -90,6 +90,20 @@ Bus::DecodedAddress Bus::decode(const uint16_t addr, const Access access)
         // Cartridge expansion area; no device backs it.
         return {nullptr, addr};
     } else if (addr < 0x8000) {
+        // Before any of the work-RAM question: the window may not be work RAM
+        // at all. The FME-7 can map an 8KB PRG-ROM bank here, which no other
+        // board in this emulator can, and until it could the enable/protect
+        // pair below was the whole story for $6000-$7FFF.
+        //
+        // Routing to the cartridge means a WRITE here now reaches
+        // Mapper::cpu_write too, which was previously $8000-$FFFF only. That is
+        // correct - writing to ROM does nothing - but it is a widened contract,
+        // so cpu_write implementations must not assume the top bit is set. Only
+        // the FME-7 can reach this line today and it decodes on addr & $E000,
+        // where $6000 falls through to its default.
+        if (rom.prg_rom_at_6000) {
+            return {&rom, addr};
+        }
         // MMC3's $A001 gates this window, and the mapper is the only thing that
         // knows: PrgRAM is a plain memory device with no idea a mapper exists.
         // Boards without those bits leave both flags at their power-on values
@@ -235,6 +249,11 @@ bool Bus::clock()
     if (cpu_tick) {
         ++cpu_cycles;
         apu.clock();
+        // Sunsoft's FME-7 counts M2 cycles rather than PPU A12 edges, so it is
+        // the first cartridge here that needs the CPU clock at all. Gated on a
+        // flag rather than always dispatching: this is the hottest line in the
+        // emulator and seven of the eight boards want nothing from it.
+        rom.clock_cpu_cycle();
     }
 
     // Cleared on every CPU tick, not just the ones the CPU runs. While OAM DMA

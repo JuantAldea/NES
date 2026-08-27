@@ -53,6 +53,7 @@ constexpr const char* kFetch = "run tests/test_files/fetch_holy_mapperel.sh";
 //   M0_P32K_C8K_V       14    M3_P32K_C32K_H       14    M2_P128K_V           85
 //   M7_P128K            85    M9_P128K_C64K        15
 //   M10_P128K_C64K_S8K  93    M10_P128K_C64K_W8K   93
+//   M69_P128K_C64K_S8K  92    M69_P128K_C64K_W8K   92
 //
 // One line splits the whole table: CHR-RAM images pay for a write-and-verify
 // sweep of the RAM and CHR-ROM ones skip it. That is why M2_P128K_V takes 85
@@ -396,6 +397,62 @@ const Expected kLatchedChrRoms[] = {
 INSTANTIATE_TEST_SUITE_P(LatchedChr,
                          HolyMapperel,
                          ::testing::ValuesIn(kLatchedChrRoms),
+                         [](const ::testing::TestParamInfo<Expected>& info) { return std::string(info.param.name); });
+
+// FME-7, and the ONLY rows in this file pinned to a non-zero detail code. Both
+// report 0010, and that digit is a KNOWN-BAD SUBTEST IN THE ROM rather than a
+// defect here - the same situation as opcode $AB in instr_test_roms.cpp and
+// 6-MMC3_alt in mmc3_rom_tests.cpp, pinned exactly so a change either way still
+// surfaces.
+//
+// The digits are [WRAM][PRG][IRQ][CHR], from global.inc in the Holy Mapperel
+// source. IRQ 1 = MAPTEST_IRQ ($10); the other three are clean.
+//
+// WHY THE ROM IS THE WRONG ONE HERE. fme7_test_irq writes $0100 to the counter
+// and comments "Schedule an IRQ 256 cycles from now". The nesdev wiki says
+// "When the IRQ counter is decremented from $0000 to $FFFF an IRQ is
+// generated", which from a written 256 is 257 cycles, not 256. Sour hit exactly
+// this gap in Mesen; tepples - who WROTE this ROM - answered that "the FME-7
+// IRQ test in Holy Diver Batman was made based on outdated information", and
+// that the ROM "is designed to test whether things are connected at all rather
+// than the precise behavior of the CPLD". Sour kept the wiki behaviour. So do
+// we.
+//   https://forums.nesdev.org/viewtopic.php?p=177596
+//
+// MEASURED, so the claim is not just an appeal to that thread. The ROM's wait
+// loop is 10 cycles per iteration and gives up when Y wraps, which makes the
+// window it will accept finite and measurable. Feeding the counter a deliberate
+// offset and reading the detail code back:
+//
+//   assert at write+257 (ours)   IRQ digit 1     <- 2 cycles past the edge
+//   assert at write+256          IRQ digit 1
+//   assert at write+255 .. +237  IRQ digit 0   (sampled, not every offset)
+//   assert at write+233 or less  IRQ digit 1
+//
+// So the ROM accepts a window at least 19 cycles wide and our correct value
+// misses its late edge by exactly 2 - the same 2 cycles Sour measured. Two
+// independent routes to the same number is what makes this a divergence rather
+// than a guess. The far edge sits somewhere in 234..236 and was not narrowed;
+// nothing depends on where.
+//
+// THE COUNTER ITSELF IS VERIFIED, in the same run: armed with $0100 it asserts
+// at exactly 257 CPU cycles, the handler's write to command $D acknowledges it
+// 32 cycles later, and the next assertion follows 65504 cycles after that -
+// $FFDF + 1, the counter having kept running through the wrap rather than
+// stopping. Nobody needs to rewrite clock_cpu_cycle.
+//
+// Everything else on this board is green, and the board line is derived from
+// how the mapper answers rather than from the header: command decoding, all
+// four PRG windows including the $6000 one, all eight CHR windows, the work-RAM
+// enable/protect/ROM-select states and mirroring are all behaving.
+const Expected kFme7Roms[] = {
+    {"M69_P128K_C64K_S8K", "069 J*ROM (FME-7)", "128K PRG ROM", "8K PRG RAM OK", "64K CHR ROM OK", "0010"},
+    {"M69_P128K_C64K_W8K", "069 J*ROM (FME-7)", "128K PRG ROM", "8K PRG RAM OK", "64K CHR ROM OK", "0010"},
+};
+
+INSTANTIATE_TEST_SUITE_P(Mapper69,
+                         HolyMapperel,
+                         ::testing::ValuesIn(kFme7Roms),
                          [](const ::testing::TestParamInfo<Expected>& info) { return std::string(info.param.name); });
 
 INSTANTIATE_TEST_SUITE_P(Mapper1,

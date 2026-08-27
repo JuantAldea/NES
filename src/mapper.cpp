@@ -199,6 +199,20 @@ std::string check_mmc4(const size_t prg_16k_banks, const size_t chr_8k_banks)
     return check_latched_chr("MMC4", prg_16k_banks, chr_8k_banks);
 }
 
+std::string check_fme7(const size_t prg_16k_banks, const size_t chr_8k_banks)
+{
+    // 8KB PRG windows through 6-bit registers, so 64 banks - 512KB - is the
+    // ceiling, and there must be enough to fill the four windows.
+    if (prg_16k_banks < 2 || prg_16k_banks > 32) {
+        return "FME-7 requires 2 to 32 PRG-ROM banks, header advertises " + std::to_string(prg_16k_banks);
+    }
+    // 1KB CHR windows through 8-bit registers: 256 banks, 256KB.
+    if (chr_8k_banks == 0 || chr_8k_banks > 32) {
+        return "FME-7 requires 1 to 32 CHR-ROM banks, header advertises " + std::to_string(chr_8k_banks);
+    }
+    return {};
+}
+
 struct Board {
     MapperId id;
     std::unique_ptr<Mapper> (*make)(ROM&);
@@ -206,10 +220,11 @@ struct Board {
 };
 
 const Board kBoards[] = {
-    {MapperId::nrom, construct<NRom>, check_nrom},    {MapperId::mmc1, construct<Mmc1>, check_mmc1},
-    {MapperId::uxrom, construct<UnRom>, check_uxrom}, {MapperId::cnrom, construct<CnRom>, check_cnrom},
-    {MapperId::mmc3, construct<Mmc3>, check_mmc3},    {MapperId::axrom, construct<AxRom>, check_axrom},
-    {MapperId::mmc2, construct<Mmc2>, check_mmc2},    {MapperId::mmc4, construct<Mmc4>, check_mmc4},
+    {MapperId::nrom, construct<NRom>, check_nrom},         {MapperId::mmc1, construct<Mmc1>, check_mmc1},
+    {MapperId::uxrom, construct<UnRom>, check_uxrom},      {MapperId::cnrom, construct<CnRom>, check_cnrom},
+    {MapperId::mmc3, construct<Mmc3>, check_mmc3},         {MapperId::axrom, construct<AxRom>, check_axrom},
+    {MapperId::mmc2, construct<Mmc2>, check_mmc2},         {MapperId::mmc4, construct<Mmc4>, check_mmc4},
+    {MapperId::sunsoft_fme7, construct<Fme7>, check_fme7},
 };
 
 const Board* find_board(const MapperId id)
@@ -643,6 +658,159 @@ bool Mmc4::lower_window_latches(const uint16_t ppu_addr, uint8_t& which) const
         return true;
     }
     return false;
+}
+
+// --- FME-7 (69) -------------------------------------------------------------
+
+// Two ports and nothing else: $8000-$9FFF latches the command, $A000-$BFFF
+// supplies the parameter. $C000-$FFFF is the Sunsoft 5B's audio pair on boards
+// that carry the sound chip and decodes nothing here.
+void Fme7::cpu_write(const uint16_t addr, const uint8_t data)
+{
+    switch (addr & 0xE000) {
+    case 0x8000:
+        command = data & 0x0F;
+        break;
+    case 0xA000:
+        write_register(data);
+        break;
+    default:
+        break;
+    }
+}
+
+void Fme7::write_register(const uint8_t value)
+{
+    if (command <= 0x07) {
+        chr[command] = value;
+        return;
+    }
+
+    switch (command) {
+    case 0x08:
+        prg_ram_control = value;
+        // BIT 6 SELECTS, BIT 7 ENABLES - in that order, which is the reverse of
+        // the reading that "RAM/ROM select bit, RAM enable bit" invites. Three
+        // states out of the two, and they are not a hierarchy:
+        //
+        //   bit 6 clear             $6000 shows PRG-ROM bank (value & $3F)
+        //   bit 6 set, bit 7 set    $6000 shows work RAM
+        //   bit 6 set, bit 7 clear  $6000 shows nothing - open bus
+        //
+        // The ordering is not a guess: Holy Mapperel's global.inc names all
+        // three values, and only this assignment of the bits explains them -
+        // FME7_PRGBANK_ROM $00, FME7_PRGBANK_OFF $40, FME7_PRGBANK_RAM $C0. Read
+        // the bits the other way round and $40 is a second ROM encoding with no
+        // "off" state at all, which the constant's own name rules out.
+        //
+        // Getting it backwards is not a silent error, it is a WRONG-KIND error:
+        // the $6000 window answers with the last PRG bank where it should read
+        // open bus, so the oracle's WRAM digit reports MAPTEST_WRAMEN rather
+        // than nothing. That is how this was found.
+        //
+        // Both flags are written on every pass because Bus::decode reads them
+        // independently: leaving prg_ram_enabled true while selecting ROM would
+        // leave work RAM in a window the board just gave away.
+        rom.prg_rom_at_6000 = (value & 0x40) == 0;
+        rom.prg_ram_enabled = (value & 0xC0) == 0xC0;
+        break;
+
+    case 0x09:
+    case 0x0A:
+    case 0x0B:
+        prg[command - 0x09] = value & 0x3F;
+        break;
+
+    case 0x0C:
+        // The only board here that can select all four mirroring modes from one
+        // register, in the order the hardware numbers them.
+        switch (value & 0x03) {
+        case 0:
+            rom.mirroring = ROM::Mirroring::vertical;
+            break;
+        case 1:
+            rom.mirroring = ROM::Mirroring::horizontal;
+            break;
+        case 2:
+            rom.mirroring = ROM::Mirroring::single_screen_lower;
+            break;
+        default:
+            rom.mirroring = ROM::Mirroring::single_screen_upper;
+            break;
+        }
+        break;
+
+    case 0x0D:
+        irq_counter_enabled = (value & 0x80) != 0;
+        irq_enabled = (value & 0x01) != 0;
+        // Writing this register acknowledges a pending assertion. There is no
+        // separate acknowledge port, so a handler that only reloads the counter
+        // and returns would take the same interrupt forever.
+        irq_asserted = false;
+        rom.drive_irq_line(false);
+        break;
+
+    case 0x0E:
+        irq_counter = static_cast<uint16_t>((irq_counter & 0xFF00) | value);
+        break;
+
+    default:  // 0x0F
+        irq_counter = static_cast<uint16_t>((irq_counter & 0x00FF) | (static_cast<uint16_t>(value) << 8));
+        break;
+    }
+}
+
+// One M2 cycle. Unlike the MMC3's counter this is not filtered, not tied to the
+// PPU, and does not stop at zero: it wraps and keeps going.
+void Fme7::clock_cpu_cycle()
+{
+    if (!irq_counter_enabled) {
+        return;
+    }
+
+    // Post-decrement, so `before == 0` is exactly the $0000 -> $FFFF wrap that
+    // fires the interrupt. Testing the NEW value against $FFFF would fire one
+    // cycle late and also fire on a counter deliberately loaded with $FFFF.
+    const uint16_t before = irq_counter--;
+    if (before == 0 && irq_enabled && !irq_asserted) {
+        irq_asserted = true;
+        rom.drive_irq_line(true);
+    }
+}
+
+uint8_t Fme7::prg_read(const uint16_t addr) const
+{
+    const uint32_t banks = rom.prg_8k_bank_count;
+
+    // Four 8KB windows, not three: Bus::decode sends $6000-$7FFF here when
+    // command $8 has selected ROM, and that window's bank is the low six bits
+    // of the same register that selected it.
+    //
+    // $E000-$FFFF is wired to the last bank; $8000/$A000/$C000 are the $9/$A/$B
+    // registers in order.
+    uint32_t bank;
+    if (addr < 0x8000) {
+        bank = (prg_ram_control & 0x3Fu) % banks;
+    } else if (addr >= 0xE000) {
+        bank = banks - 1u;
+    } else {
+        bank = prg[(addr - 0x8000u) / 0x2000u] % banks;
+    }
+
+    return rom.prg_rom[bank * 8u * 1024u + (addr & 0x1FFFu)];
+}
+
+uint32_t Fme7::chr_offset(const uint16_t ppu_addr) const
+{
+    const uint32_t banks = rom.chr_1k_bank_count;
+    if (banks == 0) {
+        return ppu_addr & 0x1FFF;
+    }
+
+    // Eight registers, one per 1KB of pattern space - the finest CHR granularity
+    // of any board here, matching the MMC3's but without its mode bits.
+    const uint32_t bank = chr[(ppu_addr >> 10) & 0x07] % banks;
+    return bank * 1024u + (ppu_addr & 0x03FFu);
 }
 
 // --- AxROM (7) --------------------------------------------------------------

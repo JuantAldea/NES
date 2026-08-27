@@ -153,10 +153,34 @@ public:
     bool prg_ram_enabled = true;
     bool prg_ram_write_protected = false;
 
+    // Is $6000-$7FFF showing a PRG-ROM bank instead of work RAM?
+    //
+    // Here rather than on the mapper for the same reason as the two above:
+    // Bus::decode is where the window is resolved and it holds a ROM. Only the
+    // FME-7 sets it - its command $8 bit 7 chooses ROM or RAM for that window,
+    // and a board that cannot do it leaves this false forever.
+    //
+    // The flag is deliberately not "which bank": when it is set, decode routes
+    // the access to the cartridge and the mapper's prg_read answers, so the
+    // bank arithmetic stays on the one board that has it.
+    bool prg_rom_at_6000 = false;
+
     // Called by the PPU on every access that drives its EXTERNAL address bus,
     // and on the $2006 write that commits a new address to v. `ppu_cycle` is
     // PPU::total_cycles, which is the only clock both sides share.
     void mmc3_observe_a12(const uint16_t ppu_addr, const uint64_t ppu_cycle);
+
+    // One M2 cycle, forwarded only to a board that asked for it. Inline and
+    // flag-gated because Bus::clock calls this on every CPU cycle.
+    void clock_cpu_cycle()
+    {
+        if (mapper_wants_cpu_clock) {
+            mapper->clock_cpu_cycle();
+        }
+    }
+
+    // Cached from Mapper::wants_cpu_clock() at load time - see above.
+    bool mapper_wants_cpu_clock = false;
 
     // A completed PPU pattern-table read, reported after the byte was served.
     // Only MMC2 and MMC4 care; see Mapper::observe_pattern_fetch for why the
@@ -177,6 +201,9 @@ public:
     // members on Mapper instead would give NROM an IRQ counter, so the cast is
     // the honest option: only one board has them.
     Mmc3* as_mmc3() { return mapper_id == MapperId::mmc3 ? static_cast<Mmc3*>(mapper.get()) : nullptr; }
+
+    // The board as an Fme7, on the same terms as as_mmc3 below.
+    Fme7* as_fme7() { return mapper_id == MapperId::sunsoft_fme7 ? static_cast<Fme7*>(mapper.get()) : nullptr; }
 
     // The board as an Mmc1, on the same terms and for the same reason.
     Mmc1* as_mmc1() { return mapper_id == MapperId::mmc1 ? static_cast<Mmc1*>(mapper.get()) : nullptr; }

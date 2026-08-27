@@ -1,5 +1,5 @@
 #!/bin/sh
-# Fetches eighteen builds of Damian Yerrick's Holy Mapperel - an NES cartridge
+# Fetches twenty-one builds of Damian Yerrick's Holy Mapperel - an NES cartridge
 # manufacturing test, and the only MMC1 oracle in reach that reports a verdict
 # rather than asking a human to look at it. Nine mapper-1 images, and two
 # mapper-4 ones covering ground no MMC3 ROM here reaches (see MAPPER 4 below).
@@ -244,6 +244,54 @@
 # bank at all - the vectors are switchable, so the cartridge has to replicate
 # its handlers in every bank, and reproducing the board means reproducing that.
 #
+# MAPPER 69 - the first board that counts CPU cycles, and the only rows in this
+# suite pinned to a non-zero detail code.
+#
+# Sunsoft's FME-7 uses a command/parameter pair ($8000 selects one of fourteen
+# registers, $A000 supplies the value) and carries a 16-bit down-counter clocked
+# by M2. That is a different animal from the MMC3's counter, which watches PPU
+# A12 and therefore counts scanlines by accident - this one measures time, and
+# fires with rendering off. It is why Mapper::wants_cpu_clock exists.
+#
+# MEASURED BEFORE, with the board unregistered:
+#
+#   M69_P128K_C64K_S8K   ROM: mapper 69 (Sunsoft FME-7) is not supported
+#   M69_P128K_C64K_W8K   ROM: mapper 69 (Sunsoft FME-7) is not supported
+#
+# MEASURED AFTER:
+#
+#   image                board reported      PRG    work RAM  CHR          detail
+#   M69_P128K_C64K_S8K   069 J*ROM (FME-7)   128K   8K OK     64K ROM OK   0010
+#   M69_P128K_C64K_W8K   069 J*ROM (FME-7)   128K   8K OK     64K ROM OK   0010
+#
+# The digits are [WRAM][PRG][IRQ][CHR] and the bit meanings are in global.inc;
+# the one left is IRQ 1 = MAPTEST_IRQ ($10).
+#
+# IT WAS 2110 WHEN THE BOARD FIRST LANDED, and the two digits that closed did so
+# together, because they were one cause: PRG window 1 is $6000-$7FFF and FME-7
+# can map PRG-ROM there, which Bus::decode could not do. It now asks the
+# cartridge (ROM::prg_rom_at_6000) before assuming work RAM. Finding that also
+# turned up a real bug this file's own constants settle - global.inc names
+# FME7_PRGBANK_ROM $00, FME7_PRGBANK_OFF $40 and FME7_PRGBANK_RAM $C0, which
+# only decode if BIT 6 SELECTS and BIT 7 ENABLES. This board had them the other
+# way round.
+#
+# THE IRQ DIGIT IS THE ROM BEING WRONG, NOT THE BOARD. fme7_test_irq writes 256
+# to the counter and comments "Schedule an IRQ 256 cycles from now"; the wiki's
+# "decremented from $0000 to $FFFF" is 257. tepples, who wrote this ROM, says
+# the subtest "was made based on outdated information" and that Holy Diver
+# Batman tests "whether things are connected at all rather than the precise
+# behavior of the CPLD" - https://forums.nesdev.org/viewtopic.php?p=177596
+#
+# Measured here too, by offsetting the counter and reading the digit back: the
+# ROM accepts an assertion 237 to 255 cycles after the arming write, and our
+# correct 257 misses that window by exactly the 2 cycles Sour measured in Mesen.
+# The counter is otherwise verified in the same run - asserts at 257, the
+# handler acknowledges 32 cycles later, next assertion 65504 cycles after that.
+#
+# Pinned exactly in tests/holy_mapperel_tests.cpp rather than left loose, so
+# closing the digit - or losing another one - fails there and reports which.
+#
 # THE THREE DISCRETE BOARDS - M0, M2, M3 - AND A CLEAN RESULT.
 #
 # Added last, and on a base rate rather than a suspicion: this oracle had been
@@ -303,7 +351,10 @@ M4_P256K_C256K c5dca47517d1cdb5cc252382802418253b8edf1a0cbff6c6b60b62ba2b6317ca
 M7_P128K 6161a17001ba7d0345d6650d799994832d62990fd545c3c3a054015604de6f83
 M9_P128K_C64K 6605a2a6a2b14bc8cfdfcf1444f902b8a7024332fa0ca31994ab3953b559c1c7
 M10_P128K_C64K_S8K 5181996ce6fbf0dedd6b253815ef2809d938a296d172160d5e463e64cf07f757
-M10_P128K_C64K_W8K 54047d0cf47847e363a4c5932e81f22127862581782a6f66d79be77feee50779"
+M10_P128K_C64K_W8K 54047d0cf47847e363a4c5932e81f22127862581782a6f66d79be77feee50779
+M69_P128K_C64K_S8K 6a3f84f29f5f18a09237af0ef2c73f1b6f199be908009bf9b568e765be86f7b1
+M69_P128K_C64K_W8K 61bb0cdd871c76a607364b092cdad8c709020e3bdf365994613b7a69ee847d7e
+M118_P128K_C64K 5e1ab21ff5a2b4a3cdb026cdf4d8800660c210a40bc6705e656c353e030de173"
 
 echo "$ROMS" | while read -r name want; do
     [ -n "$name" ] || continue
@@ -335,8 +386,8 @@ echo "$ROMS" | while read -r name want; do
 done
 
 count=$(ls "$DEST" | wc -l | tr -d ' ')
-if [ "$count" -ne 18 ]; then
-    echo "incomplete: $count/18 files present in $DEST" >&2
+if [ "$count" -ne 21 ]; then
+    echo "incomplete: $count/21 files present in $DEST" >&2
     exit 1
 fi
 
