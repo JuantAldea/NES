@@ -1011,13 +1011,15 @@ GTEST_TEST(testAPUWaves, the_pulse_timer_runs_at_the_apu_rate_not_the_cpu_rate)
     apu.write(0x4002, 0x00);
     apu.write(0x4003, 0x00);  // period 0
 
-    // Eight APU cycles is a full sequence; sixteen CPU cycles must be the same.
-    advance_apu(apu, 8 * cpu_cycles_per_apu_cycle);
-    EXPECT_EQ(0, apu.pulse_sequence_position(APU::pulse1)) << "eight steps returns to the start";
+    // NOT a whole sequence: at period 0 eight APU cycles is eight steps and
+    // sixteen CPU cycles would be sixteen, and both land back on 0. An earlier
+    // version asserted exactly that and could not tell the two rates apart.
+    // Three steps can.
+    advance_apu(apu, 3 * cpu_cycles_per_apu_cycle);
+    EXPECT_EQ(5, apu.pulse_sequence_position(APU::pulse1)) << "three APU cycles is three steps down from 0";
 
-    // Half that many CPU cycles is half a sequence, not a whole one.
     advance_apu(apu, 4 * cpu_cycles_per_apu_cycle);
-    EXPECT_EQ(4, apu.pulse_sequence_position(APU::pulse1));
+    EXPECT_EQ(1, apu.pulse_sequence_position(APU::pulse1)) << "four more, not eight";
 }
 
 // "The sequencer is immediately restarted at the first value of the current
@@ -1088,14 +1090,14 @@ GTEST_TEST(testAPUWaves, the_triangle_timer_runs_at_the_cpu_rate_not_the_apu_rat
     advance_apu(apu, to_first_quarter_frame);
     ASSERT_EQ(0x7F, apu.linear_counter_value());
 
-    const uint8_t before = apu.triangle_output();
+    // Asserted on the INDEX, not on the output difference. The output delta is
+    // only 4 while the walk stays on one side of the ramp, and nothing pinned
+    // that - a change to power_on_delay or to the clock parity moves the
+    // starting index and the delta stops meaning what the name says.
+    const uint8_t before = apu.triangle_sequence_position();
     advance_apu(apu, 4);
-    const uint8_t after = apu.triangle_output();
-
-    // The sequence descends 15..0 then ascends 0..15, so four CPU-rate steps
-    // move the output by 4. At the APU rate it would move by 2.
-    const int delta = static_cast<int>(before) - static_cast<int>(after);
-    EXPECT_EQ(4, delta) << "four CPU cycles must be four steps, not two";
+    EXPECT_EQ((before + 4) & 0x1F, apu.triangle_sequence_position())
+        << "four CPU cycles must be four steps, not the two an APU-rate clock would give";
 }
 
 // The 32-step sequence itself, in order, from the top.
@@ -1131,8 +1133,8 @@ GTEST_TEST(testAPUWaves, the_triangle_walks_its_32_step_sequence)
 // THE TRIANGLE FREEZES, it does not go silent. "The sequencer is clocked by the
 // timer as long as both the linear counter and the length counter are nonzero."
 // An implementation that gated the mixer instead of the clock would report 0
-// here; the hardware holds the last step, which is why Mega Man's timer-zero
-// trick pops rather than muting.
+// here; the hardware holds the last step. (The Mega Man pop is the OTHER
+// silencing method - an ultrasonic period - which never enters this branch.)
 GTEST_TEST(testAPUWaves, the_triangle_sequencer_freezes_when_the_linear_counter_is_zero)
 {
     Bus console;
@@ -1284,6 +1286,222 @@ GTEST_TEST(testAPUWaves, noise_is_silent_exactly_when_shift_register_bit_0_is_se
     }
     EXPECT_GT(saw_silent, 0) << "the walk never reached a silent state, so it proved nothing";
     EXPECT_GT(saw_audible, 0) << "the walk never reached an audible state, so it proved nothing";
+}
+
+// --- gaps a second adversarial review found ---------------------------------
+//
+// The phase-2 mutation set was written before the tests, which was the right
+// correction to phase 1 and still left 14 of an independent reviewer's 25
+// mutants alive. What the list omitted was not subtle behaviour - it was whole
+// register paths and table rows that no test ever touched: pulse 2, duty rows 1
+// and 2, fourteen of the sixteen noise periods, and every triangle period other
+// than zero. Writing the attack first does not help if the attack only aims
+// where the tests already point.
+
+// THE CPU/APU PHASE. Nothing detected a one-cycle inversion here, because every
+// other test measures INTERVALS between steps and an interval is exactly what a
+// phase shift preserves.
+//
+// Bus's constructor calls power_on(), whose delay is power_on_delay = 10 real
+// clocks, so apu_cycles is 10 when it returns. The next clock makes it 11, and
+// 11 is odd - which is an APU cycle, per the $4017 write-delay mapping and the
+// odd frame-sequencer boundaries. With the pulse period at its power-on 0 the
+// timer is always due, so that single cycle must step the sequencer.
+//
+// Clock the pulses on the even half instead and the step lands one cycle later.
+GTEST_TEST(testAPUWaves, the_pulse_timer_clocks_on_the_same_half_cycle_as_the_frame_counter)
+{
+    Bus console;
+    APU& apu = console.apu;
+
+    const uint8_t before = apu.pulse_sequence_position(APU::pulse1);
+    advance_apu(apu, 1);
+    EXPECT_NE(before, apu.pulse_sequence_position(APU::pulse1))
+        << "apu_cycles 11 is odd, and odd is the APU cycle; clocking on even puts this a cycle late";
+}
+
+// Every duty row, not just the two that can distinguish the read direction.
+// Direction and VALUES are different questions, and the earlier tests only
+// answered the first.
+GTEST_TEST(testAPUWaves, every_duty_row_emits_its_documented_waveform)
+{
+    const uint8_t expected[4][8] = {
+        {0, 1, 0, 0, 0, 0, 0, 0},  // 12.5%
+        {0, 1, 1, 0, 0, 0, 0, 0},  // 25%
+        {0, 1, 1, 1, 1, 0, 0, 0},  // 50%
+        {1, 0, 0, 1, 1, 1, 1, 1},  // 25% negated
+    };
+
+    for (int duty = 0; duty < 4; ++duty) {
+        Bus console;
+        APU& apu = console.apu;
+        apu.write(0x4000, static_cast<uint8_t>(duty << 6));
+        apu.write(0x4002, 0x00);
+        apu.write(0x4003, 0x00);  // period 0, and this resets the phase to 0
+
+        for (int step = 0; step < 8; ++step) {
+            EXPECT_EQ(expected[duty][step], apu.pulse_output(APU::pulse1)) << "duty " << duty << ", step " << step;
+            advance_apu(apu, cpu_cycles_per_apu_cycle);
+        }
+    }
+}
+
+// PULSE 2 EXISTS. Its register cases are copies of pulse 1's and no test used
+// them, so a copy-paste slip writing pulse1's fields from $4004/$4007 would
+// have shipped.
+GTEST_TEST(testAPUWaves, pulse2_has_its_own_duty_and_phase)
+{
+    Bus console;
+    APU& apu = console.apu;
+
+    apu.write(0x4000, 0x00);  // pulse 1: duty 0
+    apu.write(0x4004, 0xC0);  // pulse 2: duty 3
+    apu.write(0x4002, 0x00);
+    apu.write(0x4003, 0x00);
+    apu.write(0x4006, 0x00);
+    apu.write(0x4007, 0x00);
+
+    // Both are at phase 0; the duties differ, so the outputs must differ.
+    EXPECT_EQ(0, apu.pulse_output(APU::pulse1)) << "duty 0 step 0";
+    EXPECT_EQ(1, apu.pulse_output(APU::pulse2)) << "duty 3 step 0 - a write to $4004 must not land on pulse 1";
+
+    // And $4007 must restart pulse 2's phase, not pulse 1's.
+    advance_apu(apu, 3 * cpu_cycles_per_apu_cycle);
+    const uint8_t p1 = apu.pulse_sequence_position(APU::pulse1);
+    ASSERT_NE(0, apu.pulse_sequence_position(APU::pulse2));
+    apu.write(0x4007, 0x00);
+    EXPECT_EQ(0, apu.pulse_sequence_position(APU::pulse2));
+    EXPECT_EQ(p1, apu.pulse_sequence_position(APU::pulse1)) << "$4007 must leave pulse 1's phase alone";
+}
+
+// THE TRIANGLE'S PERIOD. Every earlier triangle test left it at zero, where a
+// reload of period, period*2 or period/2 are all the same value - so a literal
+// factor of two in the reload passed the suite that this file spends a
+// paragraph warning about.
+GTEST_TEST(testAPUWaves, the_triangle_timer_period_divides_at_the_documented_rate)
+{
+    Bus console;
+    APU& apu = console.apu;
+
+    apu.write(0x4015, 0x04);
+    apu.write(0x4008, 0x7F);
+    apu.write(0x400A, 0x03);  // period 3 -> one step per 4 CPU cycles
+    apu.write(0x400B, 0x08);  // high bits 0, length load
+    advance_apu(apu, to_first_quarter_frame);
+    ASSERT_EQ(0x7F, apu.linear_counter_value());
+
+    // Land on a step so the divider is full, then time the next two.
+    const uint8_t start = apu.triangle_sequence_position();
+    int guard = 0;
+    while (apu.triangle_sequence_position() == start && guard++ < 100) {
+        advance_apu(apu, 1);
+    }
+    ASSERT_LT(guard, 100);
+
+    for (int repeat = 0; repeat < 2; ++repeat) {
+        const uint8_t before = apu.triangle_sequence_position();
+        advance_apu(apu, 3);
+        EXPECT_EQ(before, apu.triangle_sequence_position()) << "three CPU cycles is short of the period";
+        advance_apu(apu, 1);
+        EXPECT_EQ((before + 1) & 0x1F, apu.triangle_sequence_position()) << "the fourth steps it";
+    }
+}
+
+// $400B's low three bits are the period's high three. With them set the period
+// is at least $100, so the sequencer must be far slower than at period 0.
+GTEST_TEST(testAPUWaves, the_triangle_period_takes_its_high_bits_from_400b)
+{
+    Bus console;
+    APU& apu = console.apu;
+
+    apu.write(0x4015, 0x04);
+    apu.write(0x4008, 0x7F);
+    apu.write(0x400A, 0x00);
+    apu.write(0x400B, 0x09);  // high bits = 1 -> period 0x100 = 256
+    advance_apu(apu, to_first_quarter_frame);
+    ASSERT_EQ(0x7F, apu.linear_counter_value());
+
+    const uint8_t start = apu.triangle_sequence_position();
+    int guard = 0;
+    while (apu.triangle_sequence_position() == start && guard++ < 400) {
+        advance_apu(apu, 1);
+    }
+    ASSERT_LT(guard, 400) << "the triangle never stepped";
+
+    // Period 256 is 257 cycles per step - counting down from 256 through 0 and
+    // reloading. Both sides are asserted so the boundary is pinned rather than
+    // just the magnitude.
+    // Advanced in two unequal chunks, and the first is deliberately NOT a
+    // multiple of 32. Stepping straight to 256 hid a mutant that dropped the
+    // high bits entirely: at the period 0 that leaves, 256 steps is exactly
+    // eight passes of the 32-step sequence and lands on the same index. That is
+    // the third alias of this shape in this file.
+    const uint8_t before = apu.triangle_sequence_position();
+    advance_apu(apu, 100);
+    EXPECT_EQ(before, apu.triangle_sequence_position()) << "100 cycles is well short of the period";
+    advance_apu(apu, 156);
+    EXPECT_EQ(before, apu.triangle_sequence_position()) << "256 cycles is one short of it";
+    advance_apu(apu, 1);
+    EXPECT_EQ((before + 1) & 0x1F, apu.triangle_sequence_position())
+        << "the 257th steps it; shifting the high bits changes this";
+}
+
+// EVERY ENTRY OF THE NOISE PERIOD TABLE. The table is data rather than a
+// formula, so a single wrong value is invisible to anything but a test that
+// times that specific entry - and two spot checks left fourteen of the sixteen
+// unguarded, which is exactly the hazard this file writes down for the table
+// and then did not act on.
+//
+// This also subsumes the index mask: indices 8 and above decode differently
+// under a 3-bit mask, so a narrowed mask fails here rather than needing its own
+// case.
+GTEST_TEST(testAPUWaves, every_noise_period_table_entry_clocks_at_its_documented_rate)
+{
+    // NTSC, from https://www.nesdev.org/wiki/APU_Noise and blargg's apu_ref.txt,
+    // which agree exactly. Periods are in CPU cycles.
+    const uint16_t expected[16] = {4, 8, 16, 32, 64, 96, 128, 160, 202, 254, 380, 508, 762, 1016, 2034, 4068};
+
+    for (int index = 0; index < 16; ++index) {
+        Bus console;
+        APU& apu = console.apu;
+        apu.write(0x400E, static_cast<uint8_t>(index));
+
+        // Land on a clock so the divider is full, then time the next one.
+        uint16_t value = apu.noise_shift_register();
+        int guard = 0;
+        while (apu.noise_shift_register() == value && guard++ < 9000) {
+            advance_apu(apu, 1);
+        }
+        ASSERT_LT(guard, 9000) << "index " << index << " never clocked";
+
+        value = apu.noise_shift_register();
+        advance_apu(apu, expected[index] - 1);
+        EXPECT_EQ(value, apu.noise_shift_register()) << "index " << index << ": clocked before " << expected[index];
+        advance_apu(apu, 1);
+        EXPECT_NE(value, apu.noise_shift_register()) << "index " << index << ": did not clock at " << expected[index];
+    }
+}
+
+// $400E's Mode flag is bit 7 alone. Writing $40 must leave it CLEAR - a mask of
+// $C0 would set it and switch the LFSR to the bit-6 tap.
+GTEST_TEST(testAPUWaves, the_noise_mode_flag_is_bit_7_alone)
+{
+    Bus console;
+    APU& apu = console.apu;
+
+    apu.write(0x400E, 0x40);  // bit 6 set, bit 7 clear -> mode CLEAR, index 0
+
+    uint16_t reference = apu.noise_shift_register();
+    for (int step = 0; step < 20; ++step) {
+        // The bit-1 tap, which is mode-clear behaviour.
+        const uint16_t feedback = (reference & 1u) ^ ((reference >> 1) & 1u);
+        reference = static_cast<uint16_t>(reference >> 1);
+        reference = static_cast<uint16_t>((reference & 0x3FFFu) | (feedback << 14));
+
+        advance_apu(apu, 4);
+        ASSERT_EQ(reference, apu.noise_shift_register())
+            << "diverged at step " << step << "; bit 6 is not the mode bit";
+    }
 }
 
 }  // namespace apu

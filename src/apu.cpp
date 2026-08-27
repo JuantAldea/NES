@@ -270,6 +270,15 @@ void APU::clock_pulse_timer(const int pulse)
 //
 // The gate is on the CLOCK, not on the output: with either counter at zero the
 // sequencer does not advance at all and the channel holds its current step.
+//
+// NO SPECIAL CASE FOR AN ULTRASONIC PERIOD, deliberately. At period 0 or 1 the
+// sequencer runs at or near the CPU rate and hardware does not silence it -
+// "Due to the averaging effect of the lowpass filter, the resulting value is
+// halfway between 7 and 8", which is the harder pop Mega Man 1 and 2 use. The
+// wiki names the tempting alternative, "halting the triangle channel when an
+// ultrasonic frequency is set (a timer value less than 2)", and calls it a
+// deliberate loss of accuracy rather than hardware behaviour. Rejected on that
+// basis; the pop is the correct output.
 void APU::clock_triangle_timer()
 {
     if (linear_counter == 0 || lengths[triangle].value == 0) {
@@ -546,11 +555,27 @@ void APU::clock()
     // while the TRIANGLE runs at the CPU rate. Clocking the triangle with the
     // others would halve its pitch and is the documented trap.
     //
-    // apu_cycles counts CPU cycles from power-on and its low bit is already the
-    // CPU/APU phase used for $4017 write timing, so the parity is taken from
-    // there rather than from a second counter that could drift from it.
+    // ODD, and an earlier version of this had it inverted while the comment
+    // claimed it did not. There is one divider on the chip - nesdev: "The
+    // triangle channel's timer is clocked on every CPU cycle, but the pulse,
+    // noise, and DMC timers are clocked only on every second CPU cycle" - so
+    // this parity is not free to differ from the frame counter's.
+    //
+    // Two anchors in this file already fix it, and both say odd:
+    //
+    //   $4017 write timing at write_cycle_is_odd below picks a 3-cycle delay on
+    //   odd, and nesdev defines 3 as "if the write occurs DURING an APU cycle".
+    //   That mapping is oracle-backed through cpu_interrupts_v2/4-irq_and_dma.
+    //
+    //   Every frame sequencer boundary - 7457, 14913, 22371, 29829, 37281 - is
+    //   an odd number, and measured, the first quarter-frame clock lands on
+    //   apu_cycles 7461.
+    //
+    // Nothing detected the inversion, and nothing could have: the tests measure
+    // INTERVALS between sequencer steps, and an interval is exactly the property
+    // a one-cycle phase shift preserves. See the pin below it.
     clock_triangle_timer();
-    if ((apu_cycles & 1) == 0) {
+    if ((apu_cycles & 1) == 1) {
         clock_pulse_timer(pulse1);
         clock_pulse_timer(pulse2);
         clock_noise_timer();

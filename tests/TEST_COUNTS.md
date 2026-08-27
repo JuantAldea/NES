@@ -76,7 +76,7 @@ check for regressions with `tests/test_counts.sh --check`.
 | `SpriteOverflow/SpriteOverflowRoms` | 5 | yes |
 | `testAPU` | 15 | yes |
 | `testAPUUnits` | 16 | yes |
-| `testAPUWaves` | 14 | yes |
+| `testAPUWaves` | 21 | yes |
 | `testBusRunFrame` | 3 | yes |
 | `testCPU` | 2 | yes |
 | `testDMA` | 3 | yes |
@@ -94,9 +94,9 @@ check for regressions with `tests/test_counts.sh --check`.
 
 | | Cases |
 |---|---:|
-| Registered | 1019 |
+| Registered | 1026 |
 | Skipped in CI | 517 |
-| **Executed in CI** | **502** |
+| **Executed in CI** | **509** |
 
 Skipped in CI: the 512 per-opcode SingleStepTests need 1.1 GB of vectors CI
 does not fetch, and `commercialRom` needs a cartridge dump nothing here will

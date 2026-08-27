@@ -170,6 +170,13 @@ public:
     // Bit 0 SET means silence, which is the opposite polarity from the pulse
     // channels' "sequencer output is zero". Exposed as its own question rather
     // than left for a caller to get backwards.
+    //
+    // THIS IS HALF THE MIXER'S CONDITION, not all of it. nesdev lists two: "Bit
+    // 0 of the shift register is set, or The length counter is zero." Only the
+    // first is here, for the same reason pulse_output() returns a raw duty bit -
+    // the gating is phase 3. A mixer that used this as its whole gate would emit
+    // noise from a channel whose length counter has expired, so the name is
+    // about the SHIFT REGISTER's contribution and nothing more.
     bool noise_output_is_silent() const { return (noise_shift & 1u) != 0; }
 
     // The memory reader, driven by the Bus: only the Bus can halt the CPU.
@@ -346,9 +353,6 @@ private:
         uint8_t sequence = 0;  // 0-7, stepped DOWNWARD
     };
 
-    // "The sequencer is immediately restarted at the first value of the current
-    // sequence... The period divider is not reset." Both halves matter: a $4003
-    // write must move the phase and must NOT move the timer.
     static constexpr uint8_t kPulseDuty[4][8] = {
         {0, 0, 0, 0, 0, 0, 0, 1},  // 12.5%
         {0, 0, 0, 0, 0, 0, 1, 1},  // 25%
@@ -369,8 +373,14 @@ private:
     // zero the triangle FREEZES on its current step and holds that output; it
     // does not drop to zero and it does not keep advancing. That is the opposite
     // of the pulse and noise channels, where the sequencer runs on underneath
-    // and only the mixer gate closes, and it is why Mega Man's timer-zero
-    // "silencing" pops instead of muting.
+    // and only the mixer gate closes.
+    //
+    // The wiki contrasts this with the OTHER silencing method:
+    // writing an ultrasonic period pops, while the linear/length route "will
+    // instead halt it in whatever its current output position is". Mega Man 1
+    // and 2 use the ULTRASONIC one, not this path - an earlier version of this
+    // comment attached them to the freeze, which is the opposite of what the
+    // source says.
     static constexpr uint8_t kTriangleSequence[32] = {15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5,  4,  3,  2,  1,  0,
                                                       0,  1,  2,  3,  4,  5,  6, 7, 8, 9, 10, 11, 12, 13, 14, 15};
 
@@ -399,6 +409,10 @@ private:
     // NTSC only. "The period determines how many CPU cycles happen between
     // shift register clocks. These periods are all even numbers because there
     // are 2 CPU cycles in an APU cycle." PAL differs and is not modelled.
+    // Entry $F is 4068 on a production 2A03. The earliest revisions - the
+    // recalled first Famicom batch, Vs. System boards, and the arcade parts -
+    // used 2046 there and had no Mode flag at all. Not modelled: those are not
+    // the chip this emulator targets, and nothing here can tell them apart.
     static constexpr uint16_t kNoisePeriods[16] = {4,   8,   16,  32,  64,  96,   128,  160,
                                                    202, 254, 380, 508, 762, 1016, 2034, 4068};
 
