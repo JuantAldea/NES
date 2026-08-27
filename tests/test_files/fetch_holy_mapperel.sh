@@ -292,6 +292,29 @@
 # Pinned exactly in tests/holy_mapperel_tests.cpp rather than left loose, so
 # closing the digit - or losing another one - fails there and reports which.
 #
+# TxSROM (118), THE FIRST BOARD HERE WITH BANKED NAMETABLES.
+#
+# MEASURED BEFORE:
+#
+#   M118_P128K_C64K   ROM: mapper 118 (TxSROM) is not supported
+#
+# MEASURED AFTER:
+#
+#   image             board reported      PRG    work RAM  CHR          detail
+#   M118_P128K_C64K   118 T*SROM (MMC3)   128K   MISSING   64K ROM OK   0000
+#
+# Clean on the first run, which is worth being suspicious of rather than glad
+# about - so the row was checked by breaking it. Two plausible wrong versions of
+# TxSRom::ciram_page, "never bank the nametables" and "flip which register set
+# the CHR inversion selects", BOTH HANG the ROM for the full 400 frames instead
+# of mis-reporting: it stops in the mapper detection phase, which runs from RAM.
+# The image is therefore a real discriminator for the one function this board
+# adds, not a row that would pass regardless.
+#
+# The board line is the load-bearing assertion. Holy Mapperel identifies a board
+# by writing mirroring and watching where the nametables land, so "118 T*SROM"
+# is a direct readout of the only thing TxSROM does differently from an MMC3.
+#
 # THE THREE DISCRETE BOARDS - M0, M2, M3 - AND A CLEAN RESULT.
 #
 # Added last, and on a base rate rather than a suspicion: this oracle had been

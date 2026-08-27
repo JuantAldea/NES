@@ -26,6 +26,7 @@ bool ROM::load(const std::string& path)
     chr_rom.clear();
     mapper.reset();
     mapper_wants_cpu_clock = false;
+    mapper_drives_ciram_a10 = false;
     mapper_id = MapperId::nrom;
     mirroring = Mirroring::horizontal;
     nes2 = false;
@@ -182,6 +183,7 @@ bool ROM::load(const std::string& path)
     }
 
     mapper_wants_cpu_clock = mapper->wants_cpu_clock();
+    mapper_drives_ciram_a10 = mapper->drives_ciram_a10();
 
     // A fresh board comes up with its registers at their power-on values, so the
     // long reset block that used to live here is now the Mmc3 members' own

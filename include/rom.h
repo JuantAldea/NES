@@ -182,6 +182,38 @@ public:
     // Cached from Mapper::wants_cpu_clock() at load time - see above.
     bool mapper_wants_cpu_clock = false;
 
+    // Which 1KB CIRAM page one of the four nametable slots reads through.
+    //
+    // Here rather than in the PPU because `mirroring` is here: the PPU's job is
+    // to turn $2000-$2FFF into a slot number, and which page that slot shows is
+    // the cartridge's answer. Inline and flag-gated because every background
+    // tile fetch asks.
+    //
+    // A board that wires CIRAM A10 to its own logic bypasses `mirroring`
+    // entirely - so on TxSROM the $A000 register still latches into `mirroring`
+    // and still has no effect, which is what the hardware does too.
+    uint16_t nametable_page(const uint16_t screen) const
+    {
+        if (mapper_drives_ciram_a10) {
+            return mapper->ciram_page(screen);
+        }
+
+        switch (mirroring) {
+        case Mirroring::horizontal:
+            return screen >> 1;
+        case Mirroring::vertical:
+            return screen & 1;
+        case Mirroring::single_screen_lower:
+            return 0;
+        case Mirroring::single_screen_upper:
+            return 1;
+        }
+        return 0;
+    }
+
+    // Cached from Mapper::drives_ciram_a10() at load time - see above.
+    bool mapper_drives_ciram_a10 = false;
+
     // A completed PPU pattern-table read, reported after the byte was served.
     // Only MMC2 and MMC4 care; see Mapper::observe_pattern_fetch for why the
     // ordering is load-bearing and why it is not folded into the call above.
@@ -200,6 +232,13 @@ public:
     // PRG-RAM gating and the A12 filter are covered at all. Putting those
     // members on Mapper instead would give NROM an IRQ counter, so the cast is
     // the honest option: only one board has them.
+    //
+    // A TxSROM IS an Mmc3 by inheritance and still returns null here, which is
+    // deliberate rather than an oversight in the id check. This accessor asks
+    // "is this cartridge on the MMC3 board", and a caller reaching for the
+    // register file of a mapper-118 image is more likely to have taken a wrong
+    // turn than to want the base subobject. Widen it to accept txsrom if a test
+    // ever genuinely needs that, but widen it on purpose.
     Mmc3* as_mmc3() { return mapper_id == MapperId::mmc3 ? static_cast<Mmc3*>(mapper.get()) : nullptr; }
 
     // The board as an Fme7, on the same terms as as_mmc3 below.

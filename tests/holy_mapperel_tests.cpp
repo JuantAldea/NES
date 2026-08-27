@@ -54,6 +54,7 @@ constexpr const char* kFetch = "run tests/test_files/fetch_holy_mapperel.sh";
 //   M7_P128K            85    M9_P128K_C64K        15
 //   M10_P128K_C64K_S8K  93    M10_P128K_C64K_W8K   93
 //   M69_P128K_C64K_S8K  92    M69_P128K_C64K_W8K   92
+//   M118_P128K_C64K     18
 //
 // One line splits the whole table: CHR-RAM images pay for a write-and-verify
 // sweep of the RAM and CHR-ROM ones skip it. That is why M2_P128K_V takes 85
@@ -449,6 +450,34 @@ const Expected kFme7Roms[] = {
     {"M69_P128K_C64K_S8K", "069 J*ROM (FME-7)", "128K PRG ROM", "8K PRG RAM OK", "64K CHR ROM OK", "0010"},
     {"M69_P128K_C64K_W8K", "069 J*ROM (FME-7)", "128K PRG ROM", "8K PRG RAM OK", "64K CHR ROM OK", "0010"},
 };
+
+// TxSROM (118): the first board here whose NAMETABLES ARE BANKED. Every other
+// image in this file picks one of four mirroring modes; this one wires CHR A17
+// to CIRAM A10, so which screen a slot shows is bit 7 of a CHR bank register and
+// changes whenever the game switches CHR.
+//
+// THE BOARD LINE IS THE ASSERTION HERE, more than the detail code. Holy Mapperel
+// identifies a board by writing mirroring and observing where the nametables
+// land, so "118 T*SROM" is a direct readout of the thing this board exists to
+// do - it cannot be reported by a mapper that got the nametable logic wrong.
+//
+// CHECKED, because a row that would pass anyway is not an oracle. Two plausible
+// wrong versions of TxSRom::ciram_page were built and run against this image:
+//
+//   always return page 0     (nametables not banked at all)  hangs, 400 frames
+//   inversion sense flipped  (R2-R5 and R0/R1 swapped)       hangs, 400 frames
+//
+// Neither mis-reports - both stop the ROM dead in its mapper detection phase,
+// which runs from RAM and never reaches the report. So this row fails loudly on
+// the two mistakes most likely to be made in the function it covers.
+const Expected kTxSRomRoms[] = {
+    {"M118_P128K_C64K", "118 T*SROM (MMC3)", "128K PRG ROM", "PRG RAM MISSING", "64K CHR ROM OK", "0000"},
+};
+
+INSTANTIATE_TEST_SUITE_P(Mapper118,
+                         HolyMapperel,
+                         ::testing::ValuesIn(kTxSRomRoms),
+                         [](const ::testing::TestParamInfo<Expected>& info) { return std::string(info.param.name); });
 
 INSTANTIATE_TEST_SUITE_P(Mapper69,
                          HolyMapperel,

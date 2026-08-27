@@ -143,6 +143,25 @@ public:
     // hottest path for the seven boards out of eight that would ignore it.
     virtual bool wants_cpu_clock() const { return false; }
 
+    // Does the cartridge drive CIRAM A10 itself, rather than through the
+    // horizontal/vertical/one-screen choice in ROM::mirroring? Asked once at
+    // load and cached, for the same reason as wants_cpu_clock: nametable
+    // decoding runs on every background fetch.
+    //
+    // TxSROM is the only board here that does. On it CHR A17 is wired straight
+    // to CIRAM A10 instead of to the MMC3's own mirroring output, which makes
+    // the nametable a property of the CHR bank registers and gives the board
+    // one-screen mirroring the MMC3 does not otherwise have.
+    virtual bool drives_ciram_a10() const { return false; }
+
+    // Which of the two 1KB CIRAM pages nametable slot `screen` (0-3) reads
+    // through. Only reached when drives_ciram_a10() returned true.
+    virtual uint8_t ciram_page(const uint16_t screen) const
+    {
+        (void)screen;
+        return 0;
+    }
+
     // One M2 cycle. Only reached when wants_cpu_clock() returned true.
     virtual void clock_cpu_cycle() {}
 
@@ -445,7 +464,9 @@ public:
 // MMC3 (4): eight bank registers behind a select/data pair, runtime mirroring,
 // PRG-RAM gating, and an IRQ counter clocked by PPU A12. The register semantics
 // are documented on the fields in rom.h, which is still where they live.
-class Mmc3 final : public Mapper
+// Not final: TxSROM below is an MMC3 with one wire moved, and inherits the
+// whole register file, the PRG/CHR banking and the A12 IRQ counter unchanged.
+class Mmc3 : public Mapper
 {
 public:
     using Mapper::Mapper;
@@ -532,4 +553,40 @@ private:
     // to pull /IRQ low. Split out from observe_a12 so the edge DETECTION and the
     // counter SEMANTICS can be read - and mutated - independently.
     void clock_irq_counter();
+};
+
+// TxSROM (118): the TKSROM and TLSROM boards. An MMC3 with ONE WIRE MOVED, and
+// nothing else different - same registers, same PRG and CHR banking, same A12
+// IRQ counter, which is why this inherits all of it and overrides two calls.
+//
+// NESdev: "The CHR A17 line connects directly to CIRAM A10 line instead of
+// MMC3's CIRAM A10 output, to compensate for the MMC3's lack of single-screen
+// mirroring."
+//
+// So the nametable a slot shows is bit 7 of whichever CHR bank register covers
+// it, and $A000 - the MMC3's own mirroring register - is "bypassed by the
+// configuration described above, so writing here has no effect". This class
+// does not intercept that write: it lets Mmc3::cpu_write latch it into
+// ROM::mirroring as usual, where nothing reads it, because ROM::nametable_page
+// consults the board instead. Suppressing the write would model the same
+// behaviour and hide the reason.
+//
+// WHICH register drives which slot depends on the $8000 bit 7 CHR inversion,
+// because it decides which registers are mapped low:
+//
+//   inversion off   R0 -> $2000-$27FF    R1 -> $2800-$2FFF   (the 2KB banks)
+//   inversion on    R2 -> $2000-$23FF    R3 -> $2400-$27FF
+//                   R4 -> $2800-$2BFF    R5 -> $2C00-$2FFF   (the 1KB banks)
+//
+// The rule behind the table is one sentence - "those bits are ignored if
+// corresponding CHR banks are mapped at $1000-$1FFF via $8000" - and it is not
+// arbitrary: only the registers currently driving $0000-$0FFF have their A17 on
+// the CIRAM line, so inverting the CHR windows swaps which set is listened to.
+class TxSRom final : public Mmc3
+{
+public:
+    using Mmc3::Mmc3;
+
+    bool drives_ciram_a10() const override { return true; }
+    uint8_t ciram_page(const uint16_t screen) const override;
 };

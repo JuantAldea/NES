@@ -1177,21 +1177,10 @@ uint16_t PPU::nametable_offset(const uint16_t addr) const
     const uint16_t screen = index / 0x0400;
     const uint16_t within = index & 0x03FF;
 
-    uint16_t bank = 0;
-    switch (bus->rom.mirroring) {
-    case ROM::Mirroring::horizontal:
-        bank = screen >> 1;
-        break;
-    case ROM::Mirroring::vertical:
-        bank = screen & 1;
-        break;
-    case ROM::Mirroring::single_screen_lower:
-        bank = 0;
-        break;
-    case ROM::Mirroring::single_screen_upper:
-        bank = 1;
-        break;
-    }
+    // WHICH page a slot shows is the cartridge's answer, not the PPU's: on
+    // TxSROM it comes from the CHR bank registers and there is no mirroring
+    // mode involved at all. The PPU's part is turning an address into a slot.
+    const uint16_t bank = bus->rom.nametable_page(screen);
 
     return static_cast<uint16_t>(bank * 0x0400 + within);
 }

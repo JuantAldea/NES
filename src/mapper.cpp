@@ -152,6 +152,30 @@ std::string check_mmc3(const size_t prg_16k_banks, const size_t chr_8k_banks)
     return {};
 }
 
+std::string check_txsrom(const size_t prg_16k_banks, const size_t chr_8k_banks)
+{
+    // The MMC3's PRG constraint, restated rather than delegated to check_mmc3 so
+    // the message names the board the header actually claims.
+    if (prg_16k_banks < 2) {
+        return "TxSROM requires at least 2 PRG-ROM banks, header advertises " + std::to_string(prg_16k_banks);
+    }
+    // CHR-RAM is what makes no sense here, not merely what no board shipped: the
+    // whole board IS a CHR address line rerouted, so a cartridge with no CHR-ROM
+    // has nothing to reroute and its nametables would follow a bank register
+    // indexing an array that does not exist.
+    if (chr_8k_banks == 0) {
+        return "TxSROM has no CHR-RAM variant - CHR A17 is what drives its nametables, header advertises 0 CHR banks";
+    }
+    // And 128KB is the ceiling for the same reason. The MMC3's 1KB bank
+    // registers are eight bits wide, which would address 256KB, but bit 7 is A17
+    // and this board spends it on CIRAM A10 - leaving seven bits of 1KB banks.
+    if (chr_8k_banks > 16) {
+        return "TxSROM addresses at most 128KB of CHR-ROM (A17 drives CIRAM A10 instead), header advertises " +
+               std::to_string(chr_8k_banks) + " bank(s)";
+    }
+    return {};
+}
+
 std::string check_axrom(const size_t prg_16k_banks, const size_t chr_8k_banks)
 {
     // No CHR-ROM: CHR-RAM is the pattern memory, as on UNROM.
@@ -224,7 +248,7 @@ const Board kBoards[] = {
     {MapperId::uxrom, construct<UnRom>, check_uxrom},      {MapperId::cnrom, construct<CnRom>, check_cnrom},
     {MapperId::mmc3, construct<Mmc3>, check_mmc3},         {MapperId::axrom, construct<AxRom>, check_axrom},
     {MapperId::mmc2, construct<Mmc2>, check_mmc2},         {MapperId::mmc4, construct<Mmc4>, check_mmc4},
-    {MapperId::sunsoft_fme7, construct<Fme7>, check_fme7},
+    {MapperId::sunsoft_fme7, construct<Fme7>, check_fme7}, {MapperId::txsrom, construct<TxSRom>, check_txsrom},
 };
 
 const Board* find_board(const MapperId id)
@@ -1116,4 +1140,23 @@ void Mmc3::clock_irq_counter()
         irq_asserted = true;
         rom.drive_irq_line(irq_asserted);
     }
+}
+
+// --- TxSROM (118) -----------------------------------------------------------
+
+// Bit 7 of whichever CHR bank register covers the slot, which on this board is
+// CHR A17 and is soldered to CIRAM A10.
+//
+// The `screen >> 1` and `2 + screen` are the whole board. Everything else -
+// banking, the IRQ counter, the register file - is inherited from Mmc3
+// untouched, because on hardware it is the same chip.
+uint8_t TxSRom::ciram_page(const uint16_t screen) const
+{
+    // Only the registers currently driving $0000-$0FFF have their A17 on the
+    // CIRAM line, so the $8000 inversion bit chooses which set answers. With the
+    // 2KB banks low it is R0 and R1, each covering two slots because each covers
+    // two 1KB CHR banks; with the 1KB banks low it is R2-R5, one slot each.
+    const uint8_t reg = chr_a12_inverted() ? bank[2 + screen] : bank[screen >> 1];
+
+    return static_cast<uint8_t>((reg >> 7) & 1);
 }
