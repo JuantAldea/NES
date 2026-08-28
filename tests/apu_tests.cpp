@@ -8,6 +8,7 @@
 // These pin the behaviour directly. 1-cli_latency covers it end to end, but a
 // ROM failing tells you far less about where than a test does.
 #include <array>
+#include <cmath>
 #include <cstdint>
 
 #include "../include/bus.h"
@@ -1502,6 +1503,298 @@ GTEST_TEST(testAPUWaves, the_noise_mode_flag_is_bit_7_alone)
         ASSERT_EQ(reference, apu.noise_shift_register())
             << "diverged at step " << step << "; bit 6 is not the mode bit";
     }
+}
+
+// --- phase 3: the mixer -----------------------------------------------------
+//
+// Still no oracle, and now the stakes change: this is where every earlier phase
+// becomes audible, so an error here is the one a listener would notice and no
+// test in this repository would.
+//
+// The lesson from two reviews is that a mutation set aimed by the author lands
+// where the tests already point. So these were written against a list of ways
+// to be wrong that a reader of the wiki would recognise but a reader of this
+// code might not: the table constants substituted for the exact ones (they are
+// deliberately different and look like a typo), the three tnd divisors swapped
+// or equalised, the +100 terms, the divide-by-zero guards, each of the four
+// pulse gates, the noise length gate, the triangle gated to zero instead of
+// held, and the DMC truncated to four bits.
+
+// The formula, restated from the wiki rather than called, so a test failure
+// means the two disagree rather than that one function was renamed.
+double reference_mix(int p1, int p2, int tri, int noise, int dmc)
+{
+    const double pulse_sum = p1 + p2;
+    const double pulse_out = pulse_sum == 0.0 ? 0.0 : 95.88 / ((8128.0 / pulse_sum) + 100.0);
+    const double tnd_sum = (tri / 8227.0) + (noise / 12241.0) + (dmc / 22638.0);
+    const double tnd_out = tnd_sum == 0.0 ? 0.0 : 159.79 / ((1.0 / tnd_sum) + 100.0);
+    return pulse_out + tnd_out;
+}
+
+GTEST_TEST(testAPUMixer, silence_is_exactly_zero_and_never_a_nan)
+{
+    const float out = APU::mix_levels(0, 0, 0, 0, 0);
+    EXPECT_EQ(0.0f, out);
+    EXPECT_FALSE(std::isnan(out));
+
+    // AND THE ZERO GUARDS ARE NOT WHAT MAKES THAT TRUE, which took a mutation
+    // to find out. Removing both of them changes nothing: under IEEE 754,
+    // 8128/0 is +inf, inf + 100 is inf, and 95.88/inf is exactly 0 - the same
+    // answer the guard produces. Measured, not reasoned: an unguarded
+    // expression compiled and run separately returns 0, not NaN.
+    //
+    // An earlier version of this comment asserted the opposite, that an
+    // unguarded implementation "returns NaN here". The wiki's warning - "the
+    // result for that group should be treated as zero rather than undefined due
+    // to the division by 0 that otherwise results" - is real, but it bites an
+    // integer or fixed-point implementation, not this one. The guards stay
+    // because they are the correct thing to write and because a future
+    // fixed-point rewrite would need them; they are documentation here, not
+    // behaviour, and no test can honestly claim to cover them.
+}
+
+// Each group's guard separately: one group silent while the other is not must
+// still produce a finite, correct number.
+GTEST_TEST(testAPUMixer, one_silent_group_does_not_poison_the_other)
+{
+    const float pulses_only = APU::mix_levels(15, 15, 0, 0, 0);
+    EXPECT_FALSE(std::isnan(pulses_only)) << "the tnd group is empty here";
+    EXPECT_NEAR(reference_mix(15, 15, 0, 0, 0), pulses_only, 1e-6);
+
+    const float tnd_only = APU::mix_levels(0, 0, 15, 0, 0);
+    EXPECT_FALSE(std::isnan(tnd_only)) << "the pulse group is empty here";
+    EXPECT_NEAR(reference_mix(0, 0, 15, 0, 0), tnd_only, 1e-6);
+}
+
+// The whole input space of the pulse group, against the formula.
+GTEST_TEST(testAPUMixer, the_pulse_group_matches_the_documented_formula)
+{
+    for (int p1 = 0; p1 <= 15; ++p1) {
+        for (int p2 = 0; p2 <= 15; ++p2) {
+            EXPECT_NEAR(reference_mix(p1, p2, 0, 0, 0),
+                        APU::mix_levels(static_cast<uint8_t>(p1), static_cast<uint8_t>(p2), 0, 0, 0), 1e-6)
+                << "pulse1 " << p1 << ", pulse2 " << p2;
+        }
+    }
+}
+
+// Every DMC level, 0-127. THE RANGE IS THE POINT: the other three channels are
+// 0-15, and an implementation that masked this to four bits would agree with
+// the formula for the first sixteen values and diverge for the remaining 112.
+GTEST_TEST(testAPUMixer, the_dmc_contributes_over_its_full_seven_bit_range)
+{
+    for (int dmc = 0; dmc <= 127; ++dmc) {
+        EXPECT_NEAR(reference_mix(0, 0, 0, 0, dmc), APU::mix_levels(0, 0, 0, 0, static_cast<uint8_t>(dmc)), 1e-6)
+            << "dmc level " << dmc;
+    }
+    EXPECT_GT(APU::mix_levels(0, 0, 0, 0, 127), APU::mix_levels(0, 0, 0, 0, 15))
+        << "a 4-bit mask would make these equal";
+}
+
+// THROUGH THE LIVE CHANNEL, not just the formula. The test above calls
+// mix_levels directly, so it never touches dmc_level() - and masking that
+// accessor to four bits survived the whole suite because of it. $4011 is
+// writable at any time and is exactly how games play PCM, so this is the path
+// that matters.
+GTEST_TEST(testAPUMixer, the_dmc_level_reaches_the_mixer_at_its_full_range)
+{
+    Bus console;
+    APU& apu = console.apu;
+
+    apu.write(0x4011, 0x7F);
+    ASSERT_EQ(127, apu.dmc_level()) << "seven bits, not four";
+    const float loud = apu.mixer_output();
+
+    apu.write(0x4011, 0x0F);
+    ASSERT_EQ(15, apu.dmc_level());
+    const float quiet = apu.mixer_output();
+
+    EXPECT_GT(loud, quiet) << "a level masked to four bits would make these equal";
+
+    // THE TRIANGLE IS IN THIS SUM even though nothing enabled it, and the
+    // reference has to say so. Its sequencer is gated off, so it holds index 0
+    // and presents 15 to the mixer forever - a constant DC term from a channel
+    // that is doing nothing. That is not a bug to fix here: it is why the real
+    // hardware follows the DAC with high-pass filters at 90Hz and 440Hz, and it
+    // is the direct consequence of the triangle freezing rather than muting.
+    ASSERT_EQ(15, apu.triangle_level()) << "held at its power-on step";
+    EXPECT_NEAR(reference_mix(0, 0, apu.triangle_level(), 0, 127), loud, 1e-6);
+}
+
+// THE THREE TND DIVISORS ARE DIFFERENT AND ORDERED. 8227 < 12241 < 22638, so
+// per unit the triangle is loudest and the DMC quietest. Equalising them, or
+// swapping any two, is invisible to a test that only feeds one channel at a
+// time and compares against a reference built from the same constants - so this
+// asserts the ORDERING, which is a property of the hardware rather than of the
+// numbers as written.
+GTEST_TEST(testAPUMixer, the_three_tnd_divisors_are_distinct_and_correctly_ordered)
+{
+    const float tri = APU::mix_levels(0, 0, 10, 0, 0);
+    const float noise = APU::mix_levels(0, 0, 0, 10, 0);
+    const float dmc = APU::mix_levels(0, 0, 0, 0, 10);
+
+    EXPECT_GT(tri, noise) << "the triangle's divisor 8227 is the smallest, so it is loudest per unit";
+    EXPECT_GT(noise, dmc) << "the noise divisor 12241 is smaller than the DMC's 22638";
+}
+
+// The exact numerators, not the lookup tables'. 95.52 and 163.67 belong to the
+// table approximation and are deliberately different to renormalise it; reading
+// one for the other looks like a typo fix and changes every sample.
+GTEST_TEST(testAPUMixer, the_numerators_are_the_exact_forms_not_the_table_forms)
+{
+    // At full pulses the two numerators differ by 95.88/95.52, about 0.38%,
+    // which is far outside the tolerance used above but well inside anything a
+    // "looks about right" check would accept.
+    const double exact = 95.88 / ((8128.0 / 30.0) + 100.0);
+    const double table_form = 95.52 / ((8128.0 / 30.0) + 100.0);
+    ASSERT_NE(exact, table_form);
+    EXPECT_NEAR(exact, APU::mix_levels(15, 15, 0, 0, 0), 1e-6);
+
+    const double exact_tnd = 159.79 / ((1.0 / (15.0 / 8227.0)) + 100.0);
+    const double table_tnd = 163.67 / ((1.0 / (15.0 / 8227.0)) + 100.0);
+    ASSERT_NE(exact_tnd, table_tnd);
+    EXPECT_NEAR(exact_tnd, APU::mix_levels(0, 0, 15, 0, 0), 1e-6);
+}
+
+// --- the gates --------------------------------------------------------------
+
+// Drives a pulse channel to a state where it is genuinely sounding: enabled,
+// length loaded, period in range, duty position on a high step, constant
+// volume so the level is predictable.
+void make_pulse1_audible(APU& apu)
+{
+    apu.write(0x4015, 0x01);
+    apu.write(0x4000, 0x9F);  // duty 2 (50%), constant volume 15, halt set
+    apu.write(0x4001, 0x08);  // sweep disabled, negate on so no overflow mute
+    apu.write(0x4002, 0x40);
+    apu.write(0x4003, 0x08);  // period 0x40, length load, phase reset to 0
+
+    // One clock first: a length load is DEFERRED to the next cycle, so a helper
+    // that only clocked inside a conditional loop could return with the counter
+    // still at zero and every level it set up reading as silence.
+    advance_apu(apu, 2);
+    ASSERT_NE(0, apu.length_counter(APU::pulse1)) << "the deferred length load has not landed";
+
+    // Duty 2 is 0 0 0 0 1 1 1 1 read downward from 0: step 0 is 0, so advance
+    // to a step whose output is 1. At period 0x40 a step is 65 APU cycles, so
+    // the guard has to allow a whole sequence - 8 * 65 - not a round 200.
+    int guard = 0;
+    while (apu.pulse_output(APU::pulse1) == 0 && guard++ < 1000) {
+        advance_apu(apu, 2);
+    }
+    ASSERT_LT(guard, 1000);
+}
+
+GTEST_TEST(testAPUMixer, an_audible_pulse_presents_its_envelope_volume)
+{
+    Bus console;
+    APU& apu = console.apu;
+    make_pulse1_audible(apu);
+    EXPECT_EQ(15, apu.pulse_level(APU::pulse1)) << "constant volume 15, and nothing is gating it";
+}
+
+GTEST_TEST(testAPUMixer, a_pulse_is_silent_while_its_sequencer_output_is_zero)
+{
+    Bus console;
+    APU& apu = console.apu;
+    make_pulse1_audible(apu);
+    ASSERT_EQ(15, apu.pulse_level(APU::pulse1));
+
+    // Walk to a low step of the duty cycle. The channel is otherwise unchanged.
+    int guard = 0;
+    while (apu.pulse_output(APU::pulse1) != 0 && guard++ < 1000) {
+        advance_apu(apu, 2);
+    }
+    ASSERT_LT(guard, 1000);
+    EXPECT_EQ(0, apu.pulse_level(APU::pulse1)) << "the duty bit is 0, so the mixer gets 0";
+}
+
+GTEST_TEST(testAPUMixer, a_pulse_with_a_zero_length_counter_is_silent)
+{
+    Bus console;
+    APU& apu = console.apu;
+    make_pulse1_audible(apu);
+    ASSERT_EQ(15, apu.pulse_level(APU::pulse1));
+
+    // $4015 bit 0 clear zeroes the length counter and blocks reload.
+    apu.write(0x4015, 0x00);
+    ASSERT_EQ(0, apu.length_counter(APU::pulse1));
+    EXPECT_EQ(0, apu.pulse_level(APU::pulse1)) << "length zero silences regardless of the duty bit";
+}
+
+GTEST_TEST(testAPUMixer, a_swept_out_pulse_is_silent_even_though_its_sequencer_runs)
+{
+    Bus console;
+    APU& apu = console.apu;
+    make_pulse1_audible(apu);
+    ASSERT_EQ(15, apu.pulse_level(APU::pulse1));
+
+    // A period below 8 mutes via the sweep unit, with the sweep disabled -
+    // "Muting happens regardless of whether the sweep unit is disabled".
+    apu.write(0x4002, 0x04);
+    apu.write(0x4003, 0x08);  // period 4
+    ASSERT_TRUE(apu.sweep_is_muting(APU::pulse1));
+
+    int guard = 0;
+    while (apu.pulse_output(APU::pulse1) == 0 && guard++ < 1000) {
+        advance_apu(apu, 2);
+    }
+    ASSERT_LT(guard, 1000) << "the sequencer must still be running while muted";
+    EXPECT_EQ(0, apu.pulse_level(APU::pulse1)) << "muted: the mixer gets 0 even on a high duty step";
+}
+
+GTEST_TEST(testAPUMixer, noise_is_silent_when_its_length_counter_is_zero)
+{
+    Bus console;
+    APU& apu = console.apu;
+
+    apu.write(0x4015, 0x08);  // enable noise
+    apu.write(0x400C, 0x3F);  // constant volume 15, halt set
+    apu.write(0x400E, 0x00);
+    apu.write(0x400F, 0x08);  // length load
+
+    // Same trap as the pulse helper, and this one actually fired: the LFSR's
+    // bit 0 happened to be clear already, so the loop below never executed, so
+    // the DEFERRED length load never landed, and the channel read as silent for
+    // a reason that had nothing to do with what the test was checking.
+    advance_apu(apu, 4);
+    ASSERT_NE(0, apu.length_counter(APU::noise)) << "the deferred length load has not landed";
+
+    int guard = 0;
+    while (apu.noise_output_is_silent() && guard++ < 200) {
+        advance_apu(apu, 4);
+    }
+    ASSERT_LT(guard, 200);
+    ASSERT_EQ(15, apu.noise_level()) << "constant volume 15, shift bit 0 clear, length loaded";
+
+    apu.write(0x4015, 0x00);
+    ASSERT_EQ(0, apu.length_counter(APU::noise));
+    EXPECT_EQ(0, apu.noise_level()) << "the length counter is the OTHER half of the noise gate";
+}
+
+// The triangle is NOT gated to zero. Its silencing stops the sequencer, which
+// then holds its step, so the level the mixer sees is that held value - which
+// is why the hardware pops rather than muting.
+GTEST_TEST(testAPUMixer, a_silenced_triangle_presents_its_held_step_not_zero)
+{
+    Bus console;
+    APU& apu = console.apu;
+
+    apu.write(0x4015, 0x04);
+    apu.write(0x4008, 0x02);  // control clear, reload 2 - it will run out
+    apu.write(0x400A, 0x00);
+    apu.write(0x400B, 0x08);
+
+    advance_apu(apu, to_first_quarter_frame);
+    advance_apu(apu, one_quarter_frame);
+    advance_apu(apu, one_quarter_frame);
+    ASSERT_EQ(0, apu.linear_counter_value());
+
+    const uint8_t held = apu.triangle_level();
+    advance_apu(apu, 50);
+    EXPECT_EQ(held, apu.triangle_level()) << "the held step, not zero";
+    // And the run is only meaningful if it actually stopped somewhere audible.
+    EXPECT_NE(0, held) << "this run froze on a zero step, so it cannot tell holding from gating";
 }
 
 }  // namespace apu

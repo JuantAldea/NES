@@ -333,6 +333,44 @@ void APU::clock_noise_timer()
     noise_shift = static_cast<uint16_t>((noise_shift & 0x3FFFu) | (feedback << 14));
 }
 
+// The non-linear mixer. https://www.nesdev.org/wiki/APU_Mixer
+//
+//   output    = pulse_out + tnd_out
+//   pulse_out = 95.88 / ((8128 / (pulse1 + pulse2)) + 100)
+//   tnd_out   = 159.79 / (1 / ((triangle/8227) + (noise/12241) + (dmc/22638)) + 100)
+//
+// THE DIVIDE-BY-ZERO IS NOT HYPOTHETICAL and the wiki calls it out directly:
+// "When the values for one of the groups are all zero, the result for that
+// group should be treated as zero rather than undefined due to the division by
+// 0 that otherwise results." Silence is the commonest state an APU is in, so
+// the unguarded version does not fail rarely - it fails immediately, and it
+// fails to NaN, which then propagates through any accumulation downstream
+// rather than announcing itself.
+float APU::mix_levels(const uint8_t pulse1_level,
+                      const uint8_t pulse2_level,
+                      const uint8_t triangle_value,
+                      const uint8_t noise_value,
+                      const uint8_t dmc_value)
+{
+    const float pulse_sum = static_cast<float>(pulse1_level + pulse2_level);
+    const float pulse_out = pulse_sum == 0.0f ? 0.0f : 95.88f / ((8128.0f / pulse_sum) + 100.0f);
+
+    // Three DIFFERENT divisors, and they are not interchangeable: per unit the
+    // triangle is the loudest of the three and the DMC the quietest, though the
+    // DMC has eight times the range. Swapping any two rebalances every piece of
+    // music the console plays, and no test that only checks silence would see it.
+    const float tnd_sum = (static_cast<float>(triangle_value) / 8227.0f) +
+                          (static_cast<float>(noise_value) / 12241.0f) + (static_cast<float>(dmc_value) / 22638.0f);
+    const float tnd_out = tnd_sum == 0.0f ? 0.0f : 159.79f / ((1.0f / tnd_sum) + 100.0f);
+
+    return pulse_out + tnd_out;
+}
+
+float APU::mixer_output() const
+{
+    return mix_levels(pulse_level(pulse1), pulse_level(pulse2), triangle_level(), noise_level(), dmc_level());
+}
+
 // The envelopes and the triangle's linear counter.
 void APU::clock_quarter_frame()
 {

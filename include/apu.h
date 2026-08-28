@@ -179,6 +179,76 @@ public:
     // about the SHIFT REGISTER's contribution and nothing more.
     bool noise_output_is_silent() const { return (noise_shift & 1u) != 0; }
 
+    // --- the mixer ----------------------------------------------------------
+    //
+    // What each channel actually presents to the mixer, after its gates. These
+    // are the levels the formula below consumes, and they are separate from the
+    // raw sequencer accessors above on purpose: pulse_output() answers "what is
+    // the duty bit", these answer "what does the DAC see".
+    //
+    // PULSE. nesdev: "The mixer receives the pulse channel's current envelope
+    // volume except when: The sequencer output is zero, or overflow from the
+    // sweep unit's adder is silencing the channel, or the length counter is
+    // zero, or the timer has a value less than eight. If any of the above are
+    // true, then the pulse channel sends zero (silence) to the mixer." The last
+    // two of those four are both sweep_muting(), which already tests period < 8
+    // and target > $7FF.
+    uint8_t pulse_level(const int pulse) const
+    {
+        assert(pulse == pulse1 || pulse == pulse2);
+        if (pulse_output(pulse) == 0 || lengths[pulse].value == 0 || sweep_muting(pulse)) {
+            return 0;
+        }
+        return envelopes[envelope_index(pulse)].volume();
+    }
+
+    // TRIANGLE, and it is NOT gated here - deliberately. Its silencing works by
+    // stopping the sequencer, which then holds its last step, so the value the
+    // mixer receives when the channel is "silent" is that held step and not
+    // zero. Gating it to zero here would be the same mistake as clocking it at
+    // the APU rate: it would sound approximately right and be wrong in the way
+    // the hardware is audibly not.
+    uint8_t triangle_level() const { return triangle_output(); }
+
+    // NOISE. "The mixer receives the current envelope volume except when: Bit 0
+    // of the shift register is set, or The length counter is zero." Both, which
+    // is what noise_output_is_silent() deliberately does not cover on its own.
+    uint8_t noise_level() const
+    {
+        if (noise_output_is_silent() || lengths[noise].value == 0) {
+            return 0;
+        }
+        return envelopes[envelope_index(noise)].volume();
+    }
+
+    // DMC. Seven bits, 0-127, and it is the channel's output level directly -
+    // there is no gate. Note the RANGE: the other three are 0-15, and treating
+    // this one as 4-bit collapses the tnd group.
+    uint8_t dmc_level() const { return dmc.output_level; }
+
+    // The combined analogue output, normalised to 0.0-1.0.
+    //
+    // THE EXACT FORM, not the lookup tables. nesdev gives both, and the tables
+    // are explicitly an approximation - "The tnd_out table is approximated
+    // (within 4%)" - because they collapse three independent variables into the
+    // single index 3*triangle + 2*noise + dmc. That is a real loss: the exact
+    // tnd_out is a function of three reciprocals and does not factor through any
+    // one index. This project spends cycles for exactness elsewhere; a 4% error
+    // in the one place the whole APU becomes audible is not the place to stop.
+    //
+    // The tables also carry deliberately different numerators (95.52 and 163.67
+    // against 95.88 and 159.79) to renormalise after that approximation, which
+    // is worth knowing before anyone "corrects" one to match the other.
+    float mixer_output() const;
+
+    // The formula alone, on levels handed in rather than read from live state.
+    //
+    // Split out so it can be tested at inputs the channels cannot easily be
+    // driven to - every DMC level from 0 to 127, a group at exactly zero, one
+    // channel at a time. Reaching those through the register file would mean a
+    // test of the mixer that is mostly a test of the sequencers.
+    static float mix_levels(uint8_t pulse1_level, uint8_t pulse2_level, uint8_t triangle, uint8_t noise, uint8_t dmc);
+
     // The memory reader, driven by the Bus: only the Bus can halt the CPU.
     //
     // A transfer is REQUESTED rather than inferred from the buffer being empty.
