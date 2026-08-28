@@ -75,6 +75,42 @@ The frontend is off by default there too: ImGui reports 16 findings of its own
 and `--exclude` can keep them out of the count but not out of the log. Our own
 frontend sources analyse clean — `-DNES_BUILD_FRONTEND=ON` is supported.
 
+### The evidence is where the bugs are
+
+Six adversarial reviews of the APU found essentially one class of defect. Not
+wrong algorithms - those came out right nearly every time - but wrong *evidence
+about* the algorithms, in three recurring shapes:
+
+* **A floored instrument read as a result.** A sweep of the BLEP kernel's width
+  returned five identical numbers, recorded as "the kernel was never the
+  constraint". The harness could not see below about -40 dB; the real answer was
+  8.7 dB. The same shape as reading `Bus::clock()` as a CPU cycle when it is a
+  master cycle, or as its return value when that is an instruction boundary.
+* **A calculation labelled "measured".** A -3 dB corner written up as
+  "measured 16287 Hz" was the analytic chain times a theoretical factor; the
+  code actually produced 15730. An alias table quoted at -56 dB was another
+  review's estimate of an ideal implementation, copied across.
+* **A test whose signal choice makes it structurally blind.** An alias test used
+  a 50% duty square - the one duty with no even harmonics, so the one waveform
+  that cannot see transition-band leakage. A window test ran at equal input and
+  output rates, where sum, mean and last-sample are the same number. A response
+  assertion sat at normalised 0.70, which mirrors 0.30 for any real signal.
+
+So, before trusting a number:
+
+**Validate the instrument against a known-bad reference.** Feed it something
+that *should* score badly and check it says so. The alias harness read -17.3 dB
+for point-sampled audio, which immediately explained the flat sweep - and that
+check cost one minute after several hours of wrong conclusions.
+
+**Do not write "measured" unless it was run.** Calculations are labelled as
+calculations. This one recurred inside the very commit that confessed to it.
+
+**Ask what input would make each test blind.** This is the highest-value
+question and the easiest to skip. "What signal would this pass regardless of the
+answer?" would have caught the duty cycle, the equal rates and the mirrored
+frequency before any of them hid a defect.
+
 ### Mutation testing, for code no oracle can reach
 
 ```sh
