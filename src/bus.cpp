@@ -76,6 +76,10 @@ bool Bus::load_cartridge(const std::string& path)
     prg_ram_dirty = false;
     cartridge_path.clear();
 
+    // Not cleared here: clearing the ring from this thread would race a
+    // running audio callback. See Bus::audio_reset_pending.
+    audio_reset_pending = true;
+
     if (!rom.load(path)) {
         return false;
     }

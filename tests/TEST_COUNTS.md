@@ -22,7 +22,7 @@ check for regressions with `tests/test_counts.sh --check`.
 | `blarggHarness` | 1 | yes |
 | `BranchTiming/BranchTimingRoms` | 3 | yes |
 | `busWriteCycle` | 4 | yes |
-| `commercialRom` | 5 | no |
+| `commercialRom` | 6 | no |
 | `controllerRom` | 1 | yes |
 | `controllers` | 9 | yes |
 | `CpuAddressing` | 2 | yes |
@@ -96,8 +96,8 @@ check for regressions with `tests/test_counts.sh --check`.
 
 | | Cases |
 |---|---:|
-| Registered | 1073 |
-| Skipped in CI | 517 |
+| Registered | 1074 |
+| Skipped in CI | 518 |
 | **Executed in CI** | **556** |
 
 Skipped in CI: the 512 per-opcode SingleStepTests need 1.1 GB of vectors CI

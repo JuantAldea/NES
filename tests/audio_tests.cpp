@@ -23,6 +23,7 @@
 #include "../include/audio.h"
 #include "../include/bus.h"
 #include "gtest/gtest.h"
+#include "rom_fixture.h"
 
 namespace tests
 {
@@ -730,28 +731,49 @@ GTEST_TEST(testAudio, a_note_written_to_the_registers_reaches_the_sample_stream)
     Bus console;
     console.audio_enabled = true;
 
-    // ~440 Hz on pulse 1: period = 1789773 / (16 * 440) - 1 = 253.
-    console.apu.write(0x4015, 0x01);
-    console.apu.write(0x4000, 0xBF);  // duty 2, constant volume 15, halt set
-    console.apu.write(0x4001, 0x08);  // sweep off, negate so the target cannot overflow
-    console.apu.write(0x4002, 253 & 0xFF);
-    console.apu.write(0x4003, static_cast<uint8_t>((253 >> 8) | 0x08));
+    // Through Bus::write, not APU::write. The comment above claims this starts
+    // at a CPU write and an earlier version bypassed the bus decode entirely,
+    // which is the one part of "end to end" it was named for.
+    console.write(0x4015, 0x01);
+    console.write(0x4000, 0xBF);  // duty 2, constant volume 15, halt set
+    console.write(0x4001, 0x08);  // sweep off, negate so the target cannot overflow
+    console.write(0x4002, 253 & 0xFF);
+    console.write(0x4003, static_cast<uint8_t>((253 >> 8) | 0x08));
 
     std::vector<float> all;
-    std::vector<float> chunk(4096);
+    std::vector<float> chunk(64);
     // Bus::clock() is a MASTER cycle, one CPU cycle in twelve - a loop labelled
     // in CPU cycles here would run a twelfth of its intended length, which has
-    // already produced one confident wrong answer in this project.
-    for (int i = 0; i < 12 * 400000; ++i) {
+    // already produced three confident wrong answers in this project.
+    constexpr int cpu_cycles = 400000;
+    for (int i = 0; i < 12 * cpu_cycles; ++i) {
         console.clock();
+        // Drained in small blocks so the count is not quantised to a large
+        // chunk size: an earlier version drained 4096 at a time, which made the
+        // sample count a multiple of 4096 and blunted the rate assertion below.
         if (console.audio.available() >= chunk.size()) {
             const size_t got = console.audio.read(chunk.data(), chunk.size());
             all.insert(all.end(), chunk.begin(), chunk.begin() + static_cast<std::ptrdiff_t>(got));
         }
     }
 
-    ASSERT_GT(all.size(), 8000u) << "the stream must be produced at roughly 44.1kHz";
-    ASSERT_EQ(15, console.apu.pulse_level(APU::pulse1)) << "the channel must actually be sounding";
+    // THE RATE, BOUNDED ON BOTH SIDES. An earlier version asserted only
+    // "more than 8000 samples", which an 88.2 kHz sampler passes as happily as
+    // a 37 kHz one. 400000 CPU cycles is 0.2235 s, so 9856 samples at 44.1 kHz;
+    // the shortfall is the synthesiser's fixed settling window, not a rate
+    // error, which is why the lower bound is a little slack and the upper one
+    // is not.
+    const double seconds = cpu_cycles / static_cast<double>(AudioSampler::ntsc_cpu_hz);
+    const double rate = all.size() / seconds;
+    EXPECT_GT(rate, 43600.0) << "produced " << all.size() << " samples in " << seconds << " s";
+    EXPECT_LT(rate, 44200.0) << "produced " << all.size() << " samples in " << seconds << " s";
+
+    // The channel is sounding for a reason that does not depend on which duty
+    // step the loop happened to stop on. pulse_level() is 0 on every low half
+    // of the waveform, so asserting it equals 15 here is a coin toss dressed as
+    // a precondition.
+    ASSERT_NE(0, console.apu.length_counter(APU::pulse1)) << "the length counter must be loaded";
+    ASSERT_FALSE(console.apu.sweep_is_muting(APU::pulse1)) << "and the sweep must not be muting it";
 
     size_t non_zero = 0;
     double energy = 0.0;
@@ -763,9 +785,15 @@ GTEST_TEST(testAudio, a_note_written_to_the_registers_reaches_the_sample_stream)
     }
     const double rms = std::sqrt(energy / static_cast<double>(all.size()));
 
-    EXPECT_GT(non_zero, all.size() / 2) << "a sounding channel must not produce silence";
-    EXPECT_GT(rms, 0.01) << "and must carry real energy, not just dither";
-    EXPECT_LT(rms, 0.5) << "without clipping";
+    EXPECT_GT(non_zero, all.size() * 9 / 10) << "a sounding channel must not produce silence";
+
+    // RMS PINNED TIGHTLY, because loose bounds here proved nothing. Measured
+    // 0.0551 for the documented chain. With the three hardware filters deleted
+    // it is 0.1049; with the synthesiser replaced by zero-order-hold decimation
+    // it is 0.3285. A range of 0.01 to 0.5 - which is what this used to assert -
+    // accepts all three, so the test could not tell the chain from no chain at
+    // all, in the one place standing behind a resampler with no oracle.
+    EXPECT_NEAR(0.0551, rms, 0.012) << "the whole chain's output level; filters removed reads 0.105, ZOH 0.329";
 }
 
 // The counterpart: with audio_enabled false - the default, which every other
@@ -783,6 +811,54 @@ GTEST_TEST(testAudio, the_sampler_is_off_unless_a_frontend_asks_for_it)
         console.clock();
     }
     EXPECT_EQ(0u, console.audio.available());
+}
+
+// SUPER MARIO BROS. IS SILENT ON ITS TITLE SCREEN AND IN ITS DEMO, BY DESIGN.
+//
+// This looked like an audio bug for some hours and is not one. SMB's SoundEngine
+// at $F2D0 is, verbatim from the published disassembly:
+//
+//     SoundEngine:  lda OperMode            ; $0770 - title screen mode?
+//                   bne SndOn
+//                   sta SND_MASTERCTRL_REG  ; if so, disable sound and leave
+//                   rts
+//
+// https://github.com/nwoeanhinnogaehr/smb-assembler/blob/master/smbdis.asm
+//
+// The attract demo runs from INSIDE the title screen - RunDemo at $82C0 calls
+// the game engine and then writes 0 back to OperMode - so OperMode stays 0 for
+// the whole demo and the engine's entire body is "$4015 = $00; rts". A second
+// guard says the same thing independently: GetAreaMusic opens with "lda
+// OperMode / beq ExitGetM", so the area music is never even queued.
+//
+// Pinned because the evidence for it is a ROM disassembly rather than anything
+// in this repository, and without a test the next person to notice the silence
+// will re-derive it from scratch.
+GTEST_TEST(commercialRom, smb_is_silent_until_it_leaves_the_title_screen)
+{
+    SKIP_IF_ROM_ABSENT(std::string(NES_TEST_FILES_DIR) + "/local/smb.nes",
+                       "supply a dump of a cartridge you own - see tests/test_files/local/README.md");
+
+    Bus console;
+    ASSERT_TRUE(console.load_cartridge(std::string(NES_TEST_FILES_DIR) + "/local/smb.nes"));
+    console.cpu.power_on();
+    console.audio_enabled = true;
+
+    // Well past the point the demo has started - Mario is walking by frame 1000.
+    const uint64_t start = console.ppu.frame;
+    while (console.ppu.frame - start < 1200) {
+        console.clock();
+    }
+
+    EXPECT_EQ(0x00, console.read(0x0770)) << "OperMode: the demo runs in title-screen mode";
+    EXPECT_EQ(0, console.apu.length_counter(APU::pulse1)) << "so the sound engine returns before loading anything";
+
+    std::vector<float> out(console.audio.available());
+    ASSERT_GT(out.size(), 1000u);
+    console.audio.read(out.data(), out.size());
+    for (const float v : out) {
+        ASSERT_EQ(0.0f, v) << "and the stream is silent - the game asked for silence";
+    }
 }
 
 }  // namespace audio

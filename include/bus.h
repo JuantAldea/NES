@@ -78,6 +78,17 @@ public:
     AudioSampler audio;
     bool audio_enabled = false;
 
+    // Set whenever a cartridge is inserted, cleared by whoever owns the audio
+    // device once it has stopped it.
+    //
+    // AudioSampler::clear() moves both ring indices and so cannot be called
+    // while a consumer is reading - but a cartridge swap must discard the
+    // outgoing game's samples, or up to half a second of the previous game
+    // plays over the start of the new one. Bus cannot stop the device and the
+    // frontend cannot see the swap, so this flag is the handshake: Bus raises
+    // it, the frontend lowers it at a point where the device is paused.
+    bool audio_reset_pending = false;
+
     uint64_t total_cycles = 0;
 
     // CPU cycles elapsed, counting the ones OAM DMA steals - which CPU::clock

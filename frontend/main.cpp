@@ -225,6 +225,10 @@ int main(int argc, char** argv)
         SDL_Log("no audio device (%s); continuing without sound", SDL_GetError());
     } else {
         console.audio_enabled = true;
+        // Any cartridge loaded above raised this; the device has not started
+        // yet, so clearing here is trivially safe.
+        console.audio.clear();
+        console.audio_reset_pending = false;
         SDL_PauseAudioDevice(audio_device, 0);
     }
     std::vector<uint32_t> scratch(screen_pixels, 0);
@@ -314,11 +318,28 @@ int main(int argc, char** argv)
             accumulator = 0.0;
         }
 
-        // The device is paused with the emulation, so a paused machine is
-        // silent rather than looping its last buffer. Cheap to call every
-        // frame and it keeps the two from drifting apart.
+        // The device follows the emulation, so a paused machine is silent
+        // rather than looping its last buffer.
+        //
+        // AND THE RING IS DISCARDED WHENEVER IT STOPS, which is the only place
+        // that can safely happen: AudioSampler::clear() moves both indices and
+        // needs the consumer stopped. Without it, ring occupancy is permanent -
+        // production and consumption both run at the output rate, so nothing
+        // ever reduces a backlog, and up to half a second of latency
+        // accumulates for the session. Stepping is what fills it: Step and Step
+        // frame set running = false and then clock the machine, pushing into a
+        // ring nobody is draining, about 735 samples per frame stepped.
+        //
+        // A pending cartridge swap is handled in the same breath and for the
+        // same reason - it is the one moment the device is known stopped.
         if (audio_device != 0) {
-            SDL_PauseAudioDevice(audio_device, state.running ? 0 : 1);
+            const bool want_running = state.running;
+            if (!want_running || console.audio_reset_pending) {
+                SDL_PauseAudioDevice(audio_device, 1);
+                console.audio.clear();
+                console.audio_reset_pending = false;
+            }
+            SDL_PauseAudioDevice(audio_device, want_running ? 0 : 1);
         }
 
         upload_framebuffer(screen, console.ppu, scratch);
