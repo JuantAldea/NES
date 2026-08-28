@@ -319,10 +319,16 @@ GTEST_TEST(testAudio, opposing_steps_cancel_exactly)
 
 // THE POINT OF THE REWRITE: energy above the output Nyquist must not fold back.
 //
-// A square wave at 12429 Hz - the highest note the pulse channel reaches - has
-// harmonics at 37 kHz, 62 kHz and beyond, all above 22.05 kHz. Point-sampling
-// folds them into the audible band; the box average left them 10.6 dB down; the
-// synthesiser should leave almost nothing.
+// A 25% DUTY PULSE, and the duty cycle is the point. This test used a 50%
+// square, which is the one duty with NO EVEN HARMONICS - and so the one
+// waveform structurally incapable of seeing the defect that hid behind it.
+// Measured, same chain, 12429 Hz: halving the kernel width moves a 50% square
+// by 0.03 dB and a 25% pulse by 8.7 dB. The NES pulse channel offers
+// 12.5/25/50/75%, and three of those four have even harmonics.
+//
+// At 12429 Hz - the highest note the channel reaches - the harmonics sit at
+// 24.9 kHz, 37 kHz and beyond, all above the 22.05 kHz Nyquist. Point-sampling
+// folds them into the audible band; the synthesiser should not.
 //
 // Measured as the energy in the output that is NOT at the fundamental, relative
 // to the fundamental.
@@ -336,7 +342,7 @@ GTEST_TEST(testAudio, a_high_square_wave_does_not_fold_energy_into_the_audible_b
     const double period = input_rate / 12429.0;
     for (int i = 0; i < 900000; ++i) {
         const double phase = std::fmod(static_cast<double>(i), period);
-        sampler.push(phase < period / 2.0 ? 0.5f : -0.5f);
+        sampler.push(phase < period * 0.25 ? 0.5f : -0.5f);
     }
 
     std::vector<float> out(sampler.available());
@@ -422,8 +428,15 @@ GTEST_TEST(testAudio, a_transition_arrives_where_it_was_asked_for)
 // which undoes the integrator and leaves the windowed sinc. Normalised
 // frequency, so 0.5 is Nyquist:
 //
-//     0.05  0.996      0.30  0.857      0.45  0.328
-//     0.20  0.936      0.40  0.607      0.49  0.067
+//     0.05  0.996      0.30  0.858      0.45  0.349
+//     0.20  0.936      0.40  0.728      0.49  0.045
+//
+// The 0.40 and 0.49 bounds are set to DISCRIMINATE KERNEL WIDTH, which is the
+// property the alias test above cannot see - its metric reads 32 taps and 16
+// taps 0.4 dB apart where an independent instrument measures 8.7. Halving
+// half_width widens the transition band: 0.40 falls to 0.607 and 0.49 rises to
+// 0.067, both outside these bounds. That is the whole reason this test exists
+// alongside the alias one.
 GTEST_TEST(testAudio, the_kernel_passes_the_audible_band_and_rolls_off_before_nyquist)
 {
     BlipSynth synth{1024};
@@ -454,12 +467,65 @@ GTEST_TEST(testAudio, the_kernel_passes_the_audible_band_and_rolls_off_before_ny
 
     EXPECT_GT(magnitude(0.05) / dc, 0.99) << "flat well inside the band";
     EXPECT_GT(magnitude(0.20) / dc, 0.90) << "still near-flat at 8.8kHz";
-    EXPECT_LT(magnitude(0.45) / dc, 0.40) << "well down by the cutoff";
-    EXPECT_LT(magnitude(0.49) / dc, 0.12) << "and nearly gone at Nyquist; this is what rejects aliases";
+    EXPECT_GT(magnitude(0.40) / dc, 0.68) << "the passband must reach 0.40; a narrower kernel droops here";
+    EXPECT_LT(magnitude(0.49) / dc, 0.055) << "and be nearly gone at Nyquist; this is what rejects aliases";
 
     // Nothing is asserted above 0.5. For a real signal the transform mirrors
     // about Nyquist, so magnitude(0.7) is identically magnitude(0.3) - an
     // earlier version asserted on it and was measuring its own reflection.
+}
+
+// THE STARTUP FIX HAD NO TEST, and reverting it was green across all 23 cases.
+//
+// AudioSampler begins at position = BlipSynth::width because add_delta drops any
+// transition that would index before its buffer - which, from position 0, is
+// every transition in the first 285 CPU cycles, while push() advances its level
+// regardless. The step is then lost from the integrator permanently.
+//
+// Measured: a single step at CPU cycle 10 gives peak 0.9643 with the fix and
+// EXACTLY 0.0 without, from the constructor and after clear() alike. That is
+// about as clean a discriminator as a test gets, and it was missing.
+GTEST_TEST(testAudio, a_transition_in_the_first_cycles_after_startup_is_not_lost)
+{
+    AudioSampler sampler;
+    for (int i = 0; i < 500000; ++i) {
+        sampler.push(i < 10 ? 0.0f : 1.0f);
+    }
+
+    std::vector<float> out(sampler.available());
+    ASSERT_GT(out.size(), 4000u);
+    sampler.read(out.data(), out.size());
+
+    float peak = 0.0f;
+    for (size_t i = 0; i < 4000; ++i) {
+        peak = std::max(peak, std::fabs(out[i]));
+    }
+    EXPECT_GT(peak, 0.9f) << "a step at cycle 10 must survive; starting at position 0 loses it entirely";
+}
+
+// And the same after clear(), which restores the same invariant.
+GTEST_TEST(testAudio, a_transition_just_after_clear_is_not_lost)
+{
+    AudioSampler sampler;
+    for (int i = 0; i < 200000; ++i) {
+        sampler.push(0.5f);
+    }
+    std::vector<float> discard(sampler.available());
+    sampler.read(discard.data(), discard.size());
+    sampler.clear();
+
+    for (int i = 0; i < 500000; ++i) {
+        sampler.push(i < 10 ? 0.0f : 1.0f);
+    }
+    std::vector<float> out(sampler.available());
+    ASSERT_GT(out.size(), 4000u);
+    sampler.read(out.data(), out.size());
+
+    float peak = 0.0f;
+    for (size_t i = 0; i < 4000; ++i) {
+        peak = std::max(peak, std::fabs(out[i]));
+    }
+    EXPECT_GT(peak, 0.9f) << "clear() must restore the startup invariant, not reset position to 0";
 }
 
 // --- the ring buffer --------------------------------------------------------

@@ -17,16 +17,21 @@
 //          3608 Hz        -28.9 dB       -20.6 dB      -39.7 dB
 //         12429 Hz        -10.6 dB        -6.1 dB      -35.2 dB
 //
-// A clear win - 4 dB at the bottom of the range and 25 dB at the top, where the
-// box was close to useless - and nothing like the 20-to-48 dB the first version
-// of this comment claimed.
+// A clear win, and nothing like the 20-to-48 dB the first version of this
+// comment claimed.
 //
-// THE FIRST THREE ROWS ARE INSTRUMENT-LIMITED, not implementation-limited. The
-// harness that produced them reads -17.3 dB for point-sampled audio where the
-// review's reads -26.9, so it has its own leakage floor around -40 dB; the
-// implementation is somewhere better than that and this cannot say where.
-// Sweeping the kernel width and cutoff moved those rows by under 0.1 dB, which
-// is what that floor looks like from the inside.
+// TWO CAVEATS ON THAT TABLE. The box and point-sampled columns were measured
+// through the OLD arrangement, with the filters at the input rate before
+// decimation; the last column is the new one. They are not the same experiment,
+// and the row-wise differences are taken across it.
+//
+// And these rows are INSTRUMENT-limited. An independent harness puts this
+// implementation at -44.6 / -42.4 / -43.8 / -36.3, better everywhere. The
+// evidence for that floor is the suspicious flatness of the first three - a
+// real response does not sit within 1 dB across three octaves - and NOT, as an
+// earlier version of this comment argued, that the harness disagrees with the
+// review's point-sampled figure. It does disagree, but a third instrument sides
+// with the harness, so that comparison was never evidence of anything.
 //
 // HOW IT WORKS, and why it is cheap. The APU's output is piecewise constant: it
 // holds a level and then steps to another. Point-sampling such a signal at
@@ -46,9 +51,27 @@
 class BlipSynth
 {
 public:
-    // Taps either side of a transition. Sixteen total, which is where the
-    // stopband stops improving faster than the latency grows.
-    static constexpr int half_width = 8;
+    // Taps either side of a transition. THIRTY-TWO total, and this is the
+    // parameter that actually binds - the opposite of what the first version of
+    // this file concluded.
+    //
+    // Measured through the deployed chain, 25% duty pulse, in-band inharmonic
+    // energy over harmonic:
+    //
+    //     half_width      880 Hz   1776 Hz   3608 Hz   12429 Hz
+    //              8      -62.7     -59.6     -59.8     -44.7
+    //             16      -67.3     -64.5     -61.0     -53.4
+    //
+    // 8.7 dB at the top of the pulse channel's range, for +8 output samples of
+    // latency (0.18 ms) and no measurable passband change. It also moves the
+    // chain's -3 dB point from 13908 Hz to 13982 Hz - CLOSER to the 14000 the
+    // filter is built from.
+    //
+    // A Blackman window's transition band is about 5.5/width, so at 16 taps it
+    // spans 0.34 normalised and the stopband does not begin until 0.62. The
+    // second harmonic of a 12429 Hz tone lands at 0.564 - inside that
+    // transition, and barely rejected. Doubling the width moves it out.
+    static constexpr int half_width = 16;
     static constexpr int width = half_width * 2;
 
     // Sub-sample positions the kernel is precomputed at. A transition is
@@ -61,12 +84,16 @@ public:
     // on a 25% pulse:
     //
     //     phases      880 Hz    1776 Hz    3608 Hz    12429 Hz
-    //         32      -40.0      -39.2      -38.1       -30.9
-    //         64      -40.4      -39.9      -39.2       -33.9
-    //        256      -40.5      -40.1      -39.7       -35.2
-    //       1024      -40.5      -40.2      -39.7       -35.3
+    //         32      -44.0      -41.7      -41.6       -32.0
+    //         64      -45.4      -43.4      -47.1       -35.2
+    //        256      -46.0      -44.2      -55.3       -36.8
+    //       1024      -46.0      -44.2      -57.1       -36.9
     //
-    // 4.4 dB at the top of the pulse channel's range, and flat after 256. A
+    // About 5 dB at the top of the range, and flat after 256 THERE - a further
+    // 0.1 dB. NOT flat everywhere: 3608 Hz gains another 1.9 dB past 256, which
+    // a floored measurement of this same table reported as 0.0. The 256-phase
+    // grid is already 6.3x finer than the input clock's own 1/40.58 spacing,
+    // which bounds what remains past about 128. A
     // sweep of half_width from 8 to 32 and cutoff from 0.40 to 0.45 moved
     // these numbers by less than 0.1 dB at every frequency, which is how the
     // limit was identified: the kernel was never the constraint.

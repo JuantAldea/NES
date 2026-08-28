@@ -59,9 +59,16 @@ BlipSynth::BlipSynth(const size_t buffer_samples)
     // at 14 kHz - and advances everything by half a sample.
     //
     // The gain error is the part that matters. With that boost feeding the
-    // 14 kHz low-pass, the chain's actual -3dB point measured 16287 Hz against
-    // the 14000 Hz nesdev value the filter is built from: a hardware-measured
-    // corner 16% out.
+    // 14 kHz low-pass, the chain's -3dB point sat at 15730 Hz against the
+    // 14000 Hz nesdev value the filter is built from - a hardware-measured
+    // corner 12% out.
+    //
+    // An earlier version of this said 16287 Hz and called it MEASURED. It was
+    // not: it was the analytic chain times the theoretical 1/sinc factor, which
+    // ignores the old kernel's own rolloff above 16 kHz. 15730 is what the code
+    // actually produced. Writing "measured" over a calculation is the exact
+    // failure the commit containing this comment opened by confessing to,
+    // repeated about its own headline number.
     //
     // blip_buf does not do this. Its table construction integrates the impulse
     // and takes a first difference across one output sample - "integrate, first
