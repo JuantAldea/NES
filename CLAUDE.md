@@ -75,6 +75,48 @@ The frontend is off by default there too: ImGui reports 16 findings of its own
 and `--exclude` can keep them out of the count but not out of the log. Our own
 frontend sources analyse clean — `-DNES_BUILD_FRONTEND=ON` is supported.
 
+### Mutation testing, for code no oracle can reach
+
+```sh
+tests/run_mutants.sh -f 'testAPUMixer.*' --since HEAD~1 src/apu.cpp include/apu.h
+# 19 killed, 1 SURVIVED, 0 did not compile
+```
+
+It changes the code mechanically - one operator, literal, condition clause or
+call argument at a time - rebuilds, and reports what the tests do not notice.
+`--since <rev>` restricts it to lines you just wrote, which is the mode to use
+after finishing a piece of work. `--list` shows the candidates without building.
+
+**Use it where there is no oracle.** The APU's envelope, sweep, waveform
+generators and mixer are invisible to the CPU, so no test ROM can reach them;
+mutation is the only mechanical check available. Where an oracle *does* exist,
+it is worth more.
+
+**Why it is not just "another sweep I could run by hand".** Three adversarial
+reviews of the APU found ~29 single-token changes the whole suite accepted,
+including a real bug - an inverted CPU/APU clock phase. A hand-written sweep had
+run before each review and killed nearly everything in it. The difference was
+never diligence: *a mutation set chosen by the person who wrote the tests is
+aimed where the tests already point.* Writing the set before the tests was tried
+and did not help, because it was still the same aim. Generating them mechanically
+is what removes the aim.
+
+**A survivor is a question, not a verdict.** It is a hole, an equivalent mutant,
+or unreachable, and only the first is a defect. Two real equivalents here: the
+mixer's divide-by-zero guards, because IEEE 754 already yields 0 there; and
+swapping `mix_levels`' first two arguments, because the formula sums them.
+Record the answer next to the code so nobody re-derives it.
+
+**It counts kills against a baseline, not against zero.** Two tests fail in this
+repository by design (the parked DMC rows). A harness scoring any failure as a
+kill would report a perfect run while testing nothing - so it records the
+baseline's failing test *names* and only counts newly-failing ones.
+
+It does **not** replace the review. Mutation tests code against itself, so it
+cannot catch a comment that cites a source accurately over code doing something
+else, or a value asserted as a hardware fact that no source states. Both have
+been real findings here.
+
 ### Never build the tests as Release or RelWithDebInfo
 
 Both define `NDEBUG`, which silently removes every `assert`. Asserts are one of
