@@ -1,5 +1,6 @@
 #pragma once
 #include "apu.h"
+#include "audio.h"
 #include "controller.h"
 #include "cpu.h"
 #include "device.h"
@@ -66,6 +67,16 @@ public:
     // CPU reaches PRG-RAM through.
     std::string cartridge_path;
     bool prg_ram_dirty = false;
+
+    // The audio output path. OFF BY DEFAULT, and that is a cost decision:
+    // sampling means calling APU::mixer_output() on every CPU cycle, which is
+    // several divisions at 1.79 MHz, and the ~1000 headless tests have no use
+    // for a sample stream. The frontend turns it on.
+    //
+    // Note that "off" does not mean the APU stops - it means nothing collects
+    // its output. Every APU test still exercises the same code it always did.
+    AudioSampler audio;
+    bool audio_enabled = false;
 
     uint64_t total_cycles = 0;
 

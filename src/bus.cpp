@@ -347,6 +347,13 @@ bool Bus::clock()
     if (cpu_tick) {
         ++cpu_cycles;
         apu.clock();
+
+        // AFTER apu.clock(), not before: the sample belongs to the state the
+        // cycle produced, and a transition recorded a cycle early would put
+        // every edge in the stream one cycle ahead of the machine that made it.
+        if (audio_enabled) {
+            audio.push(apu.mixer_output());
+        }
         // Sunsoft's FME-7 counts M2 cycles rather than PPU A12 edges, so it is
         // the first cartridge here that needs the CPU clock at all. Gated on a
         // flag rather than always dispatching: this is the hottest line in the

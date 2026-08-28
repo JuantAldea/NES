@@ -139,7 +139,7 @@ void place(const float x, const float y, const float w, const float h)
 
 int main(int argc, char** argv)
 {
-    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER) != 0) {
+    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER | SDL_INIT_AUDIO) != 0) {
         SDL_Log("SDL_Init failed: %s", SDL_GetError());
         return 1;
     }
@@ -186,6 +186,47 @@ int main(int argc, char** argv)
 
     Bus console;
     nes_gui::FrontendState state;
+
+    // --- audio ---------------------------------------------------------------
+    //
+    // The callback runs on SDL's own thread and does exactly one thing: drain
+    // the ring. Everything else - synthesis, filtering, decimation - happened on
+    // the emulation thread inside Bus::clock. That split is the whole reason
+    // SampleRing is a lock-free SPSC queue; see include/audio.h.
+    //
+    // A SHORT READ IS PADDED WITH SILENCE HERE, not inside the ring. The ring
+    // deliberately leaves the tail it could not fill alone, because only the
+    // caller knows what its device wants there - and for SDL that is zero, or
+    // the card replays whatever was in the buffer last time, which is a loud
+    // repeating fragment rather than a gap.
+    SDL_AudioSpec want{};
+    want.freq = 44100;
+    want.format = AUDIO_F32SYS;
+    want.channels = 1;
+    // 1024 frames is about 23 ms. Small enough that input latency is not
+    // noticeable, large enough that a scheduling hiccup does not starve it.
+    want.samples = 1024;
+    want.userdata = &console;
+    want.callback = [](void* userdata, Uint8* stream, int len) {
+        Bus* const bus = static_cast<Bus*>(userdata);
+        float* const out = reinterpret_cast<float*>(stream);
+        const size_t wanted = static_cast<size_t>(len) / sizeof(float);
+        const size_t got = bus->audio.read(out, wanted);
+        for (size_t i = got; i < wanted; ++i) {
+            out[i] = 0.0f;
+        }
+    };
+
+    SDL_AudioSpec have{};
+    const SDL_AudioDeviceID audio_device = SDL_OpenAudioDevice(nullptr, 0, &want, &have, 0);
+    if (audio_device == 0) {
+        // Not fatal. A machine with no sound card still emulates correctly, and
+        // refusing to start over it would be the wrong trade.
+        SDL_Log("no audio device (%s); continuing without sound", SDL_GetError());
+    } else {
+        console.audio_enabled = true;
+        SDL_PauseAudioDevice(audio_device, 0);
+    }
     std::vector<uint32_t> scratch(screen_pixels, 0);
 
     if (argc > 1) {
@@ -273,6 +314,13 @@ int main(int argc, char** argv)
             accumulator = 0.0;
         }
 
+        // The device is paused with the emulation, so a paused machine is
+        // silent rather than looping its last buffer. Cheap to call every
+        // frame and it keeps the two from drifting apart.
+        if (audio_device != 0) {
+            SDL_PauseAudioDevice(audio_device, state.running ? 0 : 1);
+        }
+
         upload_framebuffer(screen, console.ppu, scratch);
 
         place(8, 8, 530, 545);
@@ -303,6 +351,14 @@ int main(int argc, char** argv)
         SDL_RenderClear(renderer);
         ImGui_ImplSDLRenderer2_RenderDrawData(ImGui::GetDrawData(), renderer);
         SDL_RenderPresent(renderer);
+    }
+
+    // BEFORE the Bus goes out of scope, and before anything else is torn down.
+    // The callback holds a pointer to it and runs on SDL's thread; closing the
+    // device is what guarantees that thread is not inside the ring when the
+    // ring is destroyed.
+    if (audio_device != 0) {
+        SDL_CloseAudioDevice(audio_device);
     }
 
     // Before tearing anything down, and before the Bus goes out of scope: this

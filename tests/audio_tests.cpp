@@ -719,5 +719,71 @@ GTEST_TEST(testAudio, the_ring_conserves_every_sample_across_two_threads)
     EXPECT_EQ(total, consumed) << "every sample written must be read exactly once; produced " << produced.load();
 }
 
+// --- the whole path, from a register write to a sample ----------------------
+//
+// Everything above tests a piece. This is the only test that goes from a CPU
+// write to a playable sample, through the APU, the gates, the mixer, the
+// synthesiser, the filters and the ring - which is the path the SDL layer
+// depends on and the one nothing else covers end to end.
+GTEST_TEST(testAudio, a_note_written_to_the_registers_reaches_the_sample_stream)
+{
+    Bus console;
+    console.audio_enabled = true;
+
+    // ~440 Hz on pulse 1: period = 1789773 / (16 * 440) - 1 = 253.
+    console.apu.write(0x4015, 0x01);
+    console.apu.write(0x4000, 0xBF);  // duty 2, constant volume 15, halt set
+    console.apu.write(0x4001, 0x08);  // sweep off, negate so the target cannot overflow
+    console.apu.write(0x4002, 253 & 0xFF);
+    console.apu.write(0x4003, static_cast<uint8_t>((253 >> 8) | 0x08));
+
+    std::vector<float> all;
+    std::vector<float> chunk(4096);
+    // Bus::clock() is a MASTER cycle, one CPU cycle in twelve - a loop labelled
+    // in CPU cycles here would run a twelfth of its intended length, which has
+    // already produced one confident wrong answer in this project.
+    for (int i = 0; i < 12 * 400000; ++i) {
+        console.clock();
+        if (console.audio.available() >= chunk.size()) {
+            const size_t got = console.audio.read(chunk.data(), chunk.size());
+            all.insert(all.end(), chunk.begin(), chunk.begin() + static_cast<std::ptrdiff_t>(got));
+        }
+    }
+
+    ASSERT_GT(all.size(), 8000u) << "the stream must be produced at roughly 44.1kHz";
+    ASSERT_EQ(15, console.apu.pulse_level(APU::pulse1)) << "the channel must actually be sounding";
+
+    size_t non_zero = 0;
+    double energy = 0.0;
+    for (const float v : all) {
+        if (v != 0.0f) {
+            ++non_zero;
+        }
+        energy += static_cast<double>(v) * v;
+    }
+    const double rms = std::sqrt(energy / static_cast<double>(all.size()));
+
+    EXPECT_GT(non_zero, all.size() / 2) << "a sounding channel must not produce silence";
+    EXPECT_GT(rms, 0.01) << "and must carry real energy, not just dither";
+    EXPECT_LT(rms, 0.5) << "without clipping";
+}
+
+// The counterpart: with audio_enabled false - the default, which every other
+// test in this repository runs under - nothing is collected at all.
+GTEST_TEST(testAudio, the_sampler_is_off_unless_a_frontend_asks_for_it)
+{
+    Bus console;
+    ASSERT_FALSE(console.audio_enabled) << "headless tests must not pay for a sample stream";
+
+    console.apu.write(0x4015, 0x01);
+    console.apu.write(0x4000, 0xBF);
+    console.apu.write(0x4002, 0xFD);
+    console.apu.write(0x4003, 0x08);
+    for (int i = 0; i < 12 * 200000; ++i) {
+        console.clock();
+    }
+    EXPECT_EQ(0u, console.audio.available());
+}
+
 }  // namespace audio
 }  // namespace tests
