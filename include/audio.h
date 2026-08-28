@@ -59,9 +59,11 @@ public:
     // Discards the filter's memory without changing its coefficients.
     void reset();
 
-    // The input coefficient. Low-pass and high-pass at the same corner still
-    // sum to exactly 1 - the bilinear pair is complementary just as the RC pair
-    // was, since their numerators add to the shared denominator.
+    // The input coefficient. Low-pass and high-pass at the same corner sum to 1
+    // algebraically - their numerators add to the shared denominator - but NOT
+    // exactly in float: measured at 44.1 kHz the residual is -6.8e-08 at 90 Hz
+    // and +7.1e-08 at 440 Hz, and only 14 kHz lands on exactly 1. "Exactly" was
+    // the wrong word.
     float coefficient() const { return b0; }
 
     // The other two, so a test can evaluate the exact magnitude response rather
@@ -144,25 +146,6 @@ private:
 
 // The whole path from APU levels to playable samples.
 //
-// THE FILTERS RUN AT THE INPUT RATE, before decimation, because anything
-// attenuating content above the output Nyquist has to act before that content
-// folds down.
-//
-// THE BOX AVERAGE IS THE STRONGER OF THE TWO ANTI-ALIAS FILTERS over most of
-// the range, which is the opposite of what the arrangement suggests. Measured
-// attenuation before folding:
-//
-//     f_in      low-pass 14k   box(40.58)     folds to
-//     22050        -5.4 dB       -3.9 dB       22050 Hz
-//     30000        -7.5 dB       -8.1 dB       14100 Hz
-//     39100        -9.4 dB      -18.0 dB        5000 Hz
-//    100000       -17.2 dB      -19.6 dB       11800 Hz
-//
-// Above about 30 kHz the decimator does most of the work and its nulls sit on
-// multiples of 44.1 kHz. An earlier version called the low-pass "the only thing
-// attenuating content above the output Nyquist", which is false and hid the
-// fact that the decimator is the anti-alias filter here.
-//
 // IT IS BAND-LIMITED SYNTHESIS, and the order below follows from that.
 //
 // The APU's output is piecewise constant, so BlipSynth reconstructs it from its
@@ -182,6 +165,13 @@ private:
 // One consequence is worth stating: at 44.1 kHz the 14 kHz low-pass has
 // fc/rate = 0.317, where the naive RC coefficient is badly wrong. See
 // FirstOrderFilter for what replaced it.
+//
+// AND THE BILINEAR TRANSFORM IS EXACT AT EXACTLY ONE FREQUENCY. Its zero at
+// z = -1 forces the response to zero at Nyquist, so above the corner it departs
+// from the analogue filter nesdev describes: measured, +0.6 dB at 10 kHz, 0 at
+// 14 kHz by construction, -3.4 dB at 18 kHz and -8.3 dB at 20 kHz. That is a
+// defensible trade - the corner is the documented number and 20 kHz is at the
+// edge of hearing - but it is a trade, not a free win.
 class AudioSampler
 {
 public:

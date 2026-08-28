@@ -8,16 +8,11 @@ namespace
 constexpr double kPi = 3.14159265358979323846;
 }  // namespace
 
-// The standard RC discretisations, with alpha derived from the corner frequency
-// and the sample rate rather than hard-coded - the same filter is used at three
-// different corners and would otherwise be three near-copies.
-//
-//   high-pass:  y[n] = a * (y[n-1] + x[n] - x[n-1]),  a = RC / (RC + dt)
-//   low-pass:   y[n] = y[n-1] + a * (x[n] - y[n-1]),  a = dt / (RC + dt)
-//
-// with RC = 1 / (2*pi*fc). Note the two alphas are NOT the same quantity: the
-// high-pass one tends to 1 as the corner drops and the low-pass one tends to 0.
-// Sharing a name for them is a real trap, so they are computed in one place.
+// Bilinear, with prewarping. The comment that stood here described the RC
+// difference equations in detail - "y[i] = a(y[i-1] + x[i] - x[i-1])", the two
+// alphas, why they are not the same quantity - which is the form the commit
+// that replaced it had already established was wrong at these rates. It
+// documented deleted code, thoroughly.
 FirstOrderFilter::FirstOrderFilter(const Kind filter_kind, const float corner_hz, const float rate_hz)
     : kind{filter_kind}
 {
@@ -125,6 +120,19 @@ AudioSampler::AudioSampler(const float output_rate_hz, const float input_rate_hz
       low_pass_14k{FirstOrderFilter::Kind::low_pass, 14000.0f, output_rate_hz},
       ring{static_cast<size_t>(output_rate_hz / 2.0f)}
 {
+    // NOT ZERO. A delta at position p writes into floor(p)-7 upwards, so a
+    // transition below position 7 would index before the buffer and be dropped
+    // - which is every transition in the first 285 CPU cycles after
+    // construction or clear(). The comment on that clamp used to say it "should
+    // never fire"; it fired on every startup, and because push() advances
+    // last_level regardless, the step was lost from the integrator for good.
+    //
+    // Measured before the fix: a step at cycle 10 produced output that was
+    // identically zero forever. In a running console the loss was the net level
+    // change over those cycles, bled off by the 90 Hz high-pass over ~1.8 ms -
+    // a click on every clear(), which is precisely the artefact this file calls
+    // the most audible one there is.
+    position = BlipSynth::width;
 }
 
 void AudioSampler::push(const float sample)
@@ -191,7 +199,7 @@ void AudioSampler::clear()
 {
     ring.clear();
     synth.clear();
-    position = 0.0;
+    position = BlipSynth::width;  // see the constructor
     have_level = false;
     high_pass_90.reset();
     high_pass_440.reset();

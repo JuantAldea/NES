@@ -23,34 +23,69 @@ double blackman(const double n, const double n_max)
     const double t = n / n_max;
     return 0.42 - 0.5 * std::cos(2.0 * kPi * t) + 0.08 * std::cos(4.0 * kPi * t);
 }
+
+// The windowed sinc itself: the band-limited IMPULSE.
+double impulse(const double t)
+{
+    return 2.0 * BlipSynth::cutoff * sinc(2.0 * BlipSynth::cutoff * t) *
+           blackman(t + BlipSynth::half_width, BlipSynth::width);
+}
+
+// Its integral over one output sample, [x-1, x]. Simpson's rule over 64
+// sub-intervals, which is far finer than the kernel's own curvature.
+double step_increment(const double x)
+{
+    constexpr int steps = 64;
+    const double h = 1.0 / steps;
+    double total = impulse(x - 1.0) + impulse(x);
+    for (int i = 1; i < steps; ++i) {
+        total += (i % 2 == 1 ? 4.0 : 2.0) * impulse(x - 1.0 + h * i);
+    }
+    return total * h / 3.0;
+}
 }  // namespace
 
 BlipSynth::BlipSynth(const size_t buffer_samples)
     : kernel(static_cast<size_t>(phases + 1) * width, 0.0f), deltas(buffer_samples + width, 0.0f)
 {
-    // One windowed sinc per sub-sample phase.
+    // EACH TAP IS S(x) - S(x-1), NOT h(x), and that difference is the whole
+    // correctness of this class.
     //
-    // NORMALISED PER PHASE, and that is not cosmetic. The running sum of a
-    // phase's taps is the step this synthesiser produces for a unit transition,
-    // so if the taps do not sum to 1 the waveform's amplitude depends on WHERE
-    // between two samples each edge happened to fall. On a square wave that is
-    // an amplitude modulation at the beat frequency between the waveform and
-    // the sample rate - which sounds like a wobble and looks like nothing in
-    // the code.
+    // read_settled reconstructs by ACCUMULATING taps. Accumulation is
+    // 1/(1 - z^-1); the band-limited step it is supposed to produce is the
+    // integral of the impulse. Storing h(x) and accumulating therefore applies
+    // a rectangular integrator instead of a true one, which is not a subtle
+    // difference: measured, it boosts the passband by 1/sinc(f/fs) - +1.43 dB
+    // at 14 kHz - and advances everything by half a sample.
+    //
+    // The gain error is the part that matters. With that boost feeding the
+    // 14 kHz low-pass, the chain's actual -3dB point measured 16287 Hz against
+    // the 14000 Hz nesdev value the filter is built from: a hardware-measured
+    // corner 16% out.
+    //
+    // blip_buf does not do this. Its table construction integrates the impulse
+    // and takes a first difference across one output sample - "integrate, first
+    // difference, rescale, convert to int" - so its stored tap is the band-
+    // limited STEP, differenced. An earlier version of this file claimed to be
+    // "the construction blargg's blip_buf uses" while omitting exactly that
+    // step. Storing the integral directly, as here, is the same thing arrived
+    // at analytically rather than by running sums.
     for (int phase = 0; phase <= phases; ++phase) {
         const double offset = static_cast<double>(phase) / phases;
         double sum = 0.0;
 
         for (int tap = 0; tap < width; ++tap) {
-            // Position of this tap relative to the transition, in output
-            // samples. The transition sits between taps half_width-1 and
-            // half_width, displaced by the phase.
             const double x = static_cast<double>(tap - half_width) + 1.0 - offset;
-            const double value = 2.0 * cutoff * sinc(2.0 * cutoff * x) * blackman(x + half_width, width);
+            const double value = step_increment(x);
             kernel[static_cast<size_t>(phase) * width + static_cast<size_t>(tap)] = static_cast<float>(value);
             sum += value;
         }
 
+        // NORMALISED PER PHASE. The taps telescope to S(last) - S(first-1), so
+        // their sum IS the height of the step produced for a unit transition.
+        // Unnormalised, a waveform's amplitude would depend on where between
+        // two output samples each edge fell - an amplitude modulation at the
+        // beat between the waveform and the sample rate.
         for (int tap = 0; tap < width; ++tap) {
             kernel[static_cast<size_t>(phase) * width + static_cast<size_t>(tap)] /= static_cast<float>(sum);
         }
@@ -67,12 +102,14 @@ void BlipSynth::add_delta(const double position, const float amplitude)
     const double base = std::floor(position);
     const int phase = static_cast<int>((position - base) * phases + 0.5);
 
-    // The kernel reaches half_width-1 samples back, so a transition in the
-    // first few samples of the buffer would write before its start. Deltas are
-    // held with that much headroom and the caller keeps the newest transition
-    // clear of the read point, so this clamp should never fire - it is here
-    // because silently corrupting the sample before the buffer would be
-    // inaudible until it was not.
+    // The kernel reaches half_width-1 samples back, so a transition below
+    // position 7 would write before the buffer starts.
+    //
+    // THIS USED TO FIRE ON EVERY STARTUP, silently. AudioSampler began at
+    // position 0, so every transition in the first 285 CPU cycles was dropped
+    // while push() advanced its level anyway - the step lost from the
+    // integrator permanently. It now begins at width, which is why this is
+    // again what the comment always claimed: a guard, not a live path.
     const long long start = static_cast<long long>(base) - half_width + 1;
     if (start < 0 || static_cast<size_t>(start) + width > deltas.size()) {
         return;

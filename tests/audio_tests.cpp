@@ -364,8 +364,102 @@ GTEST_TEST(testAudio, a_high_square_wave_does_not_fold_energy_into_the_audible_b
     // Everything above the fundamental in this signal is either a harmonic
     // above Nyquist - which must have been rejected - or an alias of one.
     const double ratio_db = 10.0 * std::log10(other / fundamental);
-    EXPECT_LT(ratio_db, -25.0) << "non-fundamental energy is " << ratio_db
-                               << " dB; the box filter measured -10.6 dB here and point-sampling -6.1 dB";
+    // -32, NOT -25. Under THIS test's metric the box decimator this replaced
+    // scores -28.7 dB, so a -25 bound passed with the very implementation the
+    // rewrite existed to remove - it discriminated against point-sampling only.
+    // The -10.6 dB the old comment quoted came from a different metric (25%
+    // duty, harmonic-versus-inharmonic FFT) and did not apply here at all.
+    // Measured margin at -32: about 4 dB.
+    EXPECT_LT(ratio_db, -32.0) << "non-fundamental energy is " << ratio_db
+                               << " dB; the box decimator scores -28.7 under this same metric";
+}
+
+// A KERNEL THAT IS WRONG BUT STILL NORMALISED passes every other test here.
+// Three of five kernel mutations survived the whole file - shifting the tap
+// offset by one, sliding the window two samples off the sinc, and dropping the
+// cutoff from 0.45 to 0.25 - because every other assertion is on AMPLITUDE, and
+// the constructor divides each phase by its own sum, so a normalisation check
+// is tautological.
+//
+// Two properties catch them, and neither is an amplitude.
+
+// TIMING. A transition asked for at position p must arrive at p. An offset
+// error moves every edge by a whole sample and changes no amplitude anywhere,
+// so nothing else in this file would see it.
+//
+// MEASURED, on the half-height crossing of the reconstructed step: exact at
+// phase 0.0 and 0.5, and +-0.045 samples at 0.25 and 0.75. That residual is the
+// crossing measure itself - the step is not a straight line between samples -
+// and it is symmetric, so there is no systematic skew. A one-sample offset
+// would be 20x outside this bound.
+GTEST_TEST(testAudio, a_transition_arrives_where_it_was_asked_for)
+{
+    for (const double fraction : {0.0, 0.25, 0.5, 0.75}) {
+        BlipSynth synth{1024};
+        const double requested = 64.0 + fraction;
+        synth.add_delta(requested, 1.0f);
+
+        std::vector<float> step(512);
+        const size_t got = synth.read_settled(step.data(), step.size());
+        ASSERT_GT(got, 256u);
+
+        double crossing = -1.0;
+        for (size_t i = 1; i < got; ++i) {
+            if (step[i - 1] < 0.5f && step[i] >= 0.5f) {
+                crossing = static_cast<double>(i - 1) + (0.5 - step[i - 1]) / (step[i] - step[i - 1]);
+                break;
+            }
+        }
+        ASSERT_GT(crossing, 0.0) << "the step never reached half height";
+        EXPECT_NEAR(requested, crossing, 0.1) << "phase " << fraction << " arrived at " << crossing;
+    }
+}
+
+// THE FREQUENCY RESPONSE, which is what a wrong cutoff or a misaligned window
+// changes while leaving DC gain and step height untouched.
+//
+// Measured on the kernel's own impulse - the reconstructed step, differenced,
+// which undoes the integrator and leaves the windowed sinc. Normalised
+// frequency, so 0.5 is Nyquist:
+//
+//     0.05  0.996      0.30  0.857      0.45  0.328
+//     0.20  0.936      0.40  0.607      0.49  0.067
+GTEST_TEST(testAudio, the_kernel_passes_the_audible_band_and_rolls_off_before_nyquist)
+{
+    BlipSynth synth{1024};
+    synth.add_delta(64.0, 1.0f);
+
+    std::vector<float> step(512);
+    const size_t got = synth.read_settled(step.data(), step.size());
+    ASSERT_GT(got, 256u);
+
+    std::vector<double> impulse(got);
+    for (size_t i = 1; i < got; ++i) {
+        impulse[i] = step[i] - step[i - 1];
+    }
+
+    const auto magnitude = [&](const double normalised) {
+        double re = 0.0;
+        double im = 0.0;
+        for (size_t i = 0; i < got; ++i) {
+            const double t = -2.0 * 3.14159265358979 * normalised * static_cast<double>(i);
+            re += impulse[i] * std::cos(t);
+            im += impulse[i] * std::sin(t);
+        }
+        return std::sqrt(re * re + im * im);
+    };
+
+    const double dc = magnitude(0.0);
+    ASSERT_NEAR(1.0, dc, 1e-3) << "the kernel must pass DC at unity - this is the step height";
+
+    EXPECT_GT(magnitude(0.05) / dc, 0.99) << "flat well inside the band";
+    EXPECT_GT(magnitude(0.20) / dc, 0.90) << "still near-flat at 8.8kHz";
+    EXPECT_LT(magnitude(0.45) / dc, 0.40) << "well down by the cutoff";
+    EXPECT_LT(magnitude(0.49) / dc, 0.12) << "and nearly gone at Nyquist; this is what rejects aliases";
+
+    // Nothing is asserted above 0.5. For a real signal the transform mirrors
+    // about Nyquist, so magnitude(0.7) is identically magnitude(0.3) - an
+    // earlier version asserted on it and was measuring its own reflection.
 }
 
 // --- the ring buffer --------------------------------------------------------
