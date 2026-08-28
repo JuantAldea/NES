@@ -339,13 +339,26 @@ void APU::clock_noise_timer()
 //   pulse_out = 95.88 / ((8128 / (pulse1 + pulse2)) + 100)
 //   tnd_out   = 159.79 / (1 / ((triangle/8227) + (noise/12241) + (dmc/22638)) + 100)
 //
-// THE DIVIDE-BY-ZERO IS NOT HYPOTHETICAL and the wiki calls it out directly:
-// "When the values for one of the groups are all zero, the result for that
-// group should be treated as zero rather than undefined due to the division by
-// 0 that otherwise results." Silence is the commonest state an APU is in, so
-// the unguarded version does not fail rarely - it fails immediately, and it
-// fails to NaN, which then propagates through any accumulation downstream
-// rather than announcing itself.
+// THE ZERO-GROUP GUARDS ARE DOCUMENTATION, NOT BEHAVIOUR, and an earlier
+// version of this comment said the opposite - that an unguarded version "fails
+// to NaN". It does not. Under IEEE 754, 8128/0 is +inf, inf+100 is inf, and
+// 95.88/inf is exactly 0: the same answer the guard gives.
+//
+// Verified exhaustively rather than spot-checked: guarded and unguarded are
+// BIT-IDENTICAL at all 8,388,608 legal input points, at all 65,536 full-uint8_t
+// pulse pairs, and at all 16,777,216 full-uint8_t tnd triples.
+//
+// The wiki's warning is still real - "the result for that group should be
+// treated as zero rather than undefined due to the division by 0 that otherwise
+// results" - but it bites an integer or fixed-point implementation, not this
+// one. The guards stay because they are the correct thing to write and because
+// a fixed-point rewrite would need them.
+//
+// ONE CAVEAT: that is an IEEE-754 property, not a C++ one. Under
+// -ffinite-math-only, implied by -ffast-math and -Ofast, the unguarded form
+// stops producing a stable answer. This project builds -O3 with no fast-math,
+// so it holds here - but it holds because of a build flag, and no test can
+// cover it.
 float APU::mix_levels(const uint8_t pulse1_level,
                       const uint8_t pulse2_level,
                       const uint8_t triangle_value,

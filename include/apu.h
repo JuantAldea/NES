@@ -247,7 +247,14 @@ public:
     // driven to - every DMC level from 0 to 127, a group at exactly zero, one
     // channel at a time. Reaching those through the register file would mean a
     // test of the mixer that is mostly a test of the sequencers.
-    static float mix_levels(uint8_t pulse1_level, uint8_t pulse2_level, uint8_t triangle, uint8_t noise, uint8_t dmc);
+    // The parameter names avoid `triangle`, `noise` and `dmc`: the first two are
+    // Channel enumerators and the third is a member, and this header already
+    // documents what that collision costs elsewhere.
+    static float mix_levels(uint8_t pulse1_level,
+                            uint8_t pulse2_level,
+                            uint8_t triangle_value,
+                            uint8_t noise_value,
+                            uint8_t dmc_value);
 
     // The memory reader, driven by the Bus: only the Bus can halt the CPU.
     //
