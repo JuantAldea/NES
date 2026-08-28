@@ -172,6 +172,7 @@ add_library(libBus
     src/rom.cpp
     src/mapper.cpp
     src/apu.cpp
+    src/audio.cpp
 )
 
 target_include_directories(libBus
