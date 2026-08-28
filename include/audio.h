@@ -1,4 +1,5 @@
 #pragma once
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <vector>
@@ -48,24 +49,24 @@ private:
     float previous_output = 0.0f;
 };
 
-// The whole path from APU levels to playable samples.
-//
-// THE FILTERS RUN AT THE INPUT RATE, before decimation, which is the one
-// ordering decision here that is not arbitrary: the 14 kHz low-pass is the only
-// thing attenuating content above the output Nyquist, so running it after
-// decimation would filter aliases that had already folded down and be far too
-// late.
-//
-// AND THIS IS NOT BAND-LIMITED SYNTHESIS. A first-order low-pass rolls off at
-// 6 dB/octave, so content an octave above 14 kHz is only halved, and some of it
-// still aliases. The accepted answer is a band-limited step synthesiser
-// (blip_buf and its relatives), which reconstructs the waveform from its
-// transitions rather than point-sampling it. Averaging every input sample in
-// the output period, as below, is a box filter - strictly better than taking
-// one sample and throwing the rest away, and strictly worse than doing it
-// properly. Written down because the difference is audible on high pulse notes
-// and someone will eventually wonder whether it was considered.
 // The buffer between the emulation and the audio callback, on its own.
+//
+// SINGLE PRODUCER, SINGLE CONSUMER, and lock-free by construction: the
+// emulation thread writes, the audio callback reads, neither blocks.
+//
+// THE FIRST VERSION WAS NOT THREAD-SAFE AT ALL, and the failure was not subtle.
+// It kept a `count` member both sides read-modify-wrote - a lost update, a torn
+// read and a payload race in three lines. Measured at -O3 with no sanitizer,
+// which is the configuration this project ships, one producer and one consumer:
+//
+//   written=19887570  read=52690101      2.6x more samples read than existed
+//   written=18904291  read=31234723
+//
+// The excess are stale slots handed to the audio device after the count was
+// corrupted upward: a loud repeating buzz that sounds like an emulation fault.
+// No out-of-bounds access, because the indices are always taken modulo - so
+// ASan could never see it, and nothing here runs TSan. It survived a green
+// suite. The fix is the standard SPSC ring: no shared counter at all.
 //
 // SEPARATE FROM AudioSampler BECAUSE THE HEADER CLAIMED IT ALREADY WAS. This
 // file opened by saying the three jobs are "kept separate", and they were not -
@@ -90,17 +91,56 @@ public:
     // what its device wants there, and this does not.
     size_t read(float* out, size_t count);
 
-    size_t available() const { return count; }
-    size_t capacity() const { return storage.size(); }
+    // Safe from either side, and approximate from both: the other thread may
+    // have moved its index by the time the answer is used. That is inherent -
+    // a consumer can only be told a lower bound and a producer an upper one,
+    // and each is what that caller needs.
+    size_t available() const;
+
+    size_t capacity() const { return storage.size() - 1; }
+
+    // NOT THREAD-SAFE, and cannot be made so: it moves both indices. Callable
+    // only while the audio device is stopped.
     void clear();
 
 private:
+    // capacity + 1 slots. The spare is what distinguishes a full ring from an
+    // empty one once the shared counter is gone.
     std::vector<float> storage;
-    size_t write_index = 0;
-    size_t read_index = 0;
-    size_t count = 0;
+    std::atomic<size_t> write_index{0};
+    std::atomic<size_t> read_index{0};
 };
 
+// The whole path from APU levels to playable samples.
+//
+// THE FILTERS RUN AT THE INPUT RATE, before decimation, because anything
+// attenuating content above the output Nyquist has to act before that content
+// folds down.
+//
+// THE BOX AVERAGE IS THE STRONGER OF THE TWO ANTI-ALIAS FILTERS over most of
+// the range, which is the opposite of what the arrangement suggests. Measured
+// attenuation before folding:
+//
+//     f_in      low-pass 14k   box(40.58)     folds to
+//     22050        -5.4 dB       -3.9 dB       22050 Hz
+//     30000        -7.5 dB       -8.1 dB       14100 Hz
+//     39100        -9.4 dB      -18.0 dB        5000 Hz
+//    100000       -17.2 dB      -19.6 dB       11800 Hz
+//
+// Above about 30 kHz the decimator does most of the work and its nulls sit on
+// multiples of 44.1 kHz. An earlier version called the low-pass "the only thing
+// attenuating content above the output Nyquist", which is false and hid the
+// fact that the decimator is the anti-alias filter here.
+//
+// AND THIS IS NOT BAND-LIMITED SYNTHESIS. A first-order low-pass rolls off at
+// 6 dB/octave, so content an octave above 14 kHz is only halved, and some of it
+// still aliases. The accepted answer is a band-limited step synthesiser
+// (blip_buf and its relatives), which reconstructs the waveform from its
+// transitions rather than point-sampling it. Averaging every input sample in
+// the output period, as below, is a box filter - strictly better than taking
+// one sample and throwing the rest away, and strictly worse than doing it
+// properly. Written down because the difference is audible on high pulse notes
+// and someone will eventually wonder whether it was considered.
 class AudioSampler
 {
 public:
@@ -129,24 +169,20 @@ public:
     // emulator produced the wrong samples" from "the samples were fine and the
     // plumbing lost them", and without these two numbers those are
     // indistinguishable after the fact.
-    uint64_t dropped() const { return dropped_samples; }
-    uint64_t starved() const { return starved_reads; }
+    uint64_t dropped() const { return dropped_samples.load(std::memory_order_relaxed); }
+    uint64_t starved() const { return starved_reads.load(std::memory_order_relaxed); }
 
     float input_rate() const { return input_hz; }
     float output_rate() const { return output_hz; }
 
-    // The chain's three coefficients, for inspection.
-    //
-    // Exposed because the RESPONSE cannot pin them tightly enough. A 1% shift
-    // in a corner frequency moves the gain at that corner by about 0.3%, which
-    // is smaller than the RC discretisation error already present - so a test
-    // measuring gain has to carry a tolerance wide enough to let a wrong corner
-    // through. The coefficient is an exact function of the corner and the rate,
-    // so asserting it pins which frequencies this chain was actually built
-    // with. Mutating 90 to 90.9 survived every response-based test.
-    float high_pass_90_coefficient() const { return high_pass_90.coefficient(); }
-    float high_pass_440_coefficient() const { return high_pass_440.coefficient(); }
-    float low_pass_14k_coefficient() const { return low_pass_14k.coefficient(); }
+    // THREE COEFFICIENT ACCESSORS WERE HERE AND ARE GONE. They were added
+    // because a corner-frequency mutation survived, and justified by a comment
+    // claiming it "survived every response-based test" - true of an earlier
+    // state of the branch and false by the time it was committed. A reference
+    // test written in the SAME commit already killed all three corner
+    // mutations, and kills a 0.11% shift where these were sold as necessary for
+    // 1%. Internals exposed to raise a mutation score, on a justification never
+    // re-measured.
 
 private:
     float input_hz;
@@ -170,6 +206,9 @@ private:
     // and cheap enough not to tune.
     SampleRing ring;
 
-    uint64_t dropped_samples = 0;
-    uint64_t starved_reads = 0;
+    // Atomic because they are written from OPPOSITE THREADS - dropped by the
+    // producer in push(), starved by the consumer in read() - and read by
+    // either. Relaxed is enough: they order nothing, they only count.
+    std::atomic<uint64_t> dropped_samples{0};
+    std::atomic<uint64_t> starved_reads{0};
 };

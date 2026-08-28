@@ -50,35 +50,61 @@ void FirstOrderFilter::reset()
 // full-test is true immediately, and every sample is dropped - a sampler that
 // silently produces nothing. Found by a test using a 1 Hz rate to make the
 // decimator's arithmetic legible.
-SampleRing::SampleRing(const size_t capacity) : storage(std::max<size_t>(1024, capacity), 0.0f) {}
+// capacity + 1 slots, because the spare is what tells a full ring from an empty
+// one without a shared counter. The 1024 floor is not padding: sized purely
+// from the output rate, a low rate gives zero capacity, the full-test is true
+// immediately, and every sample is dropped - a sampler that silently produces
+// nothing.
+SampleRing::SampleRing(const size_t capacity) : storage(std::max<size_t>(1024, capacity) + 1, 0.0f) {}
 
+// PRODUCER SIDE. The release on write_index is what publishes the slot: it
+// guarantees the consumer's acquire load cannot observe the new index without
+// also observing the sample written before it.
 bool SampleRing::write(const float sample)
 {
-    if (count == storage.size()) {
+    const size_t w = write_index.load(std::memory_order_relaxed);
+    const size_t next = (w + 1) % storage.size();
+
+    // Full when advancing would collide with the reader. Acquire, because a
+    // stale read_index here can only make this look MORE full than it is -
+    // which drops a sample rather than corrupting one.
+    if (next == read_index.load(std::memory_order_acquire)) {
         return false;
     }
-    storage[write_index] = sample;
-    write_index = (write_index + 1) % storage.size();
-    ++count;
+
+    storage[w] = sample;
+    write_index.store(next, std::memory_order_release);
     return true;
 }
 
+// CONSUMER SIDE. Symmetric: acquire the producer's index, then release our own
+// so the slots just consumed become available for overwriting.
 size_t SampleRing::read(float* const out, const size_t requested)
 {
-    const size_t take = std::min(requested, count);
-    for (size_t i = 0; i < take; ++i) {
-        out[i] = storage[read_index];
-        read_index = (read_index + 1) % storage.size();
+    size_t r = read_index.load(std::memory_order_relaxed);
+    const size_t w = write_index.load(std::memory_order_acquire);
+
+    size_t taken = 0;
+    while (taken < requested && r != w) {
+        out[taken++] = storage[r];
+        r = (r + 1) % storage.size();
     }
-    count -= take;
-    return take;
+
+    read_index.store(r, std::memory_order_release);
+    return taken;
+}
+
+size_t SampleRing::available() const
+{
+    const size_t w = write_index.load(std::memory_order_acquire);
+    const size_t r = read_index.load(std::memory_order_acquire);
+    return (w + storage.size() - r) % storage.size();
 }
 
 void SampleRing::clear()
 {
-    write_index = 0;
-    read_index = 0;
-    count = 0;
+    write_index.store(0, std::memory_order_relaxed);
+    read_index.store(0, std::memory_order_relaxed);
 }
 
 AudioSampler::AudioSampler(const float output_rate_hz, const float input_rate_hz)
@@ -121,7 +147,7 @@ void AudioSampler::push(const float sample)
     // distinguish "the emulator produced the wrong samples" from "the samples
     // were fine and the plumbing lost them".
     if (!ring.write(out)) {
-        ++dropped_samples;
+        dropped_samples.fetch_add(1, std::memory_order_relaxed);
     }
 }
 
@@ -129,7 +155,7 @@ size_t AudioSampler::read(float* const out, const size_t requested)
 {
     const size_t take = ring.read(out, requested);
     if (take < requested) {
-        ++starved_reads;
+        starved_reads.fetch_add(1, std::memory_order_relaxed);
     }
     return take;
 }

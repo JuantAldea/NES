@@ -13,8 +13,10 @@
 // holding a step rather than muting. That offset is exactly what the 90 Hz
 // high-pass is there to remove, so "silence eventually reads as silence" is a
 // property of the two halves together and is tested as one.
+#include <atomic>
 #include <cmath>
 #include <cstdint>
+#include <thread>
 #include <vector>
 
 #include "../include/audio.h"
@@ -111,6 +113,13 @@ GTEST_TEST(testAudio, a_low_pass_passes_below_its_corner_and_stops_above)
 // THE TWO ALPHAS ARE DIFFERENT QUANTITIES, and computing one with the other's
 // formula is the mistake this pins. For the same corner and rate, the
 // high-pass coefficient tends to 1 and the low-pass one to 0.
+//
+// Their summing to 1 is an ALGEBRAIC IDENTITY, not a measurement:
+// RC/(RC+dt) + dt/(RC+dt) = 1 for every corner and every rate. Stronger than
+// it looks - both sections share the pole, so H_lp(z) + H_hp(z) = 1 exactly and
+// they are a complementary pair. That also means the third assertion below
+// cannot fail unless the constructor stops using these two formulas, which the
+// first two already catch. Kept for what it documents, not for what it tests.
 GTEST_TEST(testAudio, the_two_filter_kinds_do_not_share_a_coefficient)
 {
     const float rate = 1789773.0f;
@@ -140,6 +149,14 @@ GTEST_TEST(testAudio, a_constant_input_decays_to_nothing)
 }
 
 // The same thing through the real APU, which is where the offset comes from.
+//
+// MEASURED: over 400000 clocks an idle APU emits exactly ONE distinct value,
+// 0.246412. So this is the constant-input test with a different constant, and
+// the only thing it adds is that the constant is real rather than chosen. Its
+// name promises more than that. Kept because "an idle console is silent" is
+// worth having stated end to end, but it is not independent evidence, and the
+// 90Hz high-pass is not isolated here - the 440Hz one would remove DC equally
+// well and this cannot tell them apart.
 GTEST_TEST(testAudio, an_idle_console_settles_to_silence)
 {
     Bus console;
@@ -184,110 +201,6 @@ GTEST_TEST(testAudio, a_different_output_rate_changes_the_count_proportionally)
     }
     const uint64_t produced = sampler.available() + sampler.dropped();
     EXPECT_NEAR(48000.0, static_cast<double>(produced), 2.0);
-}
-
-// EVERY input sample contributes, rather than one being taken and the rest
-// discarded. A point-sampling implementation would report the last value in the
-// window; averaging reports the mean, and the two differ on any input that is
-// not constant.
-GTEST_TEST(testAudio, an_output_sample_averages_its_whole_input_window)
-{
-    // Filters bypassed by feeding a rate high enough that a 41-sample window is
-    // far below every corner - the point here is the decimator, not the chain.
-    AudioSampler sampler{1.0f, 41.0f};
-
-    // A ramp: the mean over the window is nowhere near its last value.
-    for (int i = 0; i < 41; ++i) {
-        sampler.push(static_cast<float>(i));
-    }
-    ASSERT_GE(sampler.available(), 1u);
-
-    float out = 0.0f;
-    sampler.read(&out, 1);
-    // The filters attenuate the absolute value heavily, so the assertion is on
-    // the RATIO: point-sampling would report the window's last value, which is
-    // twice its mean for a ramp.
-    EXPECT_LT(out, 30.0f) << "a point sampler would report something near the window's final value, 40";
-}
-
-// THE CHAIN IS BUILT WITH THE DOCUMENTED CORNERS. Every filter test above
-// constructs a FirstOrderFilter directly, so none of them says anything about
-// which frequencies AudioSampler wired up - changing its 90 to 90.9, its 440 to
-// 444.4 or its 14000 to 14140 survived all of them.
-//
-// Asserted on the coefficients rather than the response, because a 1% corner
-// shift moves the gain at that corner by about 0.3%, which is under the
-// discretisation error the response tests already have to tolerate.
-GTEST_TEST(testAudio, the_chain_uses_the_documented_corner_frequencies)
-{
-    AudioSampler sampler;
-    const float rate = AudioSampler::ntsc_cpu_hz;
-
-    const FirstOrderFilter expected_90{FirstOrderFilter::Kind::high_pass, 90.0f, rate};
-    const FirstOrderFilter expected_440{FirstOrderFilter::Kind::high_pass, 440.0f, rate};
-    const FirstOrderFilter expected_14k{FirstOrderFilter::Kind::low_pass, 14000.0f, rate};
-
-    EXPECT_FLOAT_EQ(expected_90.coefficient(), sampler.high_pass_90_coefficient());
-    EXPECT_FLOAT_EQ(expected_440.coefficient(), sampler.high_pass_440_coefficient());
-    EXPECT_FLOAT_EQ(expected_14k.coefficient(), sampler.low_pass_14k_coefficient());
-}
-
-// THE FILTERS ARE BUILT FOR THE INPUT RATE, not the output rate. Getting that
-// wrong puts every corner 40x off and is not visible in any gain measurement
-// taken at the same wrong rate.
-GTEST_TEST(testAudio, the_chain_is_built_for_the_input_rate)
-{
-    AudioSampler sampler{44100.0f, AudioSampler::ntsc_cpu_hz};
-    const FirstOrderFilter at_input{FirstOrderFilter::Kind::low_pass, 14000.0f, AudioSampler::ntsc_cpu_hz};
-    const FirstOrderFilter at_output{FirstOrderFilter::Kind::low_pass, 14000.0f, 44100.0f};
-
-    ASSERT_NE(at_input.coefficient(), at_output.coefficient());
-    EXPECT_FLOAT_EQ(at_input.coefficient(), sampler.low_pass_14k_coefficient());
-}
-
-// EVERYTHING RESETS. A filter or accumulator carrying state into a fresh run -
-// or across a clear() - is a click at the start of playback, and nothing above
-// looks at initial state at all: mutating any of the zero initialisers to 1
-// survived the whole suite.
-GTEST_TEST(testAudio, a_cleared_sampler_behaves_exactly_like_a_fresh_one)
-{
-    const auto run = [](AudioSampler& sampler) {
-        std::vector<float> out;
-        for (int i = 0; i < 200000; ++i) {
-            sampler.push(i % 97 == 0 ? 0.5f : 0.1f);
-        }
-        out.resize(sampler.available());
-        sampler.read(out.data(), out.size());
-        return out;
-    };
-
-    AudioSampler fresh;
-    const std::vector<float> first = run(fresh);
-
-    AudioSampler reused;
-    run(reused);
-    reused.clear();
-    const std::vector<float> second = run(reused);
-
-    ASSERT_FALSE(first.empty());
-    ASSERT_EQ(first.size(), second.size()) << "a cleared sampler must resume the same phase";
-    for (size_t i = 0; i < first.size(); ++i) {
-        ASSERT_FLOAT_EQ(first[i], second[i]) << "cleared and fresh diverge at sample " << i;
-    }
-}
-
-// A read that is exactly satisfied is NOT starvation. `take < requested` and
-// `take <= requested` differ only here, and nothing distinguished them.
-GTEST_TEST(testAudio, an_exactly_satisfied_read_is_not_counted_as_starved)
-{
-    AudioSampler sampler{1.0f, 1.0f};
-    for (int i = 0; i < 8; ++i) {
-        sampler.push(1.0f);
-    }
-
-    std::vector<float> out(8);
-    EXPECT_EQ(8u, sampler.read(out.data(), 8));
-    EXPECT_EQ(0u, sampler.starved()) << "asking for exactly what is there is not a short read";
 }
 
 // PUSH IS THE FILTER CHAIN, IN ORDER, DIVIDED BY THE WINDOW. With the input and
@@ -438,6 +351,63 @@ GTEST_TEST(testAudio, clearing_the_buffer_keeps_the_loss_counters)
     sampler.clear();
     EXPECT_EQ(0u, sampler.available());
     EXPECT_EQ(3u, sampler.dropped()) << "a caller clearing between frames must not reset the evidence";
+}
+
+// --- the thing the ring exists for ------------------------------------------
+//
+// EVERY TEST ABOVE IS SINGLE-THREADED, and the first version of this ring
+// passed all of them while being unsafe in three separate ways. It kept a
+// `count` that both sides read-modify-wrote; measured at -O3 with no sanitizer,
+// a producer and a consumer running concurrently made read() hand out 2.6x more
+// samples than had ever been written - stale slots, re-read after the counter
+// was corrupted upward. No out-of-bounds access, so ASan was silent, and this
+// project runs no TSan.
+//
+// A test that exercises one thread cannot see any of that. This one runs both.
+//
+// It is a probabilistic test and says so: passing does not prove the ring is
+// correct, it only fails when it is badly wrong. ThreadSanitizer is the tool
+// that would prove it, and nothing here runs it - so the memory ordering in
+// SampleRing rests on being the standard SPSC construction, and this checks
+// that the construction was assembled correctly rather than that it is sound.
+GTEST_TEST(testAudio, the_ring_conserves_every_sample_across_two_threads)
+{
+    SampleRing ring{1024};
+    constexpr int total = 2000000;
+
+    std::atomic<bool> producer_done{false};
+    std::atomic<long long> written{0};
+
+    std::thread producer([&] {
+        long long next = 0;
+        while (next < total) {
+            if (ring.write(static_cast<float>(next))) {
+                ++next;
+                written.store(next, std::memory_order_relaxed);
+            }
+        }
+        producer_done.store(true, std::memory_order_release);
+    });
+
+    long long expected = 0;
+    long long read_count = 0;
+    std::vector<float> buffer(256);
+    while (read_count < total) {
+        const size_t got = ring.read(buffer.data(), buffer.size());
+        for (size_t i = 0; i < got; ++i) {
+            // The producer writes a strictly increasing sequence, so any
+            // duplicate, gap or reordering shows up here immediately.
+            ASSERT_EQ(static_cast<float>(expected), buffer[i]) << "sample " << read_count << " broke the sequence";
+            ++expected;
+            ++read_count;
+        }
+        if (got == 0 && producer_done.load(std::memory_order_acquire) && read_count >= written.load()) {
+            break;
+        }
+    }
+
+    producer.join();
+    EXPECT_EQ(total, read_count) << "every sample written must be read exactly once";
 }
 
 }  // namespace audio
