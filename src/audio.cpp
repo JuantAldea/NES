@@ -5,7 +5,7 @@
 
 namespace
 {
-constexpr float kTwoPi = 6.28318530717958647692f;
+constexpr double kPi = 3.14159265358979323846;
 }  // namespace
 
 // The standard RC discretisations, with alpha derived from the corner frequency
@@ -21,22 +21,27 @@ constexpr float kTwoPi = 6.28318530717958647692f;
 FirstOrderFilter::FirstOrderFilter(const Kind filter_kind, const float corner_hz, const float rate_hz)
     : kind{filter_kind}
 {
-    const float rc = 1.0f / (kTwoPi * corner_hz);
-    const float dt = 1.0f / rate_hz;
-    alpha = kind == Kind::high_pass ? rc / (rc + dt) : dt / (rc + dt);
+    // Prewarped, so the bilinear transform's frequency compression does not
+    // move the corner: K = tan(pi * fc / fs) is where the analogue corner has
+    // to sit for the digital one to land on fc.
+    const float k = std::tan(static_cast<float>(kPi) * corner_hz / rate_hz);
+    a1 = (k - 1.0f) / (k + 1.0f);
+
+    if (kind == Kind::high_pass) {
+        b0 = 1.0f / (1.0f + k);
+        b1 = -b0;
+    } else {
+        b0 = k / (1.0f + k);
+        b1 = b0;
+    }
 }
 
 float FirstOrderFilter::process(const float sample)
 {
-    if (kind == Kind::high_pass) {
-        const float out = alpha * (previous_output + sample - previous_input);
-        previous_input = sample;
-        previous_output = out;
-        return out;
-    }
-
-    previous_output += alpha * (sample - previous_output);
-    return previous_output;
+    const float out = b0 * sample + b1 * previous_input - a1 * previous_output;
+    previous_input = sample;
+    previous_output = out;
+    return out;
 }
 
 void FirstOrderFilter::reset()
@@ -110,45 +115,61 @@ void SampleRing::clear()
 AudioSampler::AudioSampler(const float output_rate_hz, const float input_rate_hz)
     : input_hz{input_rate_hz},
       output_hz{output_rate_hz},
-      cycles_per_sample{input_rate_hz / output_rate_hz},
-      // The filters run at the INPUT rate, so that is the rate they are built
-      // for. Building them at the output rate would put every corner frequency
-      // 40x off.
-      high_pass_90{FirstOrderFilter::Kind::high_pass, 90.0f, input_rate_hz},
-      high_pass_440{FirstOrderFilter::Kind::high_pass, 440.0f, input_rate_hz},
-      low_pass_14k{FirstOrderFilter::Kind::low_pass, 14000.0f, input_rate_hz},
+      cycles_per_sample{static_cast<double>(input_rate_hz) / static_cast<double>(output_rate_hz)},
+      // Room for a comfortable flush plus the kernel's reach.
+      synth{4096},
+      // AT THE OUTPUT RATE. The synthesiser has already band-limited the signal
+      // by the time these run, so their job is tone shaping and nothing else.
+      high_pass_90{FirstOrderFilter::Kind::high_pass, 90.0f, output_rate_hz},
+      high_pass_440{FirstOrderFilter::Kind::high_pass, 440.0f, output_rate_hz},
+      low_pass_14k{FirstOrderFilter::Kind::low_pass, 14000.0f, output_rate_hz},
       ring{static_cast<size_t>(output_rate_hz / 2.0f)}
 {
 }
 
 void AudioSampler::push(const float sample)
 {
-    float filtered = high_pass_90.process(sample);
-    filtered = high_pass_440.process(filtered);
-    filtered = low_pass_14k.process(filtered);
+    // ONLY TRANSITIONS MATTER. A piecewise-constant signal spends most of its
+    // time unchanged, so this is a comparison and a branch for the great
+    // majority of the 1.79 million calls a second - which is why band-limited
+    // synthesis is cheaper here than the box average it replaced, not dearer.
+    if (!have_level) {
+        last_level = sample;
+        have_level = true;
+    } else if (sample != last_level) {
+        synth.add_delta(position, sample - last_level);
+        last_level = sample;
+    }
 
-    // Every input sample in the output period contributes, rather than one
-    // being taken and the other forty discarded. See the note on band-limited
-    // synthesis in the header for what this is and is not.
-    accumulated += filtered;
-    ++accumulated_count;
+    position += 1.0 / cycles_per_sample;
 
-    phase += 1.0f;
-    if (phase < cycles_per_sample) {
+    // Flush whatever is now beyond the kernel's reach. A delta at position p
+    // writes into p-7 through p+8, so samples within half_width of the newest
+    // transition are still incomplete and must not be emitted.
+    const double settled = position - BlipSynth::width;
+    if (settled < 64.0) {
         return;
     }
-    phase -= cycles_per_sample;
 
-    const float out = accumulated / static_cast<float>(accumulated_count);
-    accumulated = 0.0f;
-    accumulated_count = 0;
+    const size_t count = static_cast<size_t>(settled);
+    float scratch[4096];
+    const size_t got = synth.read_settled(scratch, std::min(count, sizeof(scratch) / sizeof(scratch[0])));
 
-    // Counted rather than silently absorbed: a run that sounds wrong needs to
-    // distinguish "the emulator produced the wrong samples" from "the samples
-    // were fine and the plumbing lost them".
-    if (!ring.write(out)) {
-        dropped_samples.fetch_add(1, std::memory_order_relaxed);
+    for (size_t i = 0; i < got; ++i) {
+        float filtered = high_pass_90.process(scratch[i]);
+        filtered = high_pass_440.process(filtered);
+        filtered = low_pass_14k.process(filtered);
+
+        // Counted rather than silently absorbed: a run that sounds wrong needs
+        // to distinguish "the emulator produced the wrong samples" from "the
+        // samples were fine and the plumbing lost them".
+        if (!ring.write(filtered)) {
+            dropped_samples.fetch_add(1, std::memory_order_relaxed);
+        }
     }
+
+    synth.advance(got);
+    position -= static_cast<double>(got);
 }
 
 size_t AudioSampler::read(float* const out, const size_t requested)
@@ -169,9 +190,9 @@ size_t AudioSampler::capacity() const { return ring.capacity(); }
 void AudioSampler::clear()
 {
     ring.clear();
-    phase = 0.0f;
-    accumulated = 0.0f;
-    accumulated_count = 0;
+    synth.clear();
+    position = 0.0;
+    have_level = false;
     high_pass_90.reset();
     high_pass_440.reset();
     low_pass_14k.reset();

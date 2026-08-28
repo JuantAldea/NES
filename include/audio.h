@@ -4,6 +4,8 @@
 #include <cstdint>
 #include <vector>
 
+#include "blip.h"
+
 // Turning the APU's per-cycle level into samples an audio device can play.
 //
 // Three separate jobs, kept separate because only the first two are the
@@ -33,6 +35,23 @@ public:
     enum class Kind { high_pass, low_pass };
 
     // `corner_hz` is the -3dB point; `rate_hz` the rate process() is called at.
+    //
+    // BILINEAR, WITH PREWARPING, which is exact at the corner by construction.
+    //
+    // Two earlier forms were not. The naive RC coefficient, dt/(RC+dt), drifts
+    // as fc/fs grows: measured 0.6835 against 0.7071 at fc/fs = 0.0227. Then
+    // exp(-2*pi*fc/fs) was tried on the grounds of being "the exact pole" - it
+    // is exact for the POLE and still not for the -3dB point, because impulse
+    // invariance matches the impulse response and aliases the frequency
+    // response. It measured 0.6899 at fc/fs = 0.0078, worse than the form it
+    // replaced.
+    //
+    // None of that mattered while everything ran at 1.79 MHz. Moving the chain
+    // to the output rate puts the 14 kHz low-pass at fc/fs = 0.317, where the
+    // difference between these forms is large, and made the question real.
+    //
+    // The bilinear transform has a zero as well as a pole, so this is a
+    // two-coefficient filter rather than a one-alpha one.
     FirstOrderFilter(Kind kind, float corner_hz, float rate_hz);
 
     float process(float sample);
@@ -40,11 +59,23 @@ public:
     // Discards the filter's memory without changing its coefficients.
     void reset();
 
-    float coefficient() const { return alpha; }
+    // The input coefficient. Low-pass and high-pass at the same corner still
+    // sum to exactly 1 - the bilinear pair is complementary just as the RC pair
+    // was, since their numerators add to the shared denominator.
+    float coefficient() const { return b0; }
+
+    // The other two, so a test can evaluate the exact magnitude response rather
+    // than measuring the peak of a sampled sine - which is unusable within a
+    // few octaves of Nyquist, where there are too few samples per period for
+    // any of them to land near the true peak.
+    float feedforward_1() const { return b1; }
+    float feedback_1() const { return a1; }
 
 private:
     Kind kind;
-    float alpha;
+    float b0;
+    float b1;
+    float a1;
     float previous_input = 0.0f;
     float previous_output = 0.0f;
 };
@@ -132,15 +163,25 @@ private:
 // attenuating content above the output Nyquist", which is false and hid the
 // fact that the decimator is the anti-alias filter here.
 //
-// AND THIS IS NOT BAND-LIMITED SYNTHESIS. A first-order low-pass rolls off at
-// 6 dB/octave, so content an octave above 14 kHz is only halved, and some of it
-// still aliases. The accepted answer is a band-limited step synthesiser
-// (blip_buf and its relatives), which reconstructs the waveform from its
-// transitions rather than point-sampling it. Averaging every input sample in
-// the output period, as below, is a box filter - strictly better than taking
-// one sample and throwing the rest away, and strictly worse than doing it
-// properly. Written down because the difference is audible on high pulse notes
-// and someone will eventually wonder whether it was considered.
+// IT IS BAND-LIMITED SYNTHESIS, and the order below follows from that.
+//
+// The APU's output is piecewise constant, so BlipSynth reconstructs it from its
+// TRANSITIONS rather than sampling it. That fixes the aliasing (see blip.h for
+// the measured numbers) but it constrains where the analogue filters can go:
+// a filtered signal is no longer piecewise constant, so there are no
+// transitions left to find. The synthesiser must see the raw stepped signal.
+//
+// So the chain runs at the OUTPUT rate, after synthesis, which is the reverse
+// of what the box-filter version did. That was correct then and is wrong now:
+// the previous arrangement needed the 14 kHz low-pass before decimation because
+// nothing else attenuated above Nyquist, and the synthesiser's own kernel now
+// does that job far better. The hardware filters are left doing what they
+// actually are - tone shaping - rather than doubling as an anti-alias filter
+// they were never good at.
+//
+// One consequence is worth stating: at 44.1 kHz the 14 kHz low-pass has
+// fc/rate = 0.317, where the naive RC coefficient is badly wrong. See
+// FirstOrderFilter for what replaced it.
 class AudioSampler
 {
 public:
@@ -188,16 +229,21 @@ private:
     float input_hz;
     float output_hz;
 
-    // Input samples per output sample - 40.58 at NTSC/44.1kHz, and the
-    // fractional part is why this is a phase accumulator rather than a counter.
-    // Rounding it to 40 would run the audio 1.4% fast, which is about a quarter
-    // of a semitone.
-    float cycles_per_sample;
-    float phase = 0.0f;
+    // Input samples per output sample - 40.58 at NTSC/44.1kHz. The fractional
+    // part is the whole reason a transition's position is a double: rounding it
+    // to 40 would run the audio 1.4% fast, about a quarter of a semitone, and
+    // rounding each transition to a whole output sample is the +-0.5 sample
+    // jitter the box version had and never documented.
+    double cycles_per_sample;
 
-    float accumulated = 0.0f;
-    int accumulated_count = 0;
+    // Where we are, in output samples, since the last flush.
+    double position = 0.0;
+    float last_level = 0.0f;
+    bool have_level = false;
 
+    BlipSynth synth;
+
+    // AT THE OUTPUT RATE now, not the input rate - see the note above.
     FirstOrderFilter high_pass_90;
     FirstOrderFilter high_pass_440;
     FirstOrderFilter low_pass_14k;

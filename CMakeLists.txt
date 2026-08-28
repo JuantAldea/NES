@@ -173,6 +173,7 @@ add_library(libBus
     src/mapper.cpp
     src/apu.cpp
     src/audio.cpp
+    src/blip.cpp
 )
 
 target_include_directories(libBus

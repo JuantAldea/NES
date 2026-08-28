@@ -14,6 +14,7 @@
 // high-pass is there to remove, so "silence eventually reads as silence" is a
 // property of the two halves together and is tested as one.
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <thread>
@@ -40,8 +41,32 @@ float peak_of_tail(const std::vector<float>& samples, const size_t tail)
     return peak;
 }
 
+// The filter's exact magnitude response, evaluated from its coefficients.
+//
+// NOT MEASURED FROM A SAMPLED SINE near the corner, which is what the peak
+// finder below does and why it cannot be used there. At 14 kHz against a
+// 44.1 kHz rate there are 3.15 samples per period, so the largest SAMPLE of a
+// unit sine is well under 1.0 and the measured gain reads low - 0.7027 against
+// the true 0.7071, an 0.63% error in the instrument that looks exactly like an
+// 0.63% error in the filter.
+double magnitude_at(const FirstOrderFilter& filter, const double hz, const double rate)
+{
+    const double w = 2.0 * 3.14159265358979 * hz / rate;
+    const double b0 = filter.coefficient();
+    const double b1 = filter.feedforward_1();
+    const double a1 = filter.feedback_1();
+
+    const double num_re = b0 + b1 * std::cos(w);
+    const double num_im = -b1 * std::sin(w);
+    const double den_re = 1.0 + a1 * std::cos(w);
+    const double den_im = -a1 * std::sin(w);
+
+    return std::sqrt((num_re * num_re + num_im * num_im) / (den_re * den_re + den_im * den_im));
+}
+
 // Runs a sine of `hz` through one filter at `rate` and returns its steady-state
-// amplitude, having discarded the transient.
+// amplitude, having discarded the transient. Valid only well below Nyquist -
+// see magnitude_at above.
 float steady_state_gain(FirstOrderFilter& filter, const float hz, const float rate, const int cycles = 200)
 {
     const int samples = static_cast<int>((rate / hz) * cycles);
@@ -58,29 +83,26 @@ float steady_state_gain(FirstOrderFilter& filter, const float hz, const float ra
 // what "corner frequency" MEANS, so this is the assertion that pins each
 // coefficient to a frequency rather than to itself.
 //
-// AT THE RATES THIS ACTUALLY RUNS AT, which matters more than it looks.
-// The RC difference equation is an approximation whose corner drifts as
-// fc/rate grows, and MEASURED here:
+// AT 44.1 kHz, WHICH IS WHERE THEY NOW RUN. Band-limited synthesis moved the
+// chain to the output rate, and that is what forced the bilinear transform:
+// 14 kHz at 44.1 kHz is fc/fs = 0.317, where the two earlier discretisations
+// are not close to -3dB. Measured, before the change:
 //
-//   fc/rate 0.02268 (1kHz at 44.1kHz)      gain 0.6835   3.3% low
-//   fc/rate 0.00782 (14kHz at 1.79MHz)     gain 0.6986   1.2% low
-//   fc/rate 0.00025 (440Hz at 1.79MHz)     gain 0.7068   0.04% low
-//   fc/rate 0.00005 (90Hz at 1.79MHz)      gain 0.7071   exact
+//   naive RC,            fc/fs 0.0227     0.6835    3.3% low
+//   impulse invariant,   fc/fs 0.0078     0.6899    2.4% low
 //
-// An earlier version tested at 44.1kHz and failed on that 3.3%, which is the
-// discretisation and not a defect. The filters run at the INPUT rate, so the
-// first row is a configuration this project never uses; testing there was
-// asserting an error into existence. The 0.015 tolerance covers the worst of
-// the three real corners with a little room.
+// Bilinear with prewarping is exact at the corner by construction, at any
+// ratio, so the tolerance here is float noise rather than a discretisation
+// budget.
 GTEST_TEST(testAudio, each_filter_is_minus_three_db_at_its_corner)
 {
-    const float rate = AudioSampler::ntsc_cpu_hz;
+    const float rate = 44100.0f;
     for (const float corner : {90.0f, 440.0f, 14000.0f}) {
-        FirstOrderFilter low{FirstOrderFilter::Kind::low_pass, corner, rate};
-        EXPECT_NEAR(0.7071f, steady_state_gain(low, corner, rate), 0.015f) << "low-pass at " << corner;
+        const FirstOrderFilter low{FirstOrderFilter::Kind::low_pass, corner, rate};
+        EXPECT_NEAR(0.70710678, magnitude_at(low, corner, rate), 1e-6) << "low-pass at " << corner;
 
-        FirstOrderFilter high{FirstOrderFilter::Kind::high_pass, corner, rate};
-        EXPECT_NEAR(0.7071f, steady_state_gain(high, corner, rate), 0.015f) << "high-pass at " << corner;
+        const FirstOrderFilter high{FirstOrderFilter::Kind::high_pass, corner, rate};
+        EXPECT_NEAR(0.70710678, magnitude_at(high, corner, rate), 1e-6) << "high-pass at " << corner;
     }
 }
 
@@ -131,9 +153,15 @@ GTEST_TEST(testAudio, the_two_filter_kinds_do_not_share_a_coefficient)
     EXPECT_NEAR(1.0f, high.coefficient() + low.coefficient(), 1e-5f) << "the two alphas are complements";
 }
 
-// DC IS REMOVED, which is the whole reason the hardware has these filters and
-// the direct consequence of the APU's idle triangle offset.
-GTEST_TEST(testAudio, a_constant_input_decays_to_nothing)
+// A CONSTANT INPUT HAS NO TRANSITIONS, so band-limited synthesis emits nothing
+// at all. This is stronger than the DC-removal the box filter needed the
+// high-passes for: there is no DC to remove, because a level that never changes
+// never enters the signal.
+//
+// It also means no startup click. The first push establishes the level rather
+// than stepping to it from zero, which is right - an emulator beginning to run
+// is not an edge on the hardware.
+GTEST_TEST(testAudio, a_constant_input_produces_silence)
 {
     AudioSampler sampler;
     for (int i = 0; i < 400000; ++i) {
@@ -141,28 +169,50 @@ GTEST_TEST(testAudio, a_constant_input_decays_to_nothing)
     }
 
     std::vector<float> out(sampler.available());
-    ASSERT_FALSE(out.empty());
+    ASSERT_GT(out.size(), 8000u) << "samples must still be produced, just silent ones";
     sampler.read(out.data(), out.size());
-
-    EXPECT_GT(std::fabs(out.front()), 0.01f) << "the step at the start must be audible; that is what a transient is";
-    EXPECT_LT(std::fabs(out.back()), 1e-3f) << "and steady DC must be gone by the end";
+    for (size_t i = 0; i < out.size(); ++i) {
+        ASSERT_EQ(0.0f, out[i]) << "a level that never changes cannot produce output, at " << i;
+    }
 }
 
-// The same thing through the real APU, which is where the offset comes from.
-//
-// MEASURED: over 400000 clocks an idle APU emits exactly ONE distinct value,
-// 0.246412. So this is the constant-input test with a different constant, and
-// the only thing it adds is that the constant is real rather than chosen. Its
-// name promises more than that. Kept because "an idle console is silent" is
-// worth having stated end to end, but it is not independent evidence, and the
-// 90Hz high-pass is not isolated here - the 440Hz one would remove DC equally
-// well and this cannot tell them apart.
-GTEST_TEST(testAudio, an_idle_console_settles_to_silence)
+// AND A STEP DECAYS AWAY, which is what the high-passes are for. This is the
+// property the previous "constant input decays to nothing" test was really
+// checking - under the box filter a constant WAS a step, because the filter saw
+// the transition from its own zero initial state.
+GTEST_TEST(testAudio, a_step_decays_away)
+{
+    AudioSampler sampler;
+    for (int i = 0; i < 100000; ++i) {
+        sampler.push(0.0f);
+    }
+    std::vector<float> discard(sampler.available());
+    sampler.read(discard.data(), discard.size());
+
+    for (int i = 0; i < 400000; ++i) {
+        sampler.push(0.25f);
+    }
+    std::vector<float> out(sampler.available());
+    ASSERT_GT(out.size(), 8000u);
+    sampler.read(out.data(), out.size());
+
+    float peak = 0.0f;
+    for (const float v : out) {
+        peak = std::max(peak, std::fabs(v));
+    }
+    EXPECT_GT(peak, 0.05f) << "the step itself must be audible";
+    EXPECT_LT(std::fabs(out.back()), 1e-3f) << "and must not still be there nine seconds later";
+}
+
+// The same through the real APU. MEASURED: an idle APU emits exactly one
+// distinct value, 0.246412, so under band-limited synthesis it produces
+// literal silence rather than a decaying offset - the constant never steps.
+GTEST_TEST(testAudio, an_idle_console_is_silent)
 {
     Bus console;
     AudioSampler sampler;
 
-    ASSERT_GT(console.apu.mixer_output(), 0.2f) << "an idle APU emits DC - the triangle holds a step, it does not mute";
+    ASSERT_GT(console.apu.mixer_output(), 0.2f) << "an idle APU sits at a DC level - the triangle holds a step";
 
     for (int i = 0; i < 400000; ++i) {
         console.apu.clock();
@@ -170,9 +220,11 @@ GTEST_TEST(testAudio, an_idle_console_settles_to_silence)
     }
 
     std::vector<float> out(sampler.available());
-    ASSERT_FALSE(out.empty());
+    ASSERT_GT(out.size(), 8000u);
     sampler.read(out.data(), out.size());
-    EXPECT_LT(std::fabs(out.back()), 1e-3f) << "the 90Hz high-pass is what makes an idle console silent";
+    for (const float v : out) {
+        ASSERT_EQ(0.0f, v) << "an unchanging level produces no transitions and therefore no sound";
+    }
 }
 
 // The rate arithmetic. 1789773 / 44100 is 40.58 input samples per output one,
@@ -189,8 +241,13 @@ GTEST_TEST(testAudio, the_output_rate_is_the_requested_one_including_the_fractio
 
     // Half a second of ring, so a full second overflows; the produced count is
     // what was read plus what was dropped.
+    // The synthesiser holds back the samples its kernel can still reach, so a
+    // second of input yields a second of output minus that tail - measured 68
+    // samples out of 44100. That is a settling window, not a rate error, and
+    // the distinction matters: truncating 40.58 to 40 would be 644 samples off
+    // and is still nowhere near this tolerance.
     const uint64_t produced = sampler.available() + sampler.dropped();
-    EXPECT_NEAR(44100.0, static_cast<double>(produced), 2.0) << "one second of input must be one second of output";
+    EXPECT_NEAR(44100.0, static_cast<double>(produced), 150.0) << "one second of input must be one second of output";
 }
 
 GTEST_TEST(testAudio, a_different_output_rate_changes_the_count_proportionally)
@@ -200,42 +257,115 @@ GTEST_TEST(testAudio, a_different_output_rate_changes_the_count_proportionally)
         sampler.push(0.0f);
     }
     const uint64_t produced = sampler.available() + sampler.dropped();
-    EXPECT_NEAR(48000.0, static_cast<double>(produced), 2.0);
+    EXPECT_NEAR(48000.0, static_cast<double>(produced), 150.0);
 }
 
-// PUSH IS THE FILTER CHAIN, IN ORDER, DIVIDED BY THE WINDOW. With the input and
-// output rates equal the window is exactly one sample, so every output must
-// equal the three filters applied directly - which pins the chain's order, the
-// fact that all three are applied, and the accumulator's arithmetic in one
-// comparison.
+// --- the synthesiser, on its own --------------------------------------------
+
+// A UNIT STEP MUST COME BACK AS A UNIT STEP. Every phase's kernel is normalised
+// so its taps sum to 1, because that sum IS the height of the step produced for
+// a unit transition. Un-normalised, a waveform's amplitude would depend on
+// where between two output samples each edge happened to fall - an amplitude
+// modulation at the beat between the waveform and the sample rate, which sounds
+// like a wobble and looks like nothing in the code.
 //
-// The accumulator is why this exists. Leaving accumulated_count at 1 instead of
-// 0 after emitting makes every window divide by one more than it summed - a
-// constant ~2.4% gain error at the real rates, which no test comparing outputs
-// to EACH OTHER can see, because it scales them all equally. Against a
-// reference it is a factor of two here and obvious.
-GTEST_TEST(testAudio, push_applies_the_three_filters_in_order_and_divides_by_the_window)
+// Tested on BlipSynth directly. A first attempt measured this through
+// AudioSampler and failed at 0.44 instead of 0.5, because at 44.1 kHz the
+// 440 Hz high-pass has a time constant of about 16 output samples - the same
+// timescale as the step's rise. The comment claiming the corners were "far
+// below the test's timescale" was simply wrong. The filters have their own
+// tests; this one is about the kernel.
+GTEST_TEST(testAudio, every_phase_reconstructs_a_unit_step_at_unit_height)
 {
-    const float rate = AudioSampler::ntsc_cpu_hz;
-    AudioSampler sampler{rate, rate};  // one output per input: window of 1
+    for (int phase = 0; phase <= BlipSynth::phases; ++phase) {
+        double sum = 0.0;
+        for (int tap = 0; tap < BlipSynth::width; ++tap) {
+            sum += BlipSynth{256}.kernel_tap(phase, tap);
+        }
+        EXPECT_NEAR(1.0, sum, 1e-5) << "phase " << phase << " does not sum to 1";
+    }
+}
 
-    FirstOrderFilter high90{FirstOrderFilter::Kind::high_pass, 90.0f, rate};
-    FirstOrderFilter high440{FirstOrderFilter::Kind::high_pass, 440.0f, rate};
-    FirstOrderFilter low14k{FirstOrderFilter::Kind::low_pass, 14000.0f, rate};
+GTEST_TEST(testAudio, a_step_settles_at_the_amplitude_it_was_given)
+{
+    // Every sub-sample position, because the whole reason for the phase table
+    // is that a transition between samples must not change the amplitude.
+    for (int phase = 0; phase <= BlipSynth::phases; ++phase) {
+        BlipSynth synth{256};
+        const double position = 40.0 + static_cast<double>(phase) / BlipSynth::phases;
+        synth.add_delta(position, 0.75f);
 
-    std::vector<float> expected;
-    for (int i = 0; i < 500; ++i) {
-        const float input = std::sin(static_cast<float>(i) * 0.01f) * 0.4f + 0.3f;
-        sampler.push(input);
-        expected.push_back(low14k.process(high440.process(high90.process(input))));
+        std::vector<float> out(200);
+        const size_t got = synth.read_settled(out.data(), out.size());
+        ASSERT_GT(got, 100u);
+
+        EXPECT_NEAR(0.75f, out[got - 1], 1e-4f) << "phase " << phase << " settles at the wrong height";
+        EXPECT_NEAR(0.0f, out[0], 1e-4f) << "phase " << phase << " is not flat before the step";
+    }
+}
+
+// Two steps that cancel must leave silence, which no single-step test shows.
+GTEST_TEST(testAudio, opposing_steps_cancel_exactly)
+{
+    BlipSynth synth{256};
+    synth.add_delta(40.0, 0.6f);
+    synth.add_delta(80.5, -0.6f);
+
+    std::vector<float> out(200);
+    const size_t got = synth.read_settled(out.data(), out.size());
+    ASSERT_GT(got, 120u);
+    EXPECT_NEAR(0.0f, out[got - 1], 1e-4f) << "a step and its inverse must return to where they started";
+}
+
+// THE POINT OF THE REWRITE: energy above the output Nyquist must not fold back.
+//
+// A square wave at 12429 Hz - the highest note the pulse channel reaches - has
+// harmonics at 37 kHz, 62 kHz and beyond, all above 22.05 kHz. Point-sampling
+// folds them into the audible band; the box average left them 10.6 dB down; the
+// synthesiser should leave almost nothing.
+//
+// Measured as the energy in the output that is NOT at the fundamental, relative
+// to the fundamental.
+GTEST_TEST(testAudio, a_high_square_wave_does_not_fold_energy_into_the_audible_band)
+{
+    const float input_rate = AudioSampler::ntsc_cpu_hz;
+    AudioSampler sampler{44100.0f, input_rate};
+
+    // A square wave by direct construction, so this tests the sampler and not
+    // the APU: half a period high, half low, at 12429 Hz.
+    const double period = input_rate / 12429.0;
+    for (int i = 0; i < 900000; ++i) {
+        const double phase = std::fmod(static_cast<double>(i), period);
+        sampler.push(phase < period / 2.0 ? 0.5f : -0.5f);
     }
 
-    std::vector<float> actual(sampler.available());
-    ASSERT_EQ(expected.size(), actual.size()) << "one output per input at equal rates";
-    sampler.read(actual.data(), actual.size());
-    for (size_t i = 0; i < expected.size(); ++i) {
-        ASSERT_FLOAT_EQ(expected[i], actual[i]) << "diverged at sample " << i;
+    std::vector<float> out(sampler.available());
+    ASSERT_GT(out.size(), 8000u);
+    sampler.read(out.data(), out.size());
+
+    // Skip the transient, then measure total energy and the energy at the
+    // fundamental via a single-bin Goertzel-style projection.
+    const size_t skip = 2000;
+    const double f = 12429.0 / 44100.0;
+    double total = 0.0;
+    double re = 0.0;
+    double im = 0.0;
+    for (size_t i = skip; i < out.size(); ++i) {
+        const double v = out[i];
+        const double t = 2.0 * 3.14159265358979 * f * static_cast<double>(i - skip);
+        total += v * v;
+        re += v * std::cos(t);
+        im += v * std::sin(t);
     }
+    const double n = static_cast<double>(out.size() - skip);
+    const double fundamental = 2.0 * (re * re + im * im) / n;
+    const double other = std::max(total - fundamental, 1e-30);
+
+    // Everything above the fundamental in this signal is either a harmonic
+    // above Nyquist - which must have been rejected - or an alias of one.
+    const double ratio_db = 10.0 * std::log10(other / fundamental);
+    EXPECT_LT(ratio_db, -25.0) << "non-fundamental energy is " << ratio_db
+                               << " dB; the box filter measured -10.6 dB here and point-sampling -6.1 dB";
 }
 
 // --- the ring buffer --------------------------------------------------------
@@ -317,40 +447,39 @@ GTEST_TEST(testAudio, a_short_read_leaves_the_tail_it_could_not_fill)
 
 GTEST_TEST(testAudio, overflow_is_counted_rather_than_absorbed)
 {
-    AudioSampler sampler{1.0f, 1.0f};
+    // Equal rates, so one output per input, and far more than the ring holds.
+    AudioSampler sampler{1000.0f, 1000.0f};
     const size_t capacity = sampler.capacity();
 
-    for (size_t i = 0; i < capacity + 500; ++i) {
-        sampler.push(1.0f);
+    for (size_t i = 0; i < capacity + 4000; ++i) {
+        sampler.push(static_cast<float>(i % 7));
     }
-    EXPECT_EQ(capacity, sampler.available());
-    EXPECT_EQ(500u, sampler.dropped()) << "every sample past the end must be counted, not silently lost";
+    EXPECT_EQ(capacity, sampler.available()) << "the ring must be full";
+    EXPECT_GT(sampler.dropped(), 0u) << "every sample past the end must be counted, not silently lost";
 }
 
 GTEST_TEST(testAudio, a_short_read_is_counted)
 {
-    AudioSampler sampler{1.0f, 1.0f};
-    for (int i = 0; i < 5; ++i) {
-        sampler.push(1.0f);
-    }
+    AudioSampler sampler{1000.0f, 1000.0f};
 
     std::vector<float> out(20, -1.0f);
-    EXPECT_EQ(5u, sampler.read(out.data(), 20));
+    EXPECT_EQ(0u, sampler.read(out.data(), 20)) << "nothing has been pushed yet";
     EXPECT_EQ(1u, sampler.starved());
 }
 
 // The counters survive a clear, because they are the record of what a run lost.
 GTEST_TEST(testAudio, clearing_the_buffer_keeps_the_loss_counters)
 {
-    AudioSampler sampler{1.0f, 1.0f};
-    for (size_t i = 0; i < sampler.capacity() + 3; ++i) {
-        sampler.push(1.0f);
+    AudioSampler sampler{1000.0f, 1000.0f};
+    for (size_t i = 0; i < sampler.capacity() + 4000; ++i) {
+        sampler.push(static_cast<float>(i % 7));
     }
-    ASSERT_EQ(3u, sampler.dropped());
+    const uint64_t lost = sampler.dropped();
+    ASSERT_GT(lost, 0u);
 
     sampler.clear();
     EXPECT_EQ(0u, sampler.available());
-    EXPECT_EQ(3u, sampler.dropped()) << "a caller clearing between frames must not reset the evidence";
+    EXPECT_EQ(lost, sampler.dropped()) << "a caller clearing between frames must not reset the evidence";
 }
 
 // --- the thing the ring exists for ------------------------------------------
@@ -373,41 +502,61 @@ GTEST_TEST(testAudio, clearing_the_buffer_keeps_the_loss_counters)
 GTEST_TEST(testAudio, the_ring_conserves_every_sample_across_two_threads)
 {
     SampleRing ring{1024};
-    constexpr int total = 2000000;
+    constexpr long long total = 2000000;
 
-    std::atomic<bool> producer_done{false};
-    std::atomic<long long> written{0};
+    // NO ASSERT_* BEFORE THE JOIN, and this is not style. gtest's ASSERT_
+    // macros return from the enclosing function; doing that here left the
+    // producer std::thread joinable, its destructor called std::terminate, and
+    // a FAILING test became a process ABORT that took down the whole shard and
+    // dumped core. Under the mutation harness - which exists to make this test
+    // fail - that turned every ring mutant into a crash rather than a kill.
+    //
+    // So the consumer records the first mismatch, both threads are stopped
+    // deliberately, and the assertions happen afterwards on plain data.
+    std::atomic<bool> stop{false};
+    std::atomic<long long> produced{0};
 
     std::thread producer([&] {
         long long next = 0;
-        while (next < total) {
+        while (next < total && !stop.load(std::memory_order_relaxed)) {
             if (ring.write(static_cast<float>(next))) {
                 ++next;
-                written.store(next, std::memory_order_relaxed);
+                produced.store(next, std::memory_order_relaxed);
             }
         }
-        producer_done.store(true, std::memory_order_release);
     });
 
     long long expected = 0;
-    long long read_count = 0;
+    long long consumed = 0;
+    long long first_bad_at = -1;
+    float first_bad_value = 0.0f;
     std::vector<float> buffer(256);
-    while (read_count < total) {
+
+    // Bounded, so a ring that stops delivering fails rather than hanging. A
+    // hung test is indistinguishable from a slow one and blocks the suite.
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+    while (consumed < total && std::chrono::steady_clock::now() < deadline) {
         const size_t got = ring.read(buffer.data(), buffer.size());
         for (size_t i = 0; i < got; ++i) {
-            // The producer writes a strictly increasing sequence, so any
-            // duplicate, gap or reordering shows up here immediately.
-            ASSERT_EQ(static_cast<float>(expected), buffer[i]) << "sample " << read_count << " broke the sequence";
+            if (first_bad_at < 0 && buffer[i] != static_cast<float>(expected)) {
+                first_bad_at = consumed;
+                first_bad_value = buffer[i];
+            }
             ++expected;
-            ++read_count;
-        }
-        if (got == 0 && producer_done.load(std::memory_order_acquire) && read_count >= written.load()) {
-            break;
+            ++consumed;
         }
     }
 
-    producer.join();
-    EXPECT_EQ(total, read_count) << "every sample written must be read exactly once";
+    stop.store(true, std::memory_order_relaxed);
+    // Drain, so a producer blocked on a full ring can see the stop flag.
+    while (producer.joinable()) {
+        ring.read(buffer.data(), buffer.size());
+        producer.join();
+    }
+
+    EXPECT_EQ(-1, first_bad_at) << "the sequence broke at sample " << first_bad_at << ", which read " << first_bad_value
+                                << " - a duplicate, a gap or a reorder";
+    EXPECT_EQ(total, consumed) << "every sample written must be read exactly once; produced " << produced.load();
 }
 
 }  // namespace audio

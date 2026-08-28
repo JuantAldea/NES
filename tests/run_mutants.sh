@@ -121,6 +121,27 @@ restore_all() {
 }
 trap 'restore_all' EXIT INT TERM
 
+# A PREVIOUS RUN MAY HAVE DIED WITHOUT RESTORING. The trap below handles every
+# signal it can, and SIGKILL is not one of them - an OOM kill, or the harness
+# being killed from outside, leaves whatever mutant was in flight sitting in the
+# working tree. The next build is then silently wrong and nothing says so.
+#
+# This is the only thing that can catch that after the fact, and it is cheap:
+# git already knows what these files should look like. Refusing is deliberate -
+# a mutated file and a legitimately edited one are indistinguishable from here,
+# so this cannot safely restore, only stop.
+if git -C "$ROOT" rev-parse --git-dir >/dev/null 2>&1; then
+    for f in $FILES; do
+        if ! git -C "$ROOT" diff --quiet -- "$f" 2>/dev/null; then
+            printf '%s differs from HEAD.\n' "$f" >&2
+            printf 'If that is your own work, commit or stash it first. If a previous run of\n' >&2
+            printf 'this script was killed - SIGKILL cannot be trapped - it may be a leftover\n' >&2
+            printf 'mutant, and building on it would be silently wrong.\n' >&2
+            exit 2
+        fi
+    done
+fi
+
 for f in $FILES; do
     [ -f "$ROOT/$f" ] || {
         printf 'no such file: %s\n' "$f" >&2

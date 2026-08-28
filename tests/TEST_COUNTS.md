@@ -78,7 +78,7 @@ check for regressions with `tests/test_counts.sh --check`.
 | `testAPUMixer` | 20 | yes |
 | `testAPUUnits` | 16 | yes |
 | `testAPUWaves` | 21 | yes |
-| `testAudio` | 17 | yes |
+| `testAudio` | 21 | yes |
 | `testBusRunFrame` | 3 | yes |
 | `testCPU` | 2 | yes |
 | `testDMA` | 3 | yes |
@@ -96,9 +96,9 @@ check for regressions with `tests/test_counts.sh --check`.
 
 | | Cases |
 |---|---:|
-| Registered | 1063 |
+| Registered | 1067 |
 | Skipped in CI | 517 |
-| **Executed in CI** | **546** |
+| **Executed in CI** | **550** |
 
 Skipped in CI: the 512 per-opcode SingleStepTests need 1.1 GB of vectors CI
 does not fetch, and `commercialRom` needs a cartridge dump nothing here will
