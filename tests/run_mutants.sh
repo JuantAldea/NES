@@ -45,7 +45,9 @@
 # stops the next person re-deriving it.
 #
 # WHAT IT DOES NOT MUTATE, so nobody reads a clean run as more than it is:
-# comment lines, any line containing a string literal (which would only change a
+# comments - whole-line AND trailing, the latter only since the bus.cpp run that
+# reported `// wrong phase - wait for the right one` becoming `+ wait` as a
+# survivor - any line containing a string literal (which would only change a
 # failure message), and anything the operator list below does not cover -
 # notably it cannot swap two arguments at a call site or reorder statements.
 # Both of those have found real defects here and neither is expressible as a

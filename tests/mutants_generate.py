@@ -201,9 +201,20 @@ def main() -> int:
         # nothing about the code.
         if '"' in line:
             continue
-        for new_line, label in mutate_line(line):
-            if new_line == line:
+        # Mutate the CODE only, and put the trailing comment back untouched. A
+        # comment mutant cannot be killed by any test, so it is reported as a
+        # survivor forever and reads exactly like a real hole: the first run of
+        # this harness against src/bus.cpp scored 7/8 because `// wrong phase -
+        # wait for the right one` became `+ wait`. Splitting on the first `//`
+        # is safe here precisely because the check above dropped every line
+        # carrying a `"`, so this one cannot be inside a string.
+        code, separator, comment = line.partition("//")
+        if not code.strip():
+            continue
+        for new_code, label in mutate_line(code):
+            if new_code == code:
                 continue
+            new_line = new_code + separator + comment
             index += 1
             payload = outdir / f"payload.{index}"
             payload.write_text(new_line + "\n")
