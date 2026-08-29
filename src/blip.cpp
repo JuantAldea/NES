@@ -15,9 +15,25 @@ double sinc(const double x)
     return std::sin(kPi * x) / (kPi * x);
 }
 
-// Blackman, chosen over Hamming for the stopband: about -74 dB against -41 dB,
-// for a transition band roughly 1.5x wider. With the cutoff at 0.45 there is
-// room for the wider transition and no room for -41 dB of alias.
+// Blackman, chosen over Hamming for the stopband, for a transition band roughly
+// 1.5x wider. With the cutoff at 0.45 there is room for the wider transition.
+//
+// TWO SETS OF NUMBERS, and this comment used to confuse them. Blackman's and
+// Hamming's own asymptotic sidelobe levels are about -74 dB and -41 dB; those
+// are a textbook's, they describe the windows and not this filter, and they were
+// quoted here as if they were the second thing. What the windowed sinc built
+// from each actually delivers, MEASURED over the reassembled polyphase kernel by
+// testAudio.the_kernel_reaches_a_blackman_stopband_a_hamming_window_would_not:
+//
+//     Blackman   -80.9 dB      Hamming   -60.7 dB
+//
+// The conclusion the old numbers supported still holds, and by a similar margin.
+// The figures were simply never this filter's.
+//
+// Hamming was installed by hand to get that second number, and the finding that
+// justifies the test existing is what happened next: BOTH kernel tests that
+// existed at the time passed with it in place. The window could be swapped
+// wholesale and the suite did not notice.
 double blackman(const double n, const double n_max)
 {
     const double t = n / n_max;
@@ -93,6 +109,23 @@ BlipSynth::BlipSynth(const size_t buffer_samples)
         // Unnormalised, a waveform's amplitude would depend on where between
         // two output samples each edge fell - an amplitude modulation at the
         // beat between the waveform and the sample rate.
+        //
+        // THIS IS ALSO WHY FIVE MUTANTS ABOVE ARE EQUIVALENT, recorded here so
+        // nobody re-derives it. Anything that scales step_increment UNIFORMLY
+        // divides straight back out - (k*v)/(k*s) = v/s - which covers the
+        // impulse's leading `2.0 * cutoff` amplitude factor and Simpson's
+        // `/ 3.0`, but NOT the `2.0` inside sinc's argument, which sets the
+        // bandwidth and is killed. A sixth, `blackman(t + half_width)` becoming
+        // `t - half_width`, is equivalent for a different reason: the window is
+        // built from cosines, so blackman(-n) = blackman(n), and it is symmetric
+        // about its midpoint, so blackman(32-n) = blackman(n) - together those
+        // give blackman(t-16) = blackman(16+t) identically.
+        //
+        // Those are not assertions. The rebuild test compares this table against
+        // an INDEPENDENTLY recomputed one, so a mutant that survives it has
+        // produced a table matching to within 1e-6 - below the float precision
+        // the table is stored at. For this kernel a survivor is an answer rather
+        // than a question.
         for (int tap = 0; tap < width; ++tap) {
             kernel[static_cast<size_t>(phase) * width + static_cast<size_t>(tap)] /= static_cast<float>(sum);
         }

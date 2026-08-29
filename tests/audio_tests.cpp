@@ -1029,5 +1029,153 @@ GTEST_TEST(volumeTests, channel_balance_matches_a_real_nes)
                               " Nestopia 1.66, Nintendulator 1.88.";
 }
 
+// THE KERNEL, REBUILT FROM ITS DEFINITION AND COMPARED TAP BY TAP.
+//
+// blip.h invites exactly this: kernel_tap exists "for tests", because the table
+// "is a pure function of the constants above, so a test can rebuild it
+// independently rather than comparing the table against itself".
+//
+// It was needed. Mechanical mutation of blip.cpp's kernel construction found the
+// window coefficients, the sinc bandwidth and the Simpson weights unconstrained -
+// a 20-mutant sample killed 8. The two tests that look like they would cover this
+// do not: the response test asserts only ONE-SIDED bounds, so anything that lifts
+// the passband passes it, and the alias test has about 4 dB of margin while a
+// coefficient nudge moves it under 2 dB.
+//
+// WHAT THIS PROVES AND WHAT IT DOES NOT. It proves the table matches the formula
+// the file documents. It cannot prove the formula is the right one - a test that
+// reimplements a specification never can. That belongs to the test below, which
+// measures what the resulting filter does.
+GTEST_TEST(testAudio, the_kernel_matches_its_definition_rebuilt_independently)
+{
+    constexpr double pi = 3.14159265358979323846;
+
+    const auto sinc = [&](const double x) { return std::fabs(x) < 1e-12 ? 1.0 : std::sin(pi * x) / (pi * x); };
+    const auto blackman = [&](const double n, const double n_max) {
+        const double t = n / n_max;
+        return 0.42 - 0.5 * std::cos(2.0 * pi * t) + 0.08 * std::cos(4.0 * pi * t);
+    };
+    const auto impulse = [&](const double t) {
+        return 2.0 * BlipSynth::cutoff * sinc(2.0 * BlipSynth::cutoff * t) *
+               blackman(t + BlipSynth::half_width, BlipSynth::width);
+    };
+    // Simpson over 64 sub-intervals of [x-1, x]: the band-limited STEP increment.
+    const auto step_increment = [&](const double x) {
+        constexpr int steps = 64;
+        const double h = 1.0 / steps;
+        double total = impulse(x - 1.0) + impulse(x);
+        for (int i = 1; i < steps; ++i) {
+            total += (i % 2 == 1 ? 4.0 : 2.0) * impulse(x - 1.0 + h * i);
+        }
+        return total * h / 3.0;
+    };
+
+    const BlipSynth synth{1024};
+
+    double worst = 0.0;
+    int worst_phase = -1;
+    int worst_tap = -1;
+    for (int phase = 0; phase <= BlipSynth::phases; ++phase) {
+        const double offset = static_cast<double>(phase) / BlipSynth::phases;
+
+        std::vector<double> raw(static_cast<size_t>(BlipSynth::width));
+        double sum = 0.0;
+        for (int tap = 0; tap < BlipSynth::width; ++tap) {
+            raw[static_cast<size_t>(tap)] =
+                step_increment(static_cast<double>(tap - BlipSynth::half_width) + 1.0 - offset);
+            sum += raw[static_cast<size_t>(tap)];
+        }
+
+        for (int tap = 0; tap < BlipSynth::width; ++tap) {
+            // Normalised per phase in the same order and precision the
+            // implementation uses - float value over float sum - so this compares
+            // the formula and not the rounding.
+            const float expected = static_cast<float>(raw[static_cast<size_t>(tap)]) / static_cast<float>(sum);
+            const double deviation = std::fabs(static_cast<double>(expected - synth.kernel_tap(phase, tap)));
+            if (deviation > worst) {
+                worst = deviation;
+                worst_phase = phase;
+                worst_tap = tap;
+            }
+        }
+    }
+
+    // Taps reach about 0.2, so 1e-6 is a few parts per million: far below any
+    // change to a coefficient and far above float rounding.
+    EXPECT_LT(worst, 1e-6) << "kernel departs from its definition by " << worst << " at phase " << worst_phase
+                           << ", tap " << worst_tap;
+}
+
+// THE WINDOW IS BLACKMAN-CLASS AND NOT HAMMING-CLASS, measured rather than
+// assumed, because blip.cpp chooses one over the other on exactly this ground.
+//
+// VALIDATED AGAINST A KNOWN-BAD, which is the only reason the number below can be
+// trusted: substituting Hamming (0.54 - 0.46cos) by hand and rebuilding moves the
+// stopband peak from -80.9 dB to -60.7 dB. Both existing kernel tests - the
+// response test and the alias test - PASS with that Hamming window installed. The
+// window could be swapped wholesale and nothing in the suite noticed.
+//
+// AND THE FIGURES IN BLIP.CPP'S COMMENT ARE NOT THIS FILTER'S. It cites "about
+// -74 dB against -41 dB". Those are the two windows' own asymptotic sidelobe
+// levels, not the stopband of the windowed sinc built from them, which measures
+// -80.9 and -60.7 here. The comparison it draws is sound; the numbers are a
+// textbook's, and are labelled as such at their source now.
+//
+// The threshold is deliberately loose. It separates the two window FAMILIES with
+// about 9 dB either side and is not sensitive enough to catch one coefficient
+// moving - 0.42 to 0.43 costs 1.8 dB. That is the rebuild test's job, above.
+GTEST_TEST(testAudio, the_kernel_reaches_a_blackman_stopband_a_hamming_window_would_not)
+{
+    const BlipSynth synth{1024};
+
+    // The polyphase table reassembled into the oversampled impulse response it
+    // decomposes. x = (tap - half_width) + 1 - phase/phases, so x rises with tap
+    // ASCENDING and phase DESCENDING - getting that order wrong scrambles the
+    // response into noise rather than failing visibly, which is what the DC
+    // assertion below is for.
+    const int n = BlipSynth::width * BlipSynth::phases;
+    std::vector<double> h(static_cast<size_t>(n));
+    for (int tap = 0; tap < BlipSynth::width; ++tap) {
+        for (int p = 0; p < BlipSynth::phases; ++p) {
+            h[static_cast<size_t>(tap * BlipSynth::phases + p)] = synth.kernel_tap(BlipSynth::phases - 1 - p, tap);
+        }
+    }
+
+    // Frequency in cycles per OUTPUT sample, so 0.5 is the output Nyquist and
+    // everything above it is an image this kernel exists to suppress.
+    const auto magnitude = [&](const double f) {
+        double re = 0.0;
+        double im = 0.0;
+        for (int m = 0; m < n; ++m) {
+            const double t = -2.0 * 3.14159265358979323846 * f * static_cast<double>(m) / BlipSynth::phases;
+            re += h[static_cast<size_t>(m)] * std::cos(t);
+            im += h[static_cast<size_t>(m)] * std::sin(t);
+        }
+        return std::sqrt(re * re + im * im);
+    };
+
+    const double dc = magnitude(0.0);
+    ASSERT_NEAR(BlipSynth::phases, dc, 1e-3) << "every phase is normalised to unit sum, so all " << BlipSynth::phases
+                                             << " must sum to that at DC - if this fails the reassembly order is "
+                                                "wrong and every number below is meaningless";
+
+    // The transition band is about 5.5/width wide around the 0.45 cutoff, so the
+    // stopband proper begins near 0.55. Scanned rather than spot-probed: the peak
+    // sidelobe sits at 0.575 and a single probe elsewhere reads the skirt.
+    double peak = 0.0;
+    double peak_at = 0.0;
+    for (double f = 0.55; f <= 8.0; f += 0.005) {
+        const double m = magnitude(f) / dc;
+        if (m > peak) {
+            peak = m;
+            peak_at = f;
+        }
+    }
+
+    const double peak_db = 20.0 * std::log10(peak);
+    EXPECT_LT(peak_db, -72.0) << "worst stopband sidelobe is " << peak_db << " dB at f=" << peak_at
+                              << "; Blackman measures -80.9 here and Hamming -60.7";
+}
+
 }  // namespace audio
 }  // namespace tests

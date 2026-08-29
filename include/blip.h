@@ -93,10 +93,21 @@ public:
     // 0.1 dB. NOT flat everywhere: 3608 Hz gains another 1.9 dB past 256, which
     // a floored measurement of this same table reported as 0.0. The 256-phase
     // grid is already 6.3x finer than the input clock's own 1/40.58 spacing,
-    // which bounds what remains past about 128. A
-    // sweep of half_width from 8 to 32 and cutoff from 0.40 to 0.45 moved
-    // these numbers by less than 0.1 dB at every frequency, which is how the
-    // limit was identified: the kernel was never the constraint.
+    // which bounds what remains past about 128.
+    //
+    // A SENTENCE USED TO FOLLOW THIS SAYING "a sweep of half_width from 8 to 32
+    // and cutoff from 0.40 to 0.45 moved these numbers by less than 0.1 dB at
+    // every frequency, which is how the limit was identified: the kernel was
+    // never the constraint". That is the retracted claim, and it survived its own
+    // retraction by twenty lines: half_width's comment above already carries the
+    // table that refutes it - 8.7 dB at 12429 Hz between half_width 8 and 16 -
+    // and says in as many words that this is "the parameter that actually binds,
+    // the opposite of what the first version of this file concluded".
+    //
+    // The five identical numbers that sweep produced were its harness reading its
+    // own noise floor, near -40 dB. Both statements stood in the same header for
+    // four commits, which is the argument for deleting a retracted claim rather
+    // than adding the correction beside it.
     //
     // The table costs 257 x 16 floats, 16 KB, built once.
     static constexpr int phases = 256;
