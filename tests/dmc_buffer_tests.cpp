@@ -361,5 +361,47 @@ GTEST_TEST(dmcBuffer, a_disable_on_an_odd_cycle_takes_effect_three_cycles_later)
         << "an odd-cycle disable expires on the third cycle after it";
 }
 
+// A RE-ENABLE DOES NOT CALL OFF A DISABLE ALREADY IN FLIGHT, so a channel can
+// end up enabled with nothing left to play.
+//
+// This was written as a prediction before it was run, which is the only reason
+// it is worth anything: the disable arms a 2-cycle countdown; the re-enable one
+// cycle later takes $4015's other branch, which is guarded by `bytes_remaining
+// == 0` and so does nothing at all while 16 bytes are outstanding; and neither
+// branch touches disable_delay. The countdown therefore expires on schedule and
+// clears a sample the CPU has just asked to keep.
+//
+// PROVENANCE, because this is not a hardware measurement and must not be read
+// as one. Mesen2's SetEnabled leaves _disableDelay alone on the enable path -
+//
+//   if(!enabled) {
+//     if(_disableDelay == 0) { ...set 2 or 3... }
+//   } else if(_bytesRemaining == 0) {
+//     InitSample();
+//     ...set _transferStartDelay...
+//   }
+//
+// - and this emulator's write handler is the same shape, so the two agree. No
+// ROM here reaches it: the instrumented run behind the two tests above saw 3786
+// expiries and not one of them had a transfer pending. What this test pins is
+// agreement with Mesen and the absence of a plausible "fix" - clearing
+// disable_delay on re-enable - that nothing else would catch.
+GTEST_TEST(dmcBuffer, re_enabling_does_not_call_off_a_disable_already_counting_down)
+{
+    Bus console;
+    seed_spin_loop(console);
+    start_sample_and_settle(console);
+
+    console.write(0x4015, 0x00);  // arms the abort, 2 cycles out on this parity
+    run_cpu_cycles(console, 1);
+    ASSERT_EQ(16, console.apu.dmc_bytes_remaining()) << "the abort must not have landed yet, or this tests nothing";
+
+    console.write(0x4015, 0x10);
+    EXPECT_EQ(16, console.apu.dmc_bytes_remaining()) << "the re-enable finds bytes outstanding, so it restarts nothing";
+
+    run_cpu_cycles(console, 1);
+    EXPECT_EQ(0, console.apu.dmc_bytes_remaining()) << "and the in-flight abort lands anyway, on its original schedule";
+}
+
 }  // namespace dmc_buffer
 }  // namespace tests
