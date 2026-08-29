@@ -35,24 +35,38 @@ audio.
 | Display | SDL2 + Dear ImGui: the screen and the debugger in one window |
 | Controllers | Both ports at `$4016`/`$4017`, keyboard-driven. Passes blargg's `read_joy3` `test_buttons` |
 
-Next: verifying the audio by ear against `volume_tests`' shipped recordings,
-which is the one check it has never had.
+**And it is measured against a real console.** `apu_test`, `apu_reset` and
+`blargg_apu_2005` are register-level; `apu_mixer` looks like it would cover
+waveforms and mixing and does not, because a ROM cannot hear itself - all four
+of its ROMs reported status `$00` against this emulator when it had no channels
+and no mixer at all. See [tests/apu_rom_tests.cpp](tests/apu_rom_tests.cpp).
 
-**Because none of it has an oracle, and that is not a figure of speech.** The
-APU suites that pass here - `apu_test`, `apu_reset`, `blargg_apu_2005` - are
-register-level. The two that look like they would cover waveforms and mixing,
-`apu_mixer` and `volume_tests`, are listening tests: all four `apu_mixer` ROMs
-reported status `$00` against this emulator when it had no channels and no mixer
-at all, because a ROM cannot hear itself and the status byte only says it ran.
-See the header of [tests/apu_rom_tests.cpp](tests/apu_rom_tests.cpp).
+`volume_tests` is the exception, and only because of what ships beside the ROM:
+`nes-001.ogg`, recorded from an NTSC NES with a PowerPak. That makes the
+comparison numeric. Relative peak-to-peak per tone, the metric its own README
+prescribes:
 
-So everything from the envelope outward is defended by cited documentation,
-unit tests, and a mutation harness rather than by a ROM - and by seven
-adversarial reviews, which between them found an inverted CPU/APU clock phase, a
-BLEP kernel storing the wrong function, three data races, and a startup path
-that discarded every transition in the first 285 cycles. **Nobody has listened
-to it.** Every number says it is right; no ear has confirmed it, and that is the
-honest state of the audio today.
+| | max \|dB\| | rms dB |
+|---|---:|---:|
+| fceux 2.0.4 | 2.49 | 1.05 |
+| **this emulator** | **2.99** | **1.66** |
+| Nestopia 1.40 | 3.51 | 1.66 |
+| Nintendulator | 4.01 | 1.88 |
+
+Mid-pack among three mature emulators, and the spread is also the calibration:
+those three span 1.05 to 1.88 dB rms measured identically, so the metric cannot
+resolve better than a couple of dB. `testAPUMixer` pins the formula's constants
+to their last digit; this pins the result against hardware. The two are
+complementary, and neither alone would do.
+
+Everything from the envelope outward is otherwise defended by cited
+documentation, unit tests and a mutation harness rather than by a ROM - and by
+seven adversarial reviews, which between them found an inverted CPU/APU clock
+phase, a BLEP kernel storing the wrong function, three data races, and a startup
+path that discarded every transition in the first 285 cycles.
+
+Next: nothing in the APU. The DMC's CPU stall is the last piece, and its
+divergence is pinned rather than fixed - see below.
 
 ### Verification: what has and has not been exercised
 
