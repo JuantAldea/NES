@@ -93,12 +93,13 @@ check for regressions with `tests/test_counts.sh --check`.
 | `unrom` | 9 | yes |
 | `VblNmiTiming/VblNmiTimingRoms` | 7 | yes |
 | `visualRoms` | 4 | yes |
+| `volumeTests` | 1 | yes |
 
 | | Cases |
 |---|---:|
-| Registered | 1074 |
+| Registered | 1075 |
 | Skipped in CI | 518 |
-| **Executed in CI** | **556** |
+| **Executed in CI** | **557** |
 
 Skipped in CI: the 512 per-opcode SingleStepTests need 1.1 GB of vectors CI
 does not fetch, and `commercialRom` needs a cartridge dump nothing here will

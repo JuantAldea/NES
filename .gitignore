@@ -123,3 +123,6 @@ tests/test_files/local/*
 
 # ppu_read_buffer test ROM, fetched by tests/test_files/fetch_ppu_read_buffer.sh
 tests/test_files/ppu_read_buffer
+
+# Damian Yerrick's volume_tests, fetched by tests/test_files/fetch_volume_tests.sh
+tests/test_files/volume_tests

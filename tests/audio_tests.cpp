@@ -13,6 +13,7 @@
 // holding a step rather than muting. That offset is exactly what the 90 Hz
 // high-pass is there to remove, so "silence eventually reads as silence" is a
 // property of the two halves together and is tested as one.
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -859,6 +860,173 @@ GTEST_TEST(commercialRom, smb_is_silent_until_it_leaves_the_title_screen)
     for (const float v : out) {
         ASSERT_EQ(0.0f, v) << "and the stream is silent - the game asked for silence";
     }
+}
+
+// --- the only hardware oracle the audio has ---------------------------------
+//
+// Everything else here is measured against cited documentation or against the
+// implementation's own model. This is measured against a NINTENDO
+// ENTERTAINMENT SYSTEM: volume_tests ships nes-001.ogg, recorded from an NTSC
+// U/C console with a PowerPak, and the twelve numbers below are that recording,
+// reduced by the metric its own README prescribes.
+//
+//   "you can't just measure the maximum voltage; you have to measure the
+//    difference between the high and low values"        - DC filters differ
+//   "you have to compare relative volumes, not absolute volumes"  - headroom
+//
+// So: peak-to-peak per tone, normalised to tone 3. See
+// tests/test_files/fetch_volume_tests.sh for how these were derived and for the
+// three other emulators measured identically.
+//
+// THE TOLERANCE IS CALIBRATED, not guessed. Measured the same way against the
+// same recording: fceux 2.49 dB worst-case and 1.05 rms, this emulator 2.99 and
+// 1.66, Nestopia 3.51 and 1.66, Nintendulator 4.01 and 1.88. Three mature
+// emulators span 1.05-1.88 dB rms, so the metric itself cannot resolve better
+// than a couple of dB and a bound tighter than that would be measuring noise.
+// 4.5 dB per tone and 2.5 dB rms passes all four and still catches a channel
+// balance that is grossly wrong - swapping two tnd divisors moves a tone by
+// 3.5 dB on top of whatever error is already there.
+//
+// A first reading of this emulator's triangle at -3.0 dB looked like a mixer
+// bug. Nintendulator's is -4.0. Measuring the other emulators before drawing
+// the conclusion is the only reason that was not chased.
+//
+// WHAT THIS CANNOT CATCH, so nobody reads a pass as more than it is. Swapping
+// the triangle and noise divisors fails here, as does mis-scaling the DMC or
+// the pulse group. Setting all three tnd divisors EQUAL does not: it moves the
+// noise by 3.45 dB from a starting error of -1.6, which lands inside the bound
+// and happens to point toward hardware rather than away. A tolerance tight
+// enough to catch it would be tighter than the spread between fceux and
+// Nintendulator, i.e. it would be measuring this metric's own noise.
+//
+// testAPUMixer covers that case, and covers every constant to its last digit.
+// The two are complementary on purpose: those tests pin the formula, this one
+// pins the result against a console.
+constexpr float kHardwareLevels[12] = {
+    0.9801f, 0.9962f, 1.0000f, 0.9922f,  // pulse 1 at 1/8, 1/4, 1/2, 3/4 duty
+    1.6767f, 1.6996f, 1.7134f, 1.6906f,  // pulses 1+2 at the same four duties
+    1.4594f,                             // triangle
+    0.8199f, 0.8640f,                    // noise, long then short LFSR
+    1.0534f,                             // DMC at amplitude 30
+};
+
+// The 1st and 99th percentile, so a single sample cannot set the level. The
+// README asks for "the difference between the high and low values"; on a
+// waveform with any overshoot the extremes are not that difference.
+float peak_to_peak(std::vector<float> segment)
+{
+    std::sort(segment.begin(), segment.end());
+    const size_t lo = segment.size() / 100;
+    const size_t hi = segment.size() - 1 - lo;
+    return segment[hi] - segment[lo];
+}
+
+// Splits the render into the twelve tones by short-time energy, and returns
+// each one's peak-to-peak. Windows are 10 ms; a segment shorter than 200 ms is
+// a transition rather than a tone.
+std::vector<float> tone_levels(const std::vector<float>& samples)
+{
+    constexpr size_t window = 441;
+    std::vector<float> envelope;
+    for (size_t i = 0; i + window <= samples.size(); i += window) {
+        double sum = 0.0;
+        for (size_t j = 0; j < window; ++j) {
+            sum += static_cast<double>(samples[i + j]) * samples[i + j];
+        }
+        envelope.push_back(static_cast<float>(std::sqrt(sum / window)));
+    }
+    if (envelope.empty()) {
+        return {};
+    }
+
+    const float threshold = *std::max_element(envelope.begin(), envelope.end()) * 0.15f;
+    std::vector<float> levels;
+    size_t start = 0;
+    bool inside = false;
+    for (size_t i = 0; i < envelope.size() && levels.size() < 12; ++i) {
+        const bool loud = envelope[i] > threshold;
+        if (loud && !inside) {
+            start = i;
+            inside = true;
+        } else if (!loud && inside) {
+            inside = false;
+            if (i - start < 20) {
+                continue;
+            }
+            // Trimmed either side, so the attack and release are not measured.
+            const size_t from = (start + 2) * window;
+            const size_t to = (i - 2) * window;
+            if (to > from && to - from >= 4410) {
+                levels.push_back(peak_to_peak(std::vector<float>(samples.begin() + static_cast<std::ptrdiff_t>(from),
+                                                                 samples.begin() + static_cast<std::ptrdiff_t>(to))));
+            }
+        }
+    }
+    return levels;
+}
+
+GTEST_TEST(volumeTests, channel_balance_matches_a_real_nes)
+{
+    const std::string path = std::string(NES_TEST_FILES_DIR) + "/volume_tests/volumes.nes";
+    REQUIRE_ROM(path, "run tests/test_files/fetch_volume_tests.sh");
+
+    Bus console;
+    ASSERT_TRUE(console.load_cartridge(path));
+    console.cpu.power_on();
+    console.audio_enabled = true;
+
+    // NOTHING PLAYS UNTIL A IS PRESSED. The README says so, and a first render
+    // of this ROM was seventeen seconds of silence before that was read
+    // properly.
+    constexpr long long master_hz = 21477272;
+    const long long press_at = master_hz;
+    const long long release_at = master_hz * 6 / 5;
+    const long long total = master_hz * 17;
+
+    std::vector<float> all;
+    std::vector<float> chunk(4096);
+    for (long long i = 0; i < total; ++i) {
+        if (i == press_at) {
+            console.controllers.press(0, Controllers::A);
+        }
+        if (i == release_at) {
+            console.controllers.release(0, Controllers::A);
+        }
+        console.clock();
+        if (console.audio.available() >= chunk.size()) {
+            const size_t got = console.audio.read(chunk.data(), chunk.size());
+            all.insert(all.end(), chunk.begin(), chunk.begin() + static_cast<std::ptrdiff_t>(got));
+        }
+    }
+
+    const std::vector<float> levels = tone_levels(all);
+    ASSERT_EQ(12u, levels.size()) << "expected twelve tones, segmented " << levels.size()
+                                  << ". The ROM plays pulse 1 at four duties, pulses 1+2 at four duties,\n"
+                                     "  triangle, noise long, noise short and the DMC - if fewer were found the\n"
+                                     "  emulator went silent partway, which is a different fault from a wrong level.";
+    ASSERT_GT(levels[2], 0.0f) << "tone 3 is the normalisation reference and cannot be silent";
+
+    static const char* const kNames[12] = {
+        "pulse1 1/8",   "pulse1 1/4",   "pulse1 1/2", "pulse1 3/4", "pulse1+2 1/8", "pulse1+2 1/4",
+        "pulse1+2 1/2", "pulse1+2 3/4", "triangle",   "noise long", "noise short",  "dmc 30",
+    };
+
+    double sum_squared = 0.0;
+    for (int i = 0; i < 12; ++i) {
+        const double relative = levels[static_cast<size_t>(i)] / levels[2];
+        const double error_db = 20.0 * std::log10(relative / kHardwareLevels[i]);
+        sum_squared += error_db * error_db;
+
+        EXPECT_LT(std::fabs(error_db), 4.5) << kNames[i] << " is " << error_db << " dB from a real NES (measured "
+                                            << relative << ", hardware " << kHardwareLevels[i]
+                                            << ").\n  Mature emulators land within 4.0 dB on this metric; see"
+                                               " fetch_volume_tests.sh.";
+    }
+
+    const double rms_db = std::sqrt(sum_squared / 12.0);
+    EXPECT_LT(rms_db, 2.5) << "overall channel balance is " << rms_db
+                           << " dB rms from hardware. fceux measures 1.05, this emulator 1.66,"
+                              " Nestopia 1.66, Nintendulator 1.88.";
 }
 
 }  // namespace audio
