@@ -125,14 +125,23 @@ void APU::clock_dmc()
     // it only suppresses the level change - which is what keeps a silenced
     // channel in step with the sample stream.
     if (!dmc.silence) {
-        // Clamped rather than wrapped: the level is 7 bits and hardware simply
-        // does not step past either end.
+        // nesdev's APU DMC page, verbatim: "If the silence flag is clear, the
+        // output level changes based on bit 0 of the shift register. If the bit
+        // is 1, add 2; otherwise, subtract 2. But if adding or subtracting 2
+        // would cause the output level to leave the 0-127 range, leave the
+        // output level unchanged." Clamped, then, rather than wrapped.
         //
-        // ALSO NOT VERIFIED HERE. Removing the upper clamp passes every APU ROM
-        // in this repo - the output level is an analogue quantity and none of
-        // them read it back, so only something that renders audio can catch it.
-        // From the wiki, and pinned here in a comment rather than by a test
-        // because there is nothing to assert against yet.
+        // This used to say the clamp was unverifiable here - that no ROM reads
+        // the level back, so "only something that renders audio can catch it",
+        // and there was "nothing to assert against yet". The first clause is
+        // true and is why no oracle covers this. The rest was false: dmc_level()
+        // has always been public, and the only thing actually missing was a way
+        // to choose the sample byte, which dmc_deliver_sample_byte provides.
+        //
+        // The cost of believing it: mechanical mutation of these seven lines
+        // killed 0 of 11 against the whole suite, so a DMC decoding every sample
+        // backwards read as correct. Four tests in dmc_buffer_tests.cpp now kill
+        // all 11 - see the block comment there before weakening any of them.
         if ((dmc.shift_register & 0x01) != 0) {
             if (dmc.output_level <= 125) {
                 dmc.output_level = static_cast<uint8_t>(dmc.output_level + 2);

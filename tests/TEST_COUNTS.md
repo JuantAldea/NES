@@ -42,7 +42,7 @@ check for regressions with `tests/test_counts.sh --check`.
 | `cpuTiming` | 1 | yes |
 | `CpuTiming/InstrTimingRoms` | 2 | yes |
 | `Discrete/HolyMapperel` | 3 | yes |
-| `dmcBuffer` | 7 | yes |
+| `dmcBuffer` | 11 | yes |
 | `dmcDma` | 1 | yes |
 | `DmcDma/SprdmaAndDmcDma` | 2 | yes |
 | `frameDump` | 6 | yes |
@@ -97,9 +97,9 @@ check for regressions with `tests/test_counts.sh --check`.
 
 | | Cases |
 |---|---:|
-| Registered | 1078 |
+| Registered | 1082 |
 | Skipped in CI | 518 |
-| **Executed in CI** | **560** |
+| **Executed in CI** | **564** |
 
 Skipped in CI: the 512 per-opcode SingleStepTests need 1.1 GB of vectors CI
 does not fetch, and `commercialRom` needs a cartridge dump nothing here will

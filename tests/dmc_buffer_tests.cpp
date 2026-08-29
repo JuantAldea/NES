@@ -163,6 +163,35 @@ int cycles_until_disable_takes_effect(Bus& console)
     return -1;
 }
 
+constexpr int kBitCycles = 428;  // rate index 0: one output-unit step, kByteCycles / 8
+
+// Leaves `sample_byte` in the shift register with the channel unsilenced, so the
+// step kBitCycles later decodes its low bit.
+//
+// Injecting through APU::dmc_deliver_sample_byte is not a back door into private
+// state: it is the exact entry point the Bus calls on a DMA get cycle, with the
+// byte it read. It is also the only way to CHOOSE the byte, because $4012 can
+// only point the sample at $C000 and up, and these tests run without a
+// cartridge - which is precisely why the output unit went untested for so long.
+void arm_output_unit(Bus& console, const uint8_t sample_byte)
+{
+    start_sample(console, 0x01);
+    run_cpu_cycles(console, 6);  // the scheduled load, per the first test in this file
+    console.apu.dmc_deliver_sample_byte(sample_byte);
+    ASSERT_TRUE(console.apu.dmc_sample_buffer_filled()) << "the injected byte never reached the buffer";
+
+    // The output unit empties the buffer into the shift register on its next
+    // tick, and the buffer going empty is how that becomes observable. Bounded
+    // by a whole byte period so a unit that never ticks fails rather than hangs.
+    for (int cycle = 1; cycle <= kByteCycles; ++cycle) {
+        run_cpu_cycles(console, 1);
+        if (!console.apu.dmc_sample_buffer_filled()) {
+            return;
+        }
+    }
+    FAIL() << "the shift register never loaded the injected byte";
+}
+
 }  // namespace
 
 // The buffer is filled BY the enable but not ON it: a $4015 write schedules the
@@ -401,6 +430,96 @@ GTEST_TEST(dmcBuffer, re_enabling_does_not_call_off_a_disable_already_counting_d
 
     run_cpu_cycles(console, 1);
     EXPECT_EQ(0, console.apu.dmc_bytes_remaining()) << "and the in-flight abort lands anyway, on its original schedule";
+}
+
+// THE OUTPUT UNIT - the delta decoder itself, and until these four tests it was
+// the largest unwatched thing in this emulator.
+//
+// Mechanical mutation of apu.cpp's decoder, lines 136-142, against every APU
+// suite, every DMC suite, every blargg ROM, the hardware-measured volume tests
+// and the SMB test, killed NOTHING: 0 of 11. Inverting which bit drives the
+// level, inverting the step direction, changing the step size, moving either
+// clamp - all eleven survived 1078 tests. A DMC decoding every sample backwards
+// was indistinguishable from a correct one.
+//
+// The comment that stood at apu.cpp:131 explained half of why and then drew the
+// wrong conclusion. Its first half is right and worth keeping: no ROM here can
+// catch it, because the output level is an analogue quantity that 7-dmc_basics
+// and 8-dmc_rates cannot read back. Its second half - that "only something that
+// renders audio can catch it", and that there was "nothing to assert against
+// yet" - was false the whole time. APU::dmc_level() has always been public, and
+// testAPUMixer already reads it directly after a $4011 write. What was missing
+// was not a way to observe the level; it was a way to choose the sample byte,
+// and dmc_deliver_sample_byte is it.
+//
+// THE HARDWARE RULE, nesdev's APU DMC page, verbatim:
+//
+//   "If the silence flag is clear, the output level changes based on bit 0 of
+//    the shift register. If the bit is 1, add 2; otherwise, subtract 2. But if
+//    adding or subtracting 2 would cause the output level to leave the 0-127
+//    range, leave the output level unchanged."
+//
+// Each test below picks its sample byte to make one mutant distinguishable, and
+// the two that pin direction use 0x01 and 0x02 rather than 0xFF and 0x00 on
+// purpose: with 0xFF every bit is set, so a decoder reading bit 1 instead of
+// bit 0 gives the same answer and the test would pass regardless.
+GTEST_TEST(dmcBuffer, a_set_bit_raises_the_output_level_by_two)
+{
+    Bus console;
+    seed_spin_loop(console);
+    arm_output_unit(console, 0x01);  // bit 0 set, bit 1 CLEAR - see above
+
+    console.write(0x4011, 60);
+    run_cpu_cycles(console, kBitCycles);
+
+    EXPECT_EQ(62, console.apu.dmc_level()) << "a set bit adds exactly 2";
+}
+
+GTEST_TEST(dmcBuffer, a_clear_bit_lowers_the_output_level_by_two)
+{
+    Bus console;
+    seed_spin_loop(console);
+    arm_output_unit(console, 0x02);  // bit 0 clear, bit 1 SET
+
+    console.write(0x4011, 60);
+    run_cpu_cycles(console, kBitCycles);
+
+    EXPECT_EQ(58, console.apu.dmc_level()) << "a clear bit subtracts exactly 2";
+}
+
+// Both edges of the top clamp, because only one of them constrains the bound.
+// 125 -> 127 is the last step that must be ALLOWED and 126 the first that must
+// be REFUSED; a test that only checked one would leave the other free to move.
+GTEST_TEST(dmcBuffer, the_output_level_stops_at_the_top_of_its_range)
+{
+    Bus console;
+    seed_spin_loop(console);
+    arm_output_unit(console, 0xFF);  // eight set bits: every step below adds
+
+    console.write(0x4011, 125);
+    run_cpu_cycles(console, kBitCycles);
+    EXPECT_EQ(127, console.apu.dmc_level()) << "125 + 2 is inside the range and must be taken";
+
+    // $4011 sets the level directly, so the next step starts from 126 with the
+    // same shift register - one bit further along and still set.
+    console.write(0x4011, 126);
+    run_cpu_cycles(console, kBitCycles);
+    EXPECT_EQ(126, console.apu.dmc_level()) << "126 + 2 would leave the range, so the level is unchanged";
+}
+
+GTEST_TEST(dmcBuffer, the_output_level_stops_at_the_bottom_of_its_range)
+{
+    Bus console;
+    seed_spin_loop(console);
+    arm_output_unit(console, 0x00);  // eight clear bits: every step below subtracts
+
+    console.write(0x4011, 2);
+    run_cpu_cycles(console, kBitCycles);
+    EXPECT_EQ(0, console.apu.dmc_level()) << "2 - 2 is inside the range and must be taken";
+
+    console.write(0x4011, 1);
+    run_cpu_cycles(console, kBitCycles);
+    EXPECT_EQ(1, console.apu.dmc_level()) << "1 - 2 would leave the range, so the level is unchanged";
 }
 
 }  // namespace dmc_buffer
