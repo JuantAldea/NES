@@ -128,6 +128,41 @@ int cycles_until_buffer_fills(Bus& console)
     return -1;
 }
 
+// The mirror of pin_even_apu_cycle, for the disable tests below - they are the
+// one place in this file where the two parities produce different numbers.
+void pin_odd_apu_cycle(Bus& console)
+{
+    if (console.cpu_cycles % 2 == 0) {
+        run_cpu_cycles(console, 1);
+    }
+    ASSERT_EQ(1u, console.cpu_cycles % 2) << "parity pin failed, so every cycle count below is off by one";
+}
+
+// A channel with bytes still to fetch, settled far from its next fetch: the
+// scheduled load has completed and the following one is a byte period away, so
+// nothing but the disable can move bytes-remaining inside the window below.
+void start_sample_and_settle(Bus& console)
+{
+    start_sample(console, 0x01);  // 17 bytes
+    run_cpu_cycles(console, 6);   // the scheduled load, per the test above
+    ASSERT_EQ(16, console.apu.dmc_bytes_remaining()) << "the settle did not leave the channel mid-sample";
+    ASSERT_EQ(0u, console.cpu_cycles % 2) << "start_sample pinned even and 6 preserves it";
+}
+
+// CPU cycles from a $4015 disable until bytes-remaining is cleared, or -1 if it
+// never is. Bounded well above either documented figure so a countdown that
+// never expires is reported as a number rather than as a timeout.
+int cycles_until_disable_takes_effect(Bus& console)
+{
+    for (int cycle = 1; cycle <= 8; ++cycle) {
+        run_cpu_cycles(console, 1);
+        if (console.apu.dmc_bytes_remaining() == 0) {
+            return cycle;
+        }
+    }
+    return -1;
+}
+
 }  // namespace
 
 // The buffer is filled BY the enable but not ON it: a $4015 write schedules the
@@ -259,6 +294,71 @@ GTEST_TEST(dmcBuffer, a_finished_sample_leaves_the_buffer_full_until_it_is_playe
     // Once the byte is played, the outstanding byte is fetched.
     run_cpu_cycles(console, kByteCycles + 32);
     EXPECT_EQ(0, console.apu.dmc_bytes_remaining()) << "the queued byte is fetched when the buffer frees up";
+}
+
+// A $4015 DISABLE is deferred the same way an enable is, and these two tests
+// exist because mechanical mutation said nothing was watching the countdown.
+//
+// Mutating apu.cpp's `if (dmc.disable_delay != 0 && --dmc.disable_delay == 0)`
+// four ways, against every APU and DMC suite including the ROMs, left two alive:
+// `!= 0` to `== 0` on the decrement, and `== 0` to `== 1`. Both make the abort
+// fire ONE CYCLE EARLY, and nothing in 1075 tests could tell. What did die was
+// the mutant that removes the abort altogether - blargg's 7-dmc_basics catches
+// that, and it is the only test in the project that reaches this code with
+// bytes still remaining, which it does five times. So the abort's EXISTENCE had
+// an oracle and its TIMING had none.
+//
+// The delay is Mesen2's, read from DeltaModulationChannel.cpp, and this
+// emulator's line is character-for-character the same test:
+//
+//   if((_console->GetCpu()->GetCycleCount() & 0x01) == 0) { _disableDelay = 2; }
+//   else { _disableDelay = 3; }
+//   ...
+//   if(_disableDelay && --_disableDelay == 0) {
+//
+// so 2 on an even CPU cycle and 3 on an odd one, counted down once per CPU
+// cycle and acted on when it reaches zero.
+//
+// THESE TWO RESOLVE, FOR THE DISABLE PATH ONLY, the open question recorded at
+// the top of this file: that the enable's parity table "is currently doing no
+// work that the phase gate is not already doing", because both of its values
+// land the DMA on the same cycle. Nothing like that applies here. The abort is
+// not a DMA, waits for no get cycle and clears bytes-remaining the instant the
+// counter expires, so 2 and 3 are directly distinguishable - which is why these
+// are written as a pair rather than as one test at a pinned parity. The enable
+// side of that question is still open.
+GTEST_TEST(dmcBuffer, a_disable_on_an_even_cycle_takes_effect_two_cycles_later)
+{
+    Bus console;
+    seed_spin_loop(console);
+    start_sample_and_settle(console);
+
+    console.write(0x4015, 0x00);  // disable: SCHEDULES the abort
+
+    // The lower edge, and the reason this can still fail: without it the test
+    // would pass just as well against an abort performed inline on the write,
+    // which is the behaviour the delay exists to rule out.
+    EXPECT_EQ(16, console.apu.dmc_bytes_remaining()) << "a $4015 disable must not abort on the cycle of the write";
+
+    EXPECT_EQ(2, cycles_until_disable_takes_effect(console))
+        << "an even-cycle disable expires on the second cycle after it";
+}
+
+GTEST_TEST(dmcBuffer, a_disable_on_an_odd_cycle_takes_effect_three_cycles_later)
+{
+    Bus console;
+    seed_spin_loop(console);
+    start_sample_and_settle(console);
+    pin_odd_apu_cycle(console);
+
+    console.write(0x4015, 0x00);
+
+    EXPECT_EQ(16, console.apu.dmc_bytes_remaining()) << "a $4015 disable must not abort on the cycle of the write";
+
+    // The one cycle of difference from the test above is the whole content of
+    // the parity table on this path.
+    EXPECT_EQ(3, cycles_until_disable_takes_effect(console))
+        << "an odd-cycle disable expires on the third cycle after it";
 }
 
 }  // namespace dmc_buffer
