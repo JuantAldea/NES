@@ -30,23 +30,29 @@ audio.
 | FME-7 | Command/parameter register pair, four PRG windows including PRG-ROM at `$6000`, eight 1KB CHR windows, all four mirroring modes, and an M2-clocked 16-bit IRQ counter - the first board here that counts CPU cycles rather than watching the PPU. Both `M69` images identify as J*ROM |
 | TxSROM | An MMC3 with CHR A17 wired to CIRAM A10, so the nametables are banked by the CHR registers and the board has one-screen mirroring the MMC3 lacks. `M118_P128K_C64K` identifies as T*SROM and reports `0000` |
 | MMC3 IRQ | A12-filtered scanline counter driving `/IRQ`, clocked on the right dot. Passes 5 of blargg's 6 `mmc3_test_2` ROMs; the sixth tests the other chip revision, see below |
-| APU | Frame counter, `/IRQ`, length counters, the power-on/RESET state. Delta modulation channel, minus its CPU stall. Passes **all** of blargg's `apu_test`, `apu_reset` and `blargg_apu_2005` ROMs. No audio output yet. |
+| APU | Frame counter, `/IRQ`, length counters, the power-on/RESET state. Envelope, sweep and the triangle's linear counter. Pulse, triangle and noise generators, the channel gates and the non-linear mixer. Delta modulation channel, minus its CPU stall. Passes **all** of blargg's `apu_test`, `apu_reset` and `blargg_apu_2005` ROMs |
+| Audio out | Band-limited step synthesis to 44.1 kHz, the NES's 90 Hz / 440 Hz / 14 kHz analogue filter chain, and a lock-free SPSC ring feeding an SDL callback. In-band aliasing measured at −44.6 dB at A5 and −36.3 dB at the top of the pulse range |
 | Display | SDL2 + Dear ImGui: the screen and the debugger in one window |
 | Controllers | Both ports at `$4016`/`$4017`, keyboard-driven. Passes blargg's `read_joy3` `test_buttons` |
 
-Next: the rest of the APU - envelope, sweep, the channels themselves and the
-mixer. SDL is already a dependency and its audio callback is the natural clock
-for it.
+Next: verifying the audio by ear against `volume_tests`' shipped recordings,
+which is the one check it has never had.
 
-**With one caveat now measured rather than assumed.** The APU suites that pass
-here - `apu_test`, `apu_reset`, `blargg_apu_2005` - are register-level. The two
-that look like they would cover waveforms and mixing, `apu_mixer` and
-`volume_tests`, are listening tests: all four `apu_mixer` ROMs report status
-`$00` against this emulator *today*, with no channels and no mixer implemented,
-because a ROM cannot hear itself and the status byte only says it ran. See the
-header of [tests/apu_rom_tests.cpp](tests/apu_rom_tests.cpp) for the numbers.
-So the audio work would be the first substantial subsystem here built without an
-oracle.
+**Because none of it has an oracle, and that is not a figure of speech.** The
+APU suites that pass here - `apu_test`, `apu_reset`, `blargg_apu_2005` - are
+register-level. The two that look like they would cover waveforms and mixing,
+`apu_mixer` and `volume_tests`, are listening tests: all four `apu_mixer` ROMs
+reported status `$00` against this emulator when it had no channels and no mixer
+at all, because a ROM cannot hear itself and the status byte only says it ran.
+See the header of [tests/apu_rom_tests.cpp](tests/apu_rom_tests.cpp).
+
+So everything from the envelope outward is defended by cited documentation,
+unit tests, and a mutation harness rather than by a ROM - and by seven
+adversarial reviews, which between them found an inverted CPU/APU clock phase, a
+BLEP kernel storing the wrong function, three data races, and a startup path
+that discarded every transition in the first 285 cycles. **Nobody has listened
+to it.** Every number says it is right; no ear has confirmed it, and that is the
+honest state of the audio today.
 
 ### Verification: what has and has not been exercised
 
