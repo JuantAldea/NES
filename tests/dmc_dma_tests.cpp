@@ -486,6 +486,7 @@
 // documented 3 and 4. The corrected figure is better evidence than the wrong
 // one was, because it distinguishes the two kinds.
 // ---------------------------------------------------------------------------
+#include <map>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -605,26 +606,59 @@ TEST_P(SprdmaAndDmcDma, is_blocked_on_the_cpu_stall)
            "  and assert the pass instead. Full screen:\n"
         << screen;
 
-    // The failure is pinned to its CAUSE, not just its verdict: EVERY row of the
-    // table must read 512 or 513, the OAM DMA lengths with no DMC interference.
-    // If a stall is implemented but wrong, this stops matching and says
-    // something different from "still not implemented".
+    // The failure is pinned to its CAUSE, not just its verdict: every row of the
+    // table is asserted at the value this emulator currently produces.
+    //
+    // WHY EXACT VALUES RATHER THAN "512 OR 513". This pin used to require every
+    // row to be a plain uninterrupted OAM DMA length, on the reasoning that the
+    // DMC's CPU stall was absent. It is not absent - it is present and
+    // imperfect, so every row reads 525-528, and the pin failed on all sixteen.
+    //
+    // That failure was left standing, and it turned CI red on every push for six
+    // weeks. A permanently-red pipeline is worse than none: it hides the next
+    // real regression behind a failure everyone has learned to scroll past,
+    // which is the same false signal this project rejects in the other
+    // direction. Pinning the measured values is what the rest of this repository
+    // already does with a known divergence - opcode $AB in instr_test_roms.cpp
+    // asserts blargg's ROM fails on exactly ATX, and 6-MMC3_alt is asserted to
+    // fail on exactly its subtest. Neither is "ignored"; both are nailed down so
+    // that any MOVEMENT surfaces.
+    //
+    // So these tables are the divergence, recorded. Hardware would give 512 or
+    // 513 with no DMC interference and a correct stall gives documented longer
+    // figures; this gives neither. Any change to the DMC's timing shifts a row
+    // and fails here with the row named, which is the signal worth having.
     //
     // Each row is parsed, rather than searching the whole screen for "512" and
     // "513" as an earlier version did. That search passed on any screen
-    // containing one row of each - and a table of fourteen 783s with a single
-    // 512 and 513 satisfied it. It let a wrong stall through undetected in an
-    // adversarial review, which is the exact failure this pin exists to catch.
+    // containing one row of each - a table of fourteen 783s with a single 512
+    // and 513 satisfied it - and let a wrong stall through undetected in an
+    // adversarial review.
+    //
+    // MEASURED 2026-08-29. Delete the whole pin when the stall is implemented
+    // properly, and assert the pass instead; do not "update" these numbers to
+    // make a red run green without understanding which row moved and why.
+    static const std::map<std::string, std::vector<int>> kMeasured = {
+        {"sprdma_and_dmc_dma", {527, 528, 527, 528, 527, 528, 525, 526, 525, 526, 525, 526, 525, 526, 525, 526}},
+        {"sprdma_and_dmc_dma_512", {525, 526, 525, 526, 525, 526, 525, 526, 527, 528, 527, 528, 527, 528, 527, 528}},
+    };
+
     const std::vector<int> lengths = table_lengths(screen);
     ASSERT_EQ(16u, lengths.size()) << name << ": expected 16 table rows, parsed " << lengths.size()
                                    << ". Full screen:\n"
                                    << screen;
+
+    const auto expected = kMeasured.find(name);
+    ASSERT_NE(kMeasured.end(), expected) << name << " has no recorded table; add one rather than skipping the check";
+
     for (size_t row = 0; row < lengths.size(); ++row) {
-        EXPECT_TRUE(lengths[row] == 512 || lengths[row] == 513)
-            << name << " row " << row << " reads " << lengths[row]
-            << ", not the plain 512 or 513 of an uninterrupted OAM DMA. A stall IS\n"
-               "  happening and is wrong, which is a different problem from it being\n"
-               "  absent. Full screen:\n"
+        EXPECT_EQ(expected->second[row], lengths[row])
+            << name << " row " << row << " reads " << lengths[row] << ", not the recorded " << expected->second[row]
+            << ".\n"
+               "  This is the parked DMC/OAM collision divergence, and a row moving means the\n"
+               "  DMC's timing changed. Hardware gives 512 or 513 with no interference; if the\n"
+               "  stall is now correct, delete this pin and assert the ROM's pass instead.\n"
+               "  Full screen:\n"
             << screen;
     }
 }
