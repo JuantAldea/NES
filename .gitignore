@@ -126,3 +126,8 @@ tests/test_files/ppu_read_buffer
 
 # Damian Yerrick's volume_tests, fetched by tests/test_files/fetch_volume_tests.sh
 tests/test_files/volume_tests
+
+# Bytecode from importing tests/mutants_generate.py. Running it as a script -
+# which is how run_mutants.sh drives it - leaves nothing behind; this only
+# appears if someone imports it, as a phantom-mutant count once did.
+tests/__pycache__
