@@ -487,6 +487,30 @@ GTEST_TEST(dmcBuffer, a_clear_bit_lowers_the_output_level_by_two)
     EXPECT_EQ(58, console.apu.dmc_level()) << "a clear bit subtracts exactly 2";
 }
 
+// One bit per step, not two. This test exists because the four above did not
+// catch `shift_register >>= 1` becoming `>>= 2`: three of them read only the
+// FIRST step, where the shift has not happened yet, and the clamp tests use
+// 0xFF and 0x00, where every bit is the same and the shift distance cannot
+// matter. A decoder consuming two bits per step - dropping half of every sample
+// - passed all of them.
+//
+// 0b00000010 is the shortest byte that tells the difference: down on bit 0, then
+// UP on bit 1. Consume two bits at a time and the second step reads bit 2, which
+// is clear, so the level falls twice instead of falling and rising.
+GTEST_TEST(dmcBuffer, the_shift_register_advances_one_bit_per_step)
+{
+    Bus console;
+    seed_spin_loop(console);
+    arm_output_unit(console, 0x02);
+
+    console.write(0x4011, 60);
+    run_cpu_cycles(console, kBitCycles);
+    ASSERT_EQ(58, console.apu.dmc_level()) << "bit 0 is clear, so the first step subtracts";
+
+    run_cpu_cycles(console, kBitCycles);
+    EXPECT_EQ(60, console.apu.dmc_level()) << "bit 1 is set, so exactly one bit was consumed by the first step";
+}
+
 // Both edges of the top clamp, because only one of them constrains the bound.
 // 125 -> 127 is the last step that must be ALLOWED and 126 the first that must
 // be REFUSED; a test that only checked one would leave the other free to move.
