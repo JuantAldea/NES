@@ -173,5 +173,38 @@ GTEST_TEST(gxrom, a_prg_size_beyond_the_two_bit_field_is_rejected)
     EXPECT_FALSE(console.load_cartridge(rom.path)) << "256K of PRG needs three bank bits; this board has two";
 }
 
+// THE OTHER END OF THE RANGE, and it is the assertion that keeps the check from
+// being satisfiable by rejecting everything. A single 32KB bank is the smallest
+// this board can be, and it must LOAD.
+//
+// It also reaches a clause nothing else does: the header counts 16KB banks, so
+// this image has two, and the halving that turns them into 32KB banks is only
+// observable where getting it wrong yields zero.
+GTEST_TEST(gxrom, the_smallest_legal_image_loads)
+{
+    GxRomImage rom("gxrom_min.nes", 1, 1);
+    Bus console;
+    ASSERT_TRUE(console.load_cartridge(rom.path)) << "32K PRG and 8K CHR is one bank of each, which is legal";
+    EXPECT_EQ(0, console.read(0x8000));
+    EXPECT_EQ(0, console.ppu.ppu_bus_read(0x0000));
+}
+
+// Three banks: even in the header, non-zero, small enough - and not a power of
+// two, so the bank-count mask in prg_read would be ambiguous. The only clause
+// that rejects it is the power-of-two one.
+GTEST_TEST(gxrom, a_prg_bank_count_that_is_not_a_power_of_two_is_rejected)
+{
+    GxRomImage rom("gxrom_three_prg.nes", 3, 4);
+    Bus console;
+    EXPECT_FALSE(console.load_cartridge(rom.path)) << "96K cannot be masked to three banks unambiguously";
+}
+
+GTEST_TEST(gxrom, a_chr_bank_count_that_is_not_a_power_of_two_is_rejected)
+{
+    GxRomImage rom("gxrom_three_chr.nes", 4, 3);
+    Bus console;
+    EXPECT_FALSE(console.load_cartridge(rom.path)) << "the same ambiguity on the CHR side";
+}
+
 }  // namespace gxrom
 }  // namespace tests

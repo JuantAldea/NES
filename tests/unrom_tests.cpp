@@ -280,5 +280,26 @@ GTEST_TEST(unrom7408, an_image_with_chr_rom_is_rejected)
     EXPECT_FALSE(large.load_cartridge(huge.path)) << "512K needs five bank bits; this board latches four";
 }
 
+// BOTH ENDS OF THE ACCEPTED RANGE, which is what stops the check above from
+// being satisfied by a rule that rejects everything. Two banks and sixteen are
+// the smallest and largest real boards, and each is one step from a rejection -
+// so these are the assertions that pin where the boundary IS rather than that
+// there is one somewhere.
+GTEST_TEST(unrom7408, the_smallest_and_largest_legal_images_both_load)
+{
+    BankedRom smallest("unrom7408_two_banks.nes", 2, 180);
+    Bus a;
+    ASSERT_TRUE(a.load_cartridge(smallest.path)) << "two banks is the minimum that has a window to switch";
+    a.write(0x8000, 1);
+    EXPECT_EQ(0, a.read(0x8000)) << "fixed half is still bank 0";
+    EXPECT_EQ(1, a.read(0xC000)) << "and the other bank is switched in above it";
+
+    BankedRom largest("unrom7408_sixteen_banks.nes", 16, 180);
+    Bus b;
+    ASSERT_TRUE(b.load_cartridge(largest.path)) << "sixteen banks is 256K, the largest the four bits reach";
+    b.write(0x8000, 15);
+    EXPECT_EQ(15, b.read(0xC000)) << "the top bank is reachable";
+}
+
 }  // namespace unrom
 }  // namespace tests
