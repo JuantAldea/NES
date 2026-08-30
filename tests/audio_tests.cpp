@@ -1324,6 +1324,12 @@ GTEST_TEST(testAudio, a_fully_satisfied_read_is_not_counted_as_a_starve)
     const size_t available = sampler.available();
     ASSERT_GT(available, 16u) << "nothing to read, so the assertion below would be vacuous";
 
+    // Both counters start at zero, and this is the only thing that says so for
+    // dropped() - its sibling starved() is covered by the assertions below,
+    // which is why initialising dropped_samples to 1 survived and starved_reads
+    // to 1 did not. ~4900 output samples into a 22050 ring cannot overflow.
+    EXPECT_EQ(0u, sampler.dropped()) << "a ring that never filled cannot have dropped anything";
+
     std::vector<float> out(available);
     EXPECT_EQ(available, sampler.read(out.data(), available));
     EXPECT_EQ(0u, sampler.starved()) << "a read given exactly what the ring held was not short";

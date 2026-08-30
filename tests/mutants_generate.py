@@ -54,6 +54,10 @@ BINARY_OPS = {
 }
 
 SKIP_LINE = re.compile(r"^\s*(//|\*|#)")
+
+# `const std::string& path`, `float corner_hz`, `int tap` - a type and a name,
+# possibly qualified, referenced or templated. See argument_swaps.
+DECLARED_PARAMETER = re.compile(r"^\s*(const\s+)?[A-Za-z_][\w:]*(\s*<[^<>]*>)?\s*[&*]?\s+[A-Za-z_]\w*\s*$")
 LITERAL = re.compile(r"[0-9]+\.[0-9]+f|0[xX][0-9a-fA-F]+|\b[0-9]+\b")
 
 
@@ -148,6 +152,18 @@ def argument_swaps(line: str):
             continue
         args = split_top_level(inner, ", ")
         if not args or len(args) < 2:
+            continue
+        # A DECLARATION'S PARAMETER LIST IS NOT A CALL, and swapping it only
+        # renames the parameters - the definition lives elsewhere and keeps its
+        # own names, so the mutant is a no-op that can never be killed and is
+        # reported as a survivor forever. Two of the nine mutants of blip.h were
+        # this, and two more of audio.h's eighteen.
+        #
+        # Detected by shape: every argument of a declaration is `type name`,
+        # which no call site's argument looks like. Deliberately narrow - it
+        # requires EVERY argument to match, so `f(count, 0.0f)` is untouched, and
+        # the operator keeps working where it has found real defects.
+        if all(DECLARED_PARAMETER.match(arg) for arg in args):
             continue
         for i in range(len(args) - 1):
             swapped = list(args)

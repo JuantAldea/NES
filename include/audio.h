@@ -243,6 +243,13 @@ private:
     double cycles_per_sample;
 
     // Where we are, in output samples, since the last flush.
+    //
+    // BOTH INITIALISERS ARE DEAD, which is why mutating either survives the
+    // suite. position is overwritten with BlipSynth::width by the constructor
+    // and again by clear() - it must be, and the comment at both sites says why -
+    // and last_level is not read until have_level is true, which only the first
+    // push() makes it. They are unreachable rather than untested, and are kept
+    // because a member left uninitialised is worse than one initialised twice.
     double position = 0.0;
     float last_level = 0.0f;
     bool have_level = false;

@@ -74,6 +74,24 @@ public:
     static constexpr int half_width = 16;
     static constexpr int width = half_width * 2;
 
+    // THE FACTOR OF TWO IS GEOMETRY, not a choice, and the assert is here
+    // because mutating it to 3 was invisible to every test in the suite.
+    //
+    // blip.cpp evaluates the sinc at x = tap - half_width + 1 - offset, so it is
+    // centred at tap `half_width`; and it windows with blackman(x + half_width,
+    // width), which spreads the window over the whole tap range and so centres
+    // it at tap `width / 2`. Those are the same tap only when width is exactly
+    // twice half_width. At three times, the window's peak sits eight taps away
+    // from the sinc's, truncating it asymmetrically - which costs linear phase
+    // rather than stopband, and is why a magnitude-based test did not see it.
+    //
+    // Stated as an invariant instead of pinned by a test on purpose: half_width
+    // is a tuning parameter and is meant to be changed, while this relationship
+    // is not. A test asserting width == 32 would forbid the first to protect the
+    // second.
+    static_assert(width == half_width * 2,
+                  "the window centres on width/2 and the sinc on half_width; they must coincide");
+
     // Sub-sample positions the kernel is precomputed at. A transition is
     // snapped to the nearest, so this is the timing resolution.
     //
@@ -110,6 +128,16 @@ public:
     // than adding the correction beside it.
     //
     // The table costs 257 x 16 floats, 16 KB, built once.
+    //
+    // DELIBERATELY NOT PINNED BY A TEST, and neither is half_width. Mutating
+    // this to 257 or half_width to 17 survives the whole suite, and that is the
+    // right outcome: both are tuning parameters whose defensible range is the
+    // measured tables above, and a filter built at either value is CORRECT, just
+    // differently traded. A test asserting 256 would forbid the tuning these
+    // comments exist to inform.
+    //
+    // What must not move is the relationship between half_width and width, which
+    // is geometry rather than tuning, and is a static_assert for that reason.
     static constexpr int phases = 256;
 
     // Fraction of the OUTPUT SAMPLE RATE the sinc is cut off at. 0.45 puts it
