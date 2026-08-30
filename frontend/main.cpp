@@ -15,8 +15,10 @@
 // instead of a widget subclass.
 #include <SDL.h>
 
+#include <argparse/argparse.hpp>
 #include <cstdint>
 #include <cstdio>
+#include <iostream>
 #include <string>
 #include <vector>
 
@@ -140,21 +142,43 @@ void place(const float x, const float y, const float w, const float h)
 
 int main(int argc, char** argv)
 {
-    // BEFORE SDL_Init, so --help prints and exits without opening a window and
-    // without needing a display at all. Flags may come in any order; the ROM
-    // path is the first argument that is not one.
-    bool start_muted = false;
-    const char* rom_argument = nullptr;
-    for (int i = 1; i < argc; ++i) {
-        const std::string argument = argv[i];
-        if (argument == "--mute" || argument == "-m") {
-            start_muted = true;
-        } else if (argument == "--help" || argument == "-h") {
-            std::printf("usage: %s [--mute] [rom.nes]\n  --mute, -m  start silent; the UI can unmute\n", argv[0]);
-            return 0;
-        } else if (rom_argument == nullptr) {
-            rom_argument = argv[i];
-        }
+    // PARSED BEFORE SDL_Init, so --help prints and exits without opening a
+    // window and without needing a display at all - which is also what lets the
+    // help text be checked from a headless CI runner.
+    // help only, not `all`: `all` would also add --version, and this project has
+    // no version to report. Printing an invented one would be worse than not
+    // offering the flag.
+    argparse::ArgumentParser args("nes_frontend", "", argparse::default_arguments::help);
+    args.add_description("NES emulator with a debugger. Runs a cartridge, or starts empty and waits for one.");
+
+    args.add_argument("rom").help("cartridge image to load and run").nargs(argparse::nargs_pattern::optional);
+    args.add_argument("-m", "--mute")
+        .help("start silent - stops the sampler as well as the device, so no synthesis runs")
+        .flag();
+    args.add_argument("--scale")
+        .help("integer scale for the 256x240 screen")
+        .scan<'i', int>()
+        .default_value(2)
+        .metavar("N");
+
+    try {
+        args.parse_args(argc, argv);
+    } catch (const std::exception& error) {
+        // argparse throws for an unknown flag, a missing value, or a --scale
+        // that is not a number. Exit 1 rather than letting it escape: the
+        // functional check asserts this, and a terminate() here would look like
+        // a crash rather than a rejected command line.
+        std::cerr << error.what() << "\n\n" << args;
+        return 1;
+    }
+
+    const bool start_muted = args.get<bool>("--mute");
+    const int requested_scale = args.get<int>("--scale");
+    const std::string rom_argument = args.present("rom") ? args.get<std::string>("rom") : std::string{};
+
+    if (requested_scale < 1 || requested_scale > 8) {
+        std::cerr << "--scale must be between 1 and 8; a fractional or huge scale is not a window anyone wants\n";
+        return 1;
     }
 
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER | SDL_INIT_AUDIO) != 0) {
@@ -252,9 +276,10 @@ int main(int argc, char** argv)
     std::vector<uint32_t> scratch(screen_pixels, 0);
 
     state.muted = start_muted;
+    state.screen_scale = requested_scale;
 
-    if (rom_argument != nullptr) {
-        std::snprintf(state.rom_path, sizeof(state.rom_path), "%s", rom_argument);
+    if (!rom_argument.empty()) {
+        std::snprintf(state.rom_path, sizeof(state.rom_path), "%s", rom_argument.c_str());
         nes_gui::load_cartridge(console, state, rom_argument);
         state.running = true;
     }

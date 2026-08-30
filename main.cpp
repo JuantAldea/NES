@@ -1,44 +1,73 @@
-#include <fstream>
+// The headless driver: runs a cartridge with no window and no sound, and exits
+// when the CPU traps.
+//
+// It exists for the ROMs that report by trapping - most of blargg's do - and for
+// checking that a cartridge loads at all without starting a GUI. The exit code
+// is the trap PC, which is what makes it usable from a shell.
+#include <argparse/argparse.hpp>
 #include <iostream>
-#include <vector>
+#include <string>
 
 #include "bus.h"
-#if 1
+
 int main(int argc, char** argv)
 {
-    if (argc < 2) {
-        std::cerr << "usage: " << argv[0] << " <rom.nes>" << std::endl;
+    // help only, not `all`: `all` adds --version, and this project has no
+    // version to report - see the same choice in frontend/main.cpp.
+    argparse::ArgumentParser args("NES", "", argparse::default_arguments::help);
+    args.add_description("Runs a cartridge headlessly until the CPU traps, then exits with the trap address.");
+
+    args.add_argument("rom").help("cartridge image to run");
+    args.add_argument("--feedback")
+        .help("address whose bits 0 and 1 raise IRQ and NMI, for test harnesses that drive interrupts from memory")
+        .scan<'x', uint16_t>()
+        .metavar("ADDR");
+
+    try {
+        args.parse_args(argc, argv);
+    } catch (const std::exception& error) {
+        // A missing ROM argument arrives here, which is what makes "no arguments
+        // exits 1" true - the functional check asserts it. Letting the exception
+        // escape would abort instead, and an abort is not a rejection.
+        std::cerr << error.what() << "\n\n" << args;
         return 1;
     }
 
+    const std::string rom = args.get<std::string>("rom");
+
     Bus console;
-    if (!console.load_cartridge(argv[1])) {
-        std::cerr << "Failed to load cartridge: " << argv[1] << std::endl;
+    if (!console.load_cartridge(rom)) {
+        std::cerr << "Failed to load cartridge: " << rom << std::endl;
         return 1;
     }
     console.cpu.reset();
 
-    uint16_t feedback_register = 0;  //0xbffc;
-
-    if (feedback_register) {
+    // Was a hard-coded 0xbffc behind an `if (feedback_register)` that was always
+    // false, next to a whole second main() behind `#if 1 / #else` containing an
+    // OAM DMA experiment. Both are gone; the useful half is this flag.
+    const uint16_t feedback_register = args.present<uint16_t>("--feedback").value_or(0);
+    if (feedback_register != 0) {
         console.write(feedback_register, 0x0);
     }
 
     while (true) {
-        auto previous_pc = console.cpu.registers.PC;
-        bool executed = console.cpu.clock(false);
-        if (feedback_register) {
-            uint8_t feedback_reg = console.cpu.read(feedback_register);
-            if (feedback_reg & 0x2) {
-                console.write(feedback_register, feedback_reg & ~0x2);
+        const uint16_t previous_pc = console.cpu.registers.PC;
+        const bool executed = console.cpu.clock(false);
+
+        if (feedback_register != 0) {
+            const uint8_t feedback = console.cpu.read(feedback_register);
+            if (feedback & 0x2) {
+                console.write(feedback_register, static_cast<uint8_t>(feedback & ~0x2));
                 console.cpu.raise_NMI();
                 continue;
-            } else if (feedback_reg & 0x1) {
-                console.write(feedback_register, feedback_reg & ~0x1);
+            }
+            if (feedback & 0x1) {
+                console.write(feedback_register, static_cast<uint8_t>(feedback & ~0x1));
                 console.cpu.raise_IRQ();
                 continue;
             }
         }
+
         if (executed && previous_pc == console.cpu.registers.PC) {
             // A trap is this driver's only exit, so it is also its only chance
             // to write a save. It costs two lines and it is the difference
@@ -50,47 +79,3 @@ int main(int argc, char** argv)
         }
     }
 }
-#else
-
-int main(void)
-{
-    Bus console;
-    uint8_t bytes[256];
-
-    for (auto i = 0; i < 256; i++) {
-        bytes[i] = i;
-    }
-
-    uint16_t source_addr = 0x0200;
-
-    console.write_ram(source_addr, 256, bytes);
-
-    uint8_t dma_program[256];
-    // NOP
-    memset(dma_program, 0xEA, 256);
-
-    // LDA #$02
-    dma_program[0x32] = 0xA9;
-    dma_program[0x33] = 0x02;
-    // STA $4014
-    dma_program[0x34] = 0x8D;
-    dma_program[0x35] = 0x14;
-    dma_program[0x36] = 0x40;
-
-    console.write_ram(0x400, 256, dma_program);
-    console.write(PPU::OAMADDR, 0);
-
-    console.cpu.registers.PC = 0x400;
-
-    while (!console.ppu.dma_in_progress()) {
-        console.clock();
-    }
-
-    // finish DMA
-    while (console.ppu.dma_in_progress()) {
-        console.clock();
-    }
-    std::cout << "DMA OVER";
-    return 0;
-}
-#endif

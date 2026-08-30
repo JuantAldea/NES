@@ -407,12 +407,31 @@ Not production ready.
 ./build/nes_frontend path/to/rom.nes    # loads and starts running
 ./build/nes_frontend                    # then type a path, or drag a .nes in
 ./build/nes_frontend --mute rom.nes     # start silent; the Mute box unmutes
+./build/nes_frontend --scale 3 rom.nes  # integer scale for the 256x240 screen
+./build/nes_frontend --help
 ```
 
 `--mute` stops the sampler as well as the audio device, so a silent run does no
 synthesis at all. It is what `tests/run_functional.sh` passes, because that check
 opens a frontend window per mapper and twelve live audio devices in a row is not
 something anyone wants coming out of their speakers.
+
+Both binaries parse their arguments with
+[argparse](https://github.com/p-ranav/argparse), pinned to `v3.2` like every
+other dependency here. An unknown flag, a missing value or a non-numeric `--scale`
+is reported and exits 1 rather than being ignored, which is what the hand-rolled
+loop this replaced used to do.
+
+### Headless driver (`NES`)
+```sh
+./build/NES path/to/rom.nes     # runs until the CPU traps; exit code is the trap PC
+./build/NES --feedback 0xbffc rom.nes
+```
+
+Exists for the ROMs that report by trapping, and for checking a cartridge loads
+without starting a GUI. `--feedback` names an address whose bits 0 and 1 raise IRQ
+and NMI, for harnesses that drive interrupts from memory; it was a hard-coded
+constant behind an `if` that was always false.
 
 Panel positions are saved to `imgui.ini` in the working directory.
 

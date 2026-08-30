@@ -189,11 +189,28 @@ target_link_libraries(libBus
     libPPU
 )
 
+# argparse, for the two executables' command lines. Header-only and MIT, pinned
+# to a release tag for the same reasons googletest and Dear ImGui are: a moving
+# ref makes the build non-reproducible and a tag is a thing that can be audited.
+#
+# SYSTEM on the include directory. Third-party headers are compiled into our
+# translation units here, so without it argparse's own code would be diagnosed
+# under -Wall -Wextra -pedantic and its warnings would bury ours - the same
+# reason ImGui is built with -w below.
+FetchContent_Declare(
+    argparse
+    GIT_REPOSITORY https://github.com/p-ranav/argparse.git
+    GIT_TAG        v3.2
+    GIT_SHALLOW    TRUE
+)
+FetchContent_MakeAvailable(argparse)
+
 add_executable(NES main.cpp)
 target_link_libraries(NES
     libBus
     libCPU
     libInstruction
+    argparse
 )
 
 if(NES_BUILD_FRONTEND)
@@ -261,6 +278,7 @@ if(NES_BUILD_FRONTEND)
         libBus
         libCPU
         libInstruction
+        argparse
     )
 endif()
 
