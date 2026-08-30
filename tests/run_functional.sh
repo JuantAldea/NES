@@ -387,6 +387,29 @@ tracked=$(cd "$ROOT" && git ls-files | grep -cE '\.nes$|^build')
 (cd "$ROOT" && git check-ignore -q imgui.ini) && report PASS "imgui.ini is ignored" ||
     report FAIL "imgui.ini is ignored"
 
+# One cartridge per SUPPORTED mapper, shared by the two frontend checks below so
+# a board added to one cannot be forgotten by the other. The list is meant to
+# stay complete: it covered four of ten for a while, so a new board could be
+# added, crash the frontend on load, and still see a green functional pass.
+#
+# Deliberately the NON-BATTERY variants: a battery cartridge here would write a
+# .sav into a fetched ROM directory, and those directories have their file count
+# asserted by the fetch scripts.
+FRONTEND_ROMS="
+mapper0:$ROOT/tests/test_files/local/smb.nes
+mapper1:$ROOT/tests/test_files/holy_mapperel/M1_P128K.nes
+mapper2:$ROOT/tests/test_files/visual/240pee.nes
+mapper3:$ROOT/tests/test_files/ppu_read_buffer/test_ppu_read_buffer.nes
+mapper4:$ROOT/tests/test_files/holy_mapperel/M4_P256K_C256K.nes
+mapper7:$ROOT/tests/test_files/holy_mapperel/M7_P128K.nes
+mapper9:$ROOT/tests/test_files/holy_mapperel/M9_P128K_C64K.nes
+mapper10:$ROOT/tests/test_files/holy_mapperel/M10_P128K_C64K_W8K.nes
+mapper69:$ROOT/tests/test_files/holy_mapperel/M69_P128K_C64K_W8K.nes
+mapper118:$ROOT/tests/test_files/holy_mapperel/M118_P128K_C64K.nes
+mapper66:$ROOT/tests/test_files/holy_mapperel/M66_P64K_C16K_V.nes
+mapper180:$ROOT/tests/test_files/holy_mapperel/M180_P128K_H.nes
+"
+
 section "frontend"
 # Serial by necessity: every instance opens a window called NES, so two at once
 # cannot be told apart by xdotool.
@@ -422,19 +445,7 @@ else
     # draws a board report, which is both faster and consistent with the other
     # nine. The MMC3 IRQ path those blargg ROMs cover is asserted by
     # mmc3_rom_tests.cpp, which is where it belongs - this is a smoke test.
-    for entry in \
-        "mapper0:$ROOT/tests/test_files/local/smb.nes" \
-        "mapper1:$ROOT/tests/test_files/holy_mapperel/M1_P128K.nes" \
-        "mapper2:$ROOT/tests/test_files/visual/240pee.nes" \
-        "mapper3:$ROOT/tests/test_files/ppu_read_buffer/test_ppu_read_buffer.nes" \
-        "mapper4:$ROOT/tests/test_files/holy_mapperel/M4_P256K_C256K.nes" \
-        "mapper7:$ROOT/tests/test_files/holy_mapperel/M7_P128K.nes" \
-        "mapper9:$ROOT/tests/test_files/holy_mapperel/M9_P128K_C64K.nes" \
-        "mapper10:$ROOT/tests/test_files/holy_mapperel/M10_P128K_C64K_W8K.nes" \
-        "mapper69:$ROOT/tests/test_files/holy_mapperel/M69_P128K_C64K_W8K.nes" \
-        "mapper118:$ROOT/tests/test_files/holy_mapperel/M118_P128K_C64K.nes" \
-        "mapper66:$ROOT/tests/test_files/holy_mapperel/M66_P64K_C16K_V.nes" \
-        "mapper180:$ROOT/tests/test_files/holy_mapperel/M180_P128K_H.nes"; do
+    for entry in $FRONTEND_ROMS; do
         tag=${entry%%:*}
         rom=${entry#*:}
         [ -f "$rom" ] || {
@@ -446,7 +457,10 @@ else
         # device twelve times in a row and every one of them used to play through
         # the speakers of whoever ran the pass. It also means no synthesis runs,
         # so the check measures the frontend coming up rather than the APU.
-        SDL_VIDEODRIVER=x11 "$BUILD/nes_frontend" --mute "$rom" >"$OUT/$tag.err" 2>&1 &
+        # --pause-at rather than a sleep, so the picture is reproducible: it stops
+        # on frame 1300 or on the ROM's own trap, whichever comes first, and holds
+        # the window there. See the rendering section below for why 1300.
+        SDL_VIDEODRIVER=x11 "$BUILD/nes_frontend" --mute --pause-at 1300 "$rom" >"$OUT/$tag.err" 2>&1 &
         pid=$!
         wid=""
         i=0
@@ -456,20 +470,81 @@ else
             i=$((i + 1))
             sleep 0.5
         done
-        sleep 3
+        # Wait for the frontend to say it has DRAWN, not for a timer. The window
+        # exists from creation and stays black through the catch-up, so a sleep
+        # here photographed black and still reported "window up, captured".
+        ready=0
+        i=0
+        while [ $i -lt 60 ]; do
+            grep -q '^ready:' "$OUT/$tag.err" 2>/dev/null && { ready=1; break; }
+            kill -0 "$pid" 2>/dev/null || break
+            i=$((i + 1))
+            sleep 0.5
+        done
 
         if [ -z "$wid" ]; then
             report FAIL "frontend $tag" "no window appeared"
+        elif [ "$ready" -eq 0 ]; then
+            report FAIL "frontend $tag" "never drew a frame; see $OUT/$tag.err"
         elif ! kill -0 "$pid" 2>/dev/null; then
             report FAIL "frontend $tag" "process died: $(head -1 "$OUT/$tag.err")"
         else
             import -window "$wid" "$OUT/$tag.png" 2>/dev/null
-            report PASS "frontend $tag" "window up, screenshot captured"
+            report PASS "frontend $tag" "$(sed -n 's/^stopped at frame \([0-9]*\).*/frame \1/p' "$OUT/$tag.err" |
+                tail -1), captured"
         fi
         kill "$pid" 2>/dev/null
         wait "$pid" 2>/dev/null
     done
     echo "        screenshots in $OUT - the PICTURE still needs looking at"
+fi
+
+# --- did anything actually get drawn? ---------------------------------------
+#
+# The screenshots above prove a WINDOW opened. This proves a FRAME was drawn,
+# and the two come apart: the check has photographed pure black and passed,
+# twice - once when the mapper4 entry was 4-scanline_timing, whose verdict lands
+# around frame 310, and once from --pause-at's catch-up running before the first
+# render. check_frame.py is what closes that, and it has teeth the screenshot
+# check does not.
+#
+# 1300 frames, matching the screenshots so both describe the same moment. Clears
+# every Holy Mapperel settle figure in holy_mapperel_tests.cpp (slowest used here
+# is 93) and reaches test_ppu_read_buffer's verdict at 1266. Unthrottled it costs
+# 4.3s for the slowest and nothing for the ones that trap earlier.
+#
+# Not gated on --no-gui or on a display: SDL_VIDEODRIVER=dummy needs neither, and
+# this is the only frontend check that works on a headless machine or in CI.
+if [ ! -x "$BUILD/nes_frontend" ]; then
+    report SKIP "frontend rendering" "not built"
+elif ! command -v python3 >/dev/null 2>&1; then
+    report SKIP "frontend rendering" "needs python3"
+else
+    section "frontend rendering"
+    for entry in $FRONTEND_ROMS; do
+        tag=${entry%%:*}
+        rom=${entry#*:}
+        [ -f "$rom" ] || {
+            report SKIP "renders $tag" "no ROM"
+            continue
+        }
+
+        # SDL_VIDEODRIVER=dummy: no window, no display, no sound. The framebuffer
+        # is the PPU's own, so none of that is needed to check it.
+        if ! SDL_VIDEODRIVER=dummy "$BUILD/nes_frontend" --mute --frames 1300 \
+            --dump-frame "$OUT/$tag.ppm" "$rom" >"$OUT/$tag.render" 2>&1; then
+            report FAIL "renders $tag" "frontend exited non-zero; see $OUT/$tag.render"
+        elif detail=$(python3 "$ROOT/tests/check_frame.py" "$OUT/$tag.ppm" 2>&1); then
+            # The frontend prints where it actually stopped, which is not always
+            # where it was asked to: a ROM that traps first stops there, and most
+            # of these do. Reporting the real number is the difference between a
+            # frame count and a wish.
+            report PASS "renders $tag" "$(sed -n 's/^stopped at frame \([0-9]*\).*/frame \1/p' "$OUT/$tag.render" |
+                tail -1), $detail"
+        else
+            report FAIL "renders $tag" "$detail"
+        fi
+    done
 fi
 
 wall=$(( $(date +%s) - WALL_START ))

@@ -161,6 +161,24 @@ int main(int argc, char** argv)
         .default_value(2)
         .metavar("N");
 
+    // For run_functional.sh, which needs a reproducible moment to look at. A
+    // wall-clock wait is not one: it landed near frame 200 here and undefined
+    // elsewhere. Both flags run UNTHROTTLED - 1300 frames measured at 4.3s
+    // against the 21s real-time pacing costs.
+    args.add_argument("--frames")
+        .help("run up to N frames - or until the ROM stops - then exit")
+        .scan<'i', int>()
+        .default_value(0)
+        .metavar("N");
+    args.add_argument("--dump-frame")
+        .help("write the framebuffer as a binary PPM on exit, for checking that something was actually drawn")
+        .metavar("PATH");
+    args.add_argument("--pause-at")
+        .help("run unthrottled to frame N, then pause with the window still up - for reproducible screenshots")
+        .scan<'i', int>()
+        .default_value(0)
+        .metavar("N");
+
     try {
         args.parse_args(argc, argv);
     } catch (const std::exception& error) {
@@ -174,7 +192,29 @@ int main(int argc, char** argv)
 
     const bool start_muted = args.get<bool>("--mute");
     const int requested_scale = args.get<int>("--scale");
+    const int frame_limit = args.get<int>("--frames");
+    const int pause_at = args.get<int>("--pause-at");
+    const std::string dump_path = args.present("--dump-frame") ? args.get<std::string>("--dump-frame") : std::string{};
     const std::string rom_argument = args.present("rom") ? args.get<std::string>("rom") : std::string{};
+
+    if (frame_limit < 0) {
+        std::cerr << "--frames cannot be negative\n";
+        return 1;
+    }
+    if (!dump_path.empty() && frame_limit == 0 && pause_at == 0) {
+        // Otherwise the dump would happen whenever the user happened to close the
+        // window, which is the wall-clock problem these flags exist to remove.
+        std::cerr << "--dump-frame needs --frames or --pause-at, or the dump has no defined moment\n";
+        return 1;
+    }
+    if (frame_limit != 0 && pause_at != 0) {
+        // Alternatives, not modifiers: one exits at its frame, the other stops
+        // there and keeps the window up. Accepting both would have to pick one
+        // silently.
+        std::cerr << "--frames and --pause-at are alternatives: one exits at a frame, the other stops there and "
+                     "keeps the window up\n";
+        return 1;
+    }
 
     if (requested_scale < 1 || requested_scale > 8) {
         std::cerr << "--scale must be between 1 and 8; a fractional or huge scale is not a window anyone wants\n";
@@ -293,7 +333,48 @@ int main(int argc, char** argv)
         console.audio.clear();
     }
 
+    // BEFORE the loop, not as a condition inside it. A ROM that traps stops
+    // advancing - step_instruction clears state.running - so a frame target
+    // beyond the trap can never arrive, and a loop waiting for one hangs.
+    // test_ppu_read_buffer traps at 1266; asking it for 1300 waited forever.
+    //
+    // Here there is nothing to wait for: it ends on the frame or on the trap.
+    const int catch_up_to = pause_at > 0 ? pause_at : frame_limit;
+    if (catch_up_to > 0) {
+        while (state.running && console.ppu.frame < static_cast<uint64_t>(catch_up_to)) {
+            const uint64_t started_on = console.ppu.frame;
+            while (console.ppu.frame == started_on && nes_gui::step_instruction(console, state)) {
+            }
+        }
+        state.running = false;
+        std::printf("stopped at frame %llu of %d requested\n", static_cast<unsigned long long>(console.ppu.frame),
+                    catch_up_to);
+    }
+
+    // --frames is dump-and-exit: no window loop at all. --pause-at falls through
+    // into it, paused, so the window is there to be photographed.
+    if (frame_limit > 0) {
+        int rc = 0;
+        if (!dump_path.empty() && !nes::write_ppm(dump_path, console.ppu.framebuffer, PPU::screen_width,
+                                                  PPU::screen_height, PPU::nes_palette, 64)) {
+            std::cerr << "could not write " << dump_path << "\n";
+            rc = 1;
+        }
+        if (audio_device != 0) {
+            SDL_CloseAudioDevice(audio_device);
+        }
+        ImGui_ImplSDLRenderer2_Shutdown();
+        ImGui_ImplSDL2_Shutdown();
+        ImGui::DestroyContext();
+        SDL_DestroyTexture(screen);
+        SDL_DestroyRenderer(renderer);
+        SDL_DestroyWindow(window);
+        SDL_Quit();
+        return rc;
+    }
+
     bool quit = false;
+    bool announced_ready = false;
     uint64_t previous_counter = SDL_GetPerformanceCounter();
     double accumulator = 0.0;
 
@@ -440,6 +521,16 @@ int main(int argc, char** argv)
         SDL_RenderClear(renderer);
         ImGui_ImplSDLRenderer2_RenderDrawData(ImGui::GetDrawData(), renderer);
         SDL_RenderPresent(renderer);
+
+        // Printed after the first frame reaches the screen, so a screenshot
+        // caller can wait for something real. A window EXISTS from creation
+        // onwards and stays black through --pause-at's catch-up, so "the window
+        // is up" does not mean there is anything on it.
+        if (!announced_ready) {
+            announced_ready = true;
+            std::printf("ready: frame %llu on screen\n", static_cast<unsigned long long>(console.ppu.frame));
+            std::fflush(stdout);
+        }
     }
 
     // BEFORE the Bus goes out of scope, and before anything else is torn down.
@@ -448,6 +539,21 @@ int main(int argc, char** argv)
     // ring is destroyed.
     if (audio_device != 0) {
         SDL_CloseAudioDevice(audio_device);
+    }
+
+    // The dump, while the PPU still exists. A failure is REPORTED rather than
+    // ignored - write_ppm's own comment makes the case: "a dump that silently
+    // did not happen is worse than no dump, because it is looked for".
+    int exit_code = 0;
+    if (!dump_path.empty()) {
+        if (nes::write_ppm(dump_path, console.ppu.framebuffer, PPU::screen_width, PPU::screen_height, PPU::nes_palette,
+                           64)) {
+            std::printf("wrote %s at frame %llu\n", dump_path.c_str(),
+                        static_cast<unsigned long long>(console.ppu.frame));
+        } else {
+            std::cerr << "could not write " << dump_path << "\n";
+            exit_code = 1;
+        }
     }
 
     // Before tearing anything down, and before the Bus goes out of scope: this
@@ -465,5 +571,5 @@ int main(int argc, char** argv)
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
     SDL_Quit();
-    return 0;
+    return exit_code;
 }
