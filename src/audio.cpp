@@ -45,16 +45,13 @@ void FirstOrderFilter::reset()
     previous_output = 0.0f;
 }
 
-// Half a second, but never fewer than 1024 samples. The floor is not padding:
-// sized purely from the rate, a low output rate gives a ring of ZERO, the
-// full-test is true immediately, and every sample is dropped - a sampler that
-// silently produces nothing. Found by a test using a 1 Hz rate to make the
-// decimator's arithmetic legible.
-// capacity + 1 slots, because the spare is what tells a full ring from an empty
-// one without a shared counter. The 1024 floor is not padding: sized purely
-// from the output rate, a low rate gives zero capacity, the full-test is true
-// immediately, and every sample is dropped - a sampler that silently produces
-// nothing.
+// Half a second, but never fewer than 1024 samples, in capacity + 1 slots.
+//
+// The spare slot is what distinguishes a full ring from an empty one without a
+// shared counter. The 1024 floor is not padding: sized purely from the output
+// rate, a low rate gives a capacity of ZERO, the full-test is true immediately,
+// and every sample is dropped - a sampler that silently produces nothing. Found
+// by a test using a 1 Hz rate to make the decimator's arithmetic legible.
 SampleRing::SampleRing(const size_t capacity) : storage(std::max<size_t>(1024, capacity) + 1, 0.0f) {}
 
 // PRODUCER SIDE. The release on write_index is what publishes the slot: it
