@@ -351,6 +351,27 @@ INSTANTIATE_TEST_SUITE_P(Discrete,
                          ::testing::ValuesIn(kDiscreteRoms),
                          [](const ::testing::TestParamInfo<Expected>& info) { return std::string(info.param.name); });
 
+// GxROM (66) and UNROM 7408 (180), the two simplest boards left unimplemented.
+//
+// PREDICTED BEFORE MEASURING, and recorded either way. GxROM does not control
+// mirroring, so it should join the 066 detection group with NROM and CNROM; and
+// 64K PRG with 16K CHR is MHROM in Nintendo's naming rather than GNROM, which is
+// the 128K/32K part. Mapper 180 switches PRG, so like UNROM it should get a line
+// of its own rather than falling into 066.
+const Expected kSingleRegisterRoms[] = {
+    {"M66_P64K_C16K_V", "066 MHROM", "64K PRG ROM", "PRG RAM MISSING", "16K CHR ROM OK", "0000"},
+    // "UNROM (7408)" and not "UNROM": the one field the prediction missed, and it
+    // is the ROM naming the 74HC08 that makes this board differ from mapper 2.
+    // Everything behavioural - the 180 group, the PRG and CHR sizes, all four
+    // detail digits - was right first time.
+    {"M180_P128K_H", "180 UNROM (7408)", "128K PRG ROM", "PRG RAM MISSING", "8K CHR RAM OK", "0000"},
+};
+
+INSTANTIATE_TEST_SUITE_P(SingleRegister,
+                         HolyMapperel,
+                         ::testing::ValuesIn(kSingleRegisterRoms),
+                         [](const ::testing::TestParamInfo<Expected>& info) { return std::string(info.param.name); });
+
 // AxROM, and the board name is the whole test.
 //
 // Holy Mapperel identifies a board by writing mirroring and seeing where the

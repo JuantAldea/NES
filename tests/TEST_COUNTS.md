@@ -72,6 +72,7 @@ check for regressions with `tests/test_counts.sh --check`.
 | `PpuAddressSpace/PpuAddressSpaceRoms` | 3 | yes |
 | `ppuReadBuffer` | 1 | yes |
 | `PpuVblNmi/BlarggPpuVblNmi` | 10 | yes |
+| `SingleRegister/HolyMapperel` | 2 | yes |
 | `SpriteHit/SpriteHitRoms` | 11 | yes |
 | `SpriteOverflow/SpriteOverflowRoms` | 5 | yes |
 | `testAPU` | 15 | yes |
@@ -97,9 +98,9 @@ check for regressions with `tests/test_counts.sh --check`.
 
 | | Cases |
 |---|---:|
-| Registered | 1091 |
+| Registered | 1093 |
 | Skipped in CI | 518 |
-| **Executed in CI** | **573** |
+| **Executed in CI** | **575** |
 
 Skipped in CI: the 512 per-opcode SingleStepTests need 1.1 GB of vectors CI
 does not fetch, and `commercialRom` needs a cartridge dump nothing here will

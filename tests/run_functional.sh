@@ -432,7 +432,9 @@ else
         "mapper9:$ROOT/tests/test_files/holy_mapperel/M9_P128K_C64K.nes" \
         "mapper10:$ROOT/tests/test_files/holy_mapperel/M10_P128K_C64K_W8K.nes" \
         "mapper69:$ROOT/tests/test_files/holy_mapperel/M69_P128K_C64K_W8K.nes" \
-        "mapper118:$ROOT/tests/test_files/holy_mapperel/M118_P128K_C64K.nes"; do
+        "mapper118:$ROOT/tests/test_files/holy_mapperel/M118_P128K_C64K.nes" \
+        "mapper66:$ROOT/tests/test_files/holy_mapperel/M66_P64K_C16K_V.nes" \
+        "mapper180:$ROOT/tests/test_files/holy_mapperel/M180_P128K_H.nes"; do
         tag=${entry%%:*}
         rom=${entry#*:}
         [ -f "$rom" ] || {

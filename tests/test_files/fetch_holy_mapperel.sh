@@ -1,5 +1,5 @@
 #!/bin/sh
-# Fetches twenty-one builds of Damian Yerrick's Holy Mapperel - an NES cartridge
+# Fetches twenty-three builds of Damian Yerrick's Holy Mapperel - an NES cartridge
 # manufacturing test, and the only MMC1 oracle in reach that reports a verdict
 # rather than asking a human to look at it. Nine mapper-1 images, and two
 # mapper-4 ones covering ground no MMC3 ROM here reaches (see MAPPER 4 below).
@@ -346,6 +346,36 @@
 # alone the boards that must NOT page it. UNROM takes the flat default and reads
 # 0000.
 #
+# GXROM (66) AND UNROM 7408 (180), the two simplest boards this suite covers that
+# the emulator did not. One register each and no IRQ, no work RAM, no mirroring
+# control between them.
+#
+# BEFORE: both rejected by the loader - "mapper 66 (GxROM) is not supported" and
+# the same for 180. Worth recording for the same reason as the MMC1 row above: it
+# says nothing yet about whether the images boot and report.
+#
+# AFTER, and the interesting part is how little happened:
+#
+#   image             board reported     PRG    work RAM  CHR             detail
+#   M66_P64K_C16K_V   066 MHROM          64K    MISSING   16K ROM OK      0000
+#   M180_P128K_H      180 UNROM (7408)   128K   MISSING   8K RAM OK       0000
+#
+# Both correct on the first build of each mapper, with a prediction written into
+# the test before it was run. M66 matched every field. M180 matched every field
+# except the board STRING, predicted "180 UNROM" against the ROM's "180 UNROM
+# (7408)" - it names the 74HC08 that makes the board differ from mapper 2.
+#
+# "066 MHROM" is the detection group again, as with NROM and CNROM: mapper 66
+# does not touch mirroring, so the ROM cannot separate it from that family by
+# behaviour and names the board from the sizes instead. 64K PRG with 16K CHR is
+# MHROM; GNROM is the 128K/32K part. So the board line here is a SIZE detection
+# result, and the PRG and CHR banking is what the 0000 detail attests.
+#
+# Mapper 180 gets its own line because it switches PRG, exactly as UNROM does.
+# The two differ only in which window is fixed - 180 fixes bank 0 low and
+# switches high, mapper 2 fixes the last bank high and switches low - and this
+# image reporting 180 rather than 002 is that difference being detected.
+#
 # Not committed: redistributable-but-unlicensed dumps, SHA256-pinned.
 #
 # Usage: tests/test_files/fetch_holy_mapperel.sh
@@ -377,7 +407,9 @@ M10_P128K_C64K_S8K 5181996ce6fbf0dedd6b253815ef2809d938a296d172160d5e463e64cf07f
 M10_P128K_C64K_W8K 54047d0cf47847e363a4c5932e81f22127862581782a6f66d79be77feee50779
 M69_P128K_C64K_S8K 6a3f84f29f5f18a09237af0ef2c73f1b6f199be908009bf9b568e765be86f7b1
 M69_P128K_C64K_W8K 61bb0cdd871c76a607364b092cdad8c709020e3bdf365994613b7a69ee847d7e
-M118_P128K_C64K 5e1ab21ff5a2b4a3cdb026cdf4d8800660c210a40bc6705e656c353e030de173"
+M118_P128K_C64K 5e1ab21ff5a2b4a3cdb026cdf4d8800660c210a40bc6705e656c353e030de173
+M66_P64K_C16K_V 7bae86264bd3d16002b89725c0f7789752ef2183ca10d6c235bc667711e5867c
+M180_P128K_H 6f4a121f616075b4530c4688ca2b25e5f3ee8685f1ddc4fba80df99c271d9bbc"
 
 echo "$ROMS" | while read -r name want; do
     [ -n "$name" ] || continue
@@ -409,8 +441,8 @@ echo "$ROMS" | while read -r name want; do
 done
 
 count=$(ls -1 "$DEST"/*.nes 2>/dev/null | wc -l | tr -d ' ')
-if [ "$count" -ne 21 ]; then
-    echo "incomplete: $count/21 files present in $DEST" >&2
+if [ "$count" -ne 23 ]; then
+    echo "incomplete: $count/23 files present in $DEST" >&2
     exit 1
 fi
 

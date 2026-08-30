@@ -284,6 +284,45 @@ public:
     uint8_t prg_read(const uint16_t addr) const override;
 };
 
+// UNROM 7408 (180): UNROM with the two PRG windows the other way round.
+//
+// The switchable bank is at $C000 and the FIXED one - always bank 0 - is at
+// $8000, which is the mirror image of UnRom above and the whole difference.
+//
+// Crazy Climber is the board's reason to exist. UxROM boards without the
+// protection diode suffer bus conflicts: the write that selects a bank is also a
+// read of the ROM at that address, and the two must agree. Putting the fixed
+// bank in the window the code writes through makes the value it reads there a
+// constant, so a bank-select routine living in the fixed half cannot conflict
+// with whichever bank it is selecting.
+class UnRom7408 final : public Mapper
+{
+public:
+    using Mapper::Mapper;
+    void cpu_write(const uint16_t addr, const uint8_t data) override;
+    uint8_t prg_read(const uint16_t addr) const override;
+};
+
+// GxROM (66): one register, both halves of the cartridge.
+//
+// The simplest board here that switches PRG and CHR at once, and it does it with
+// a single write and no state of its own beyond that byte:
+//
+//     xxPP xxCC     PP = 32KB PRG bank at $8000, CC = 8KB CHR bank at $0000
+//
+// Two bits each, so four banks of each at most - 128KB PRG and 32KB CHR. GNROM,
+// MHROM and the Nintendo/Bandai variants are all this.
+class GxRom final : public Mapper
+{
+public:
+    using Mapper::Mapper;
+    void cpu_write(const uint16_t addr, const uint8_t data) override;
+    uint8_t prg_read(const uint16_t addr) const override;
+
+private:
+    uint8_t bank_select = 0;
+};
+
 // CNROM (3): NROM's PRG with a switchable 8KB CHR window.
 class CnRom final : public Mapper
 {

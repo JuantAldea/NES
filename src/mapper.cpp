@@ -176,6 +176,39 @@ std::string check_txsrom(const size_t prg_16k_banks, const size_t chr_8k_banks)
     return {};
 }
 
+std::string check_unrom_7408(const size_t prg_16k_banks, const size_t chr_8k_banks)
+{
+    // The same shape as UNROM's, because it is the same cartridge with two wires
+    // swapped: CHR-RAM only, and a PRG size the 4-bit register can reach.
+    if (chr_8k_banks != 0) {
+        return "UNROM 7408 has no CHR-ROM, header advertises " + std::to_string(chr_8k_banks) + " bank(s)";
+    }
+    if (prg_16k_banks < 2 || prg_16k_banks > 16) {
+        return "UNROM 7408 requires 2 to 16 PRG-ROM banks, header advertises " + std::to_string(prg_16k_banks);
+    }
+    return {};
+}
+
+std::string check_gxrom(const size_t prg_16k_banks, const size_t chr_8k_banks)
+{
+    // Two bits of PRG and two of CHR, so four 32KB banks and four 8KB banks at
+    // the very most. Both masks in the implementation are bank-count masks, so
+    // both counts have to be non-zero powers of two for the decoding to be
+    // unambiguous - the same requirement AxROM's check states for its PRG.
+    const size_t banks32 = prg_16k_banks / 2;
+    if (prg_16k_banks % 2 != 0 || banks32 == 0 || banks32 > 4 || (banks32 & (banks32 - 1)) != 0) {
+        return "GxROM requires 2, 4 or 8 PRG-ROM banks (32KB to 128KB in 32KB steps), header advertises " +
+               std::to_string(prg_16k_banks);
+    }
+    // Unlike UNROM and AxROM, this board DOES carry CHR-ROM - switching it is
+    // half the register's job - so an image without any is not a GxROM.
+    if (chr_8k_banks == 0 || chr_8k_banks > 4 || (chr_8k_banks & (chr_8k_banks - 1)) != 0) {
+        return "GxROM requires 1, 2 or 4 CHR-ROM banks (8KB to 32KB), header advertises " +
+               std::to_string(chr_8k_banks);
+    }
+    return {};
+}
+
 std::string check_axrom(const size_t prg_16k_banks, const size_t chr_8k_banks)
 {
     // No CHR-ROM: CHR-RAM is the pattern memory, as on UNROM.
@@ -244,11 +277,18 @@ struct Board {
 };
 
 const Board kBoards[] = {
-    {MapperId::nrom, construct<NRom>, check_nrom},         {MapperId::mmc1, construct<Mmc1>, check_mmc1},
-    {MapperId::uxrom, construct<UnRom>, check_uxrom},      {MapperId::cnrom, construct<CnRom>, check_cnrom},
-    {MapperId::mmc3, construct<Mmc3>, check_mmc3},         {MapperId::axrom, construct<AxRom>, check_axrom},
-    {MapperId::mmc2, construct<Mmc2>, check_mmc2},         {MapperId::mmc4, construct<Mmc4>, check_mmc4},
-    {MapperId::sunsoft_fme7, construct<Fme7>, check_fme7}, {MapperId::txsrom, construct<TxSRom>, check_txsrom},
+    {MapperId::nrom, construct<NRom>, check_nrom},
+    {MapperId::mmc1, construct<Mmc1>, check_mmc1},
+    {MapperId::uxrom, construct<UnRom>, check_uxrom},
+    {MapperId::cnrom, construct<CnRom>, check_cnrom},
+    {MapperId::mmc3, construct<Mmc3>, check_mmc3},
+    {MapperId::axrom, construct<AxRom>, check_axrom},
+    {MapperId::mmc2, construct<Mmc2>, check_mmc2},
+    {MapperId::mmc4, construct<Mmc4>, check_mmc4},
+    {MapperId::sunsoft_fme7, construct<Fme7>, check_fme7},
+    {MapperId::txsrom, construct<TxSRom>, check_txsrom},
+    {MapperId::gxrom, construct<GxRom>, check_gxrom},
+    {MapperId::unrom_7408, construct<UnRom7408>, check_unrom_7408},
 };
 
 const Board* find_board(const MapperId id)
@@ -543,6 +583,48 @@ uint8_t UnRom::prg_read(const uint16_t addr) const
 
 // A write anywhere in $8000-$FFFF latches the low bits as the CHR bank number.
 // Bus conflicts are not modelled, for the same reason as UNROM's.
+// Identical to UnRom's - the boards differ only in which window is fixed.
+void UnRom7408::cpu_write(const uint16_t addr, const uint8_t data)
+{
+    if (addr >= 0x8000 && rom.prg_bank_count != 0) {
+        rom.prg_bank = static_cast<uint8_t>(data & (rom.prg_bank_count - 1));
+    }
+}
+
+uint8_t UnRom7408::prg_read(const uint16_t addr) const
+{
+    // The mirror of UnRom: bank 0 is fixed low and the selected bank sits high,
+    // where UNROM fixes the LAST bank high and selects low.
+    const size_t bank = (addr < 0xC000) ? 0u : rom.prg_bank;
+    return rom.prg_rom[bank * PRG_ROM_BANK_SIZE + (addr & 0x3FFF)];
+}
+
+void GxRom::cpu_write(const uint16_t addr, const uint8_t data)
+{
+    if (addr < 0x8000) {
+        return;
+    }
+    bank_select = data;
+
+    // CHR goes through rom.chr_bank and the base chr_offset, exactly as CNROM's
+    // does. Masked by the bank count rather than by 0x03, because a real board
+    // decodes only as many lines as it has banks - the two-bank image here would
+    // otherwise be able to select banks that are not on the cartridge.
+    if (rom.chr_bank_count != 0) {
+        rom.chr_bank = static_cast<uint8_t>((data & 0x03u) & (rom.chr_bank_count - 1));
+    }
+}
+
+uint8_t GxRom::prg_read(const uint16_t addr) const
+{
+    // 32KB at a time, so the header's 16KB count is halved - the same conversion
+    // AxROM does, and the load-time check guarantees the result is a non-zero
+    // power of two so the mask is the whole of the decoding.
+    const uint32_t banks = rom.prg_bank_count / 2u;
+    const uint32_t bank = ((bank_select >> 4) & 0x03u) & (banks - 1u);
+    return rom.prg_rom[bank * 32u * 1024u + (addr & 0x7FFFu)];
+}
+
 void CnRom::cpu_write(const uint16_t addr, const uint8_t data)
 {
     if (addr >= 0x8000 && rom.chr_bank_count != 0) {
