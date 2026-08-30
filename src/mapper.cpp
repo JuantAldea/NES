@@ -101,11 +101,37 @@ std::string check_nrom(const size_t prg_16k_banks, const size_t chr_8k_banks)
 
 std::string check_mmc1(const size_t prg_16k_banks, const size_t chr_8k_banks)
 {
-    (void)chr_8k_banks;  // CHR-ROM is optional; SNROM and friends use CHR-RAM.
     // Every SxROM board has at least two PRG banks - the fixed half of the
-    // address space has to come from somewhere.
-    if (prg_16k_banks < 2 || prg_16k_banks > 32) {
-        return "MMC1 requires 2 to 32 PRG-ROM banks, header advertises " + std::to_string(prg_16k_banks);
+    // address space has to come from somewhere - and a POWER OF TWO, because
+    // prg_bank_offset masks with `banks - 1` and says so: "this mask is the
+    // whole of the address decoding a real board performs".
+    //
+    // That sentence was an assumption this check did not enforce. MEASURED on a
+    // 24-bank image, which loaded: the mask is 23, 0b10111, so bit 3 is clear and
+    // every selection carrying it loses it. Banks 8 through 15 all aliased onto 0
+    // through 7 - half the reachable range, silently.
+    //
+    // Enforced rather than switched to a modulo, which is what MMC3 does. The
+    // mask is deliberate here: prg_bank_offset writes the fixed window as literal
+    // 15 rather than banks-1, because 15 is what a full board's four address
+    // lines carry, and relies on the mask to land a smaller cartridge on its own
+    // last bank - "exactly what its unconnected upper lines do on hardware". A
+    // modulo would keep that working by arithmetic rather than by modelling the
+    // board, and would accept a cartridge that cannot be built.
+    if (prg_16k_banks < 2 || prg_16k_banks > 32 || (prg_16k_banks & (prg_16k_banks - 1)) != 0) {
+        return "MMC1 requires 2, 4, 8, 16 or 32 PRG-ROM banks, header advertises " + std::to_string(prg_16k_banks);
+    }
+
+    // CHR-ROM is optional - SGROM and SUROM carry CHR-RAM, and chr_offset banks
+    // that from chr_ram_size instead. But when it IS present, chr_offset masks it
+    // the same way, and this check used to discard the argument with a (void)
+    // cast and never look at it.
+    //
+    // 16 banks is 128KB, the ceiling: the CHR registers are five bits, which
+    // address 32 banks of 4KB.
+    if (chr_8k_banks != 0 && (chr_8k_banks > 16 || (chr_8k_banks & (chr_8k_banks - 1)) != 0)) {
+        return "MMC1 requires 1, 2, 4, 8 or 16 CHR-ROM banks (8KB to 128KB) or none, header advertises " +
+               std::to_string(chr_8k_banks);
     }
     return {};
 }

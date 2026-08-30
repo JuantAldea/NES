@@ -64,6 +64,7 @@ check for regressions with `tests/test_counts.sh --check`.
 | `Mapper4/HolyMapperel` | 2 | yes |
 | `Mapper69/HolyMapperel` | 2 | yes |
 | `Mapper7/HolyMapperel` | 1 | yes |
+| `mmc1` | 3 | yes |
 | `mmc3` | 11 | yes |
 | `mmc3A12Filter` | 5 | yes |
 | `mmc3Irq` | 1 | yes |
@@ -101,9 +102,9 @@ check for regressions with `tests/test_counts.sh --check`.
 
 | | Cases |
 |---|---:|
-| Registered | 1114 |
+| Registered | 1117 |
 | Skipped in CI | 518 |
-| **Executed in CI** | **596** |
+| **Executed in CI** | **599** |
 
 Skipped in CI: the 512 per-opcode SingleStepTests need 1.1 GB of vectors CI
 does not fetch, and `commercialRom` needs a cartridge dump nothing here will
