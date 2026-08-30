@@ -279,10 +279,16 @@ GTEST_TEST(testAudio, a_different_output_rate_changes_the_count_proportionally)
 // tests; this one is about the kernel.
 GTEST_TEST(testAudio, every_phase_reconstructs_a_unit_step_at_unit_height)
 {
+    // CONSTRUCTED ONCE. This used to build a BlipSynth inside the INNER loop -
+    // 8224 constructions of the whole 257 x 32 table, each integrating every tap
+    // by Simpson's rule over 64 sub-intervals. It cost 86 seconds, which was 96%
+    // of the entire audio suite's runtime and multiplied the cost of every
+    // mutation sweep over this file by about thirty.
+    const BlipSynth synth{256};
     for (int phase = 0; phase <= BlipSynth::phases; ++phase) {
         double sum = 0.0;
         for (int tap = 0; tap < BlipSynth::width; ++tap) {
-            sum += BlipSynth{256}.kernel_tap(phase, tap);
+            sum += synth.kernel_tap(phase, tap);
         }
         EXPECT_NEAR(1.0, sum, 1e-5) << "phase " << phase << " does not sum to 1";
     }
