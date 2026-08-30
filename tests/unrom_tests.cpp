@@ -271,6 +271,13 @@ GTEST_TEST(unrom7408, an_image_with_chr_rom_is_rejected)
     BankedRom one("unrom7408_one_bank.nes", 1, 180);
     Bus small;
     EXPECT_FALSE(small.load_cartridge(one.path)) << "one PRG bank is NROM, not this board";
+
+    // The upper limit too, which is the only clause a valid-looking image can
+    // reach: 32 banks is 512K, even and a power of two, and still more than the
+    // four register bits address.
+    BankedRom huge("unrom7408_too_big.nes", 32, 180);
+    Bus large;
+    EXPECT_FALSE(large.load_cartridge(huge.path)) << "512K needs five bank bits; this board latches four";
 }
 
 }  // namespace unrom

@@ -159,5 +159,19 @@ GTEST_TEST(gxrom, a_chr_count_the_register_cannot_address_is_rejected)
     EXPECT_FALSE(console.load_cartridge(rom.path));
 }
 
+// The PRG side of the same limit, and it needs a POWER OF TWO to test at all.
+//
+// check_gxrom rejects a bad PRG size through four clauses, and they overlap: an
+// odd count, a zero count and a non-power-of-two are each caught by more than
+// one. Eight 32KB banks is the only value that reaches `banks32 > 4` on its own -
+// even, non-zero, a power of two, and too large - so it is the only image that
+// can show that clause is doing anything.
+GTEST_TEST(gxrom, a_prg_size_beyond_the_two_bit_field_is_rejected)
+{
+    GxRomImage rom("gxrom_too_much_prg.nes", 8, 4);
+    Bus console;
+    EXPECT_FALSE(console.load_cartridge(rom.path)) << "256K of PRG needs three bank bits; this board has two";
+}
+
 }  // namespace gxrom
 }  // namespace tests
