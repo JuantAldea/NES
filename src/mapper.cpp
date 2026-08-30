@@ -202,6 +202,13 @@ std::string check_gxrom(const size_t prg_16k_banks, const size_t chr_8k_banks)
     }
     // Unlike UNROM and AxROM, this board DOES carry CHR-ROM - switching it is
     // half the register's job - so an image without any is not a GxROM.
+    //
+    // THE CLAUSES OVERLAP, which is why mutating `> 4` to `> 5` survives in both
+    // this test and the PRG one above: the only count between them is 5, and the
+    // power-of-two clause rejects it first. Deliberately not tightened - each
+    // clause states one independent thing about the board, and collapsing them
+    // into the minimum set that happens to be distinguishable would make the
+    // rule harder to read for no gain in what it accepts.
     if (chr_8k_banks == 0 || chr_8k_banks > 4 || (chr_8k_banks & (chr_8k_banks - 1)) != 0) {
         return "GxROM requires 1, 2 or 4 CHR-ROM banks (8KB to 32KB), header advertises " +
                std::to_string(chr_8k_banks);
@@ -584,6 +591,14 @@ uint8_t UnRom::prg_read(const uint16_t addr) const
 // A write anywhere in $8000-$FFFF latches the low bits as the CHR bank number.
 // Bus conflicts are not modelled, for the same reason as UNROM's.
 // Identical to UnRom's - the boards differ only in which window is fixed.
+//
+// BOTH HALVES OF THE GUARD ARE UNREACHABLE, and are kept anyway. Mutation leaves
+// them alive: `addr >= 0x8000` because Bus only routes cartridge-space writes
+// here in the first place, and `prg_bank_count != 0` because check_unrom_7408
+// has already refused any image with fewer than two banks. They are a defence
+// against a future caller rather than against any present one, which is the only
+// honest reason to keep a branch no test can enter. GxRom::cpu_write's
+// chr_bank_count check is the same case.
 void UnRom7408::cpu_write(const uint16_t addr, const uint8_t data)
 {
     if (addr >= 0x8000 && rom.prg_bank_count != 0) {

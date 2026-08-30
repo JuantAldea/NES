@@ -53,7 +53,7 @@ check for regressions with `tests/test_counts.sh --check`.
 | `frontendSafeToPeek` | 4 | yes |
 | `frontendStep` | 6 | yes |
 | `fullPalette` | 7 | yes |
-| `gxrom` | 11 | yes |
+| `gxrom` | 12 | yes |
 | `InstrMisc/InstrMiscRoms` | 4 | yes |
 | `instrTest` | 1 | yes |
 | `InstrTest/InstrTestRoms` | 15 | yes |
@@ -100,9 +100,9 @@ check for regressions with `tests/test_counts.sh --check`.
 
 | | Cases |
 |---|---:|
-| Registered | 1110 |
+| Registered | 1111 |
 | Skipped in CI | 518 |
-| **Executed in CI** | **592** |
+| **Executed in CI** | **593** |
 
 Skipped in CI: the 512 per-opcode SingleStepTests need 1.1 GB of vectors CI
 does not fetch, and `commercialRom` needs a cartridge dump nothing here will

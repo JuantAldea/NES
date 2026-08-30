@@ -36,18 +36,26 @@ constexpr size_t kChrBankSize = 8 * 1024;
 
 // `prg32` banks of 32KB and `chr8` banks of 8KB, bank N filled with the byte N.
 struct GxRomImage {
-    GxRomImage(const std::string& name, uint8_t prg32, uint8_t chr8)
+    // `prg16_override` writes a 16KB bank count the body does not have to be a
+    // whole number of 32KB banks for. It exists for ONE case: an odd count, which
+    // prg32 * 2 can never produce and which is the only input that reaches
+    // check_gxrom's first clause. Zero means "derive it", which is every other
+    // test here.
+    GxRomImage(const std::string& name, uint8_t prg32, uint8_t chr8, uint8_t prg16_override = 0)
         : path(std::string(NES_TEST_FILES_DIR) + "/" + name)
     {
         std::ofstream out(path, std::ios::binary | std::ios::trunc);
         // Mapper 66 is $42: low nibble 2 into flags6's high nibble, high nibble
         // 4 into flags7's. The header counts PRG in 16KB units, so double.
-        const uint8_t header[16] = {'N', 'E', 'S', 0x1A, static_cast<uint8_t>(prg32 * 2), chr8, 0x20, 0x40, 0, 0, 0, 0,
-                                    0,   0,   0,   0};
+        const uint8_t prg16 = prg16_override != 0 ? prg16_override : static_cast<uint8_t>(prg32 * 2);
+        const uint8_t header[16] = {'N', 'E', 'S', 0x1A, prg16, chr8, 0x20, 0x40, 0, 0, 0, 0, 0, 0, 0, 0};
         out.write(reinterpret_cast<const char*>(header), sizeof(header));
 
-        for (uint8_t b = 0; b < prg32; ++b) {
-            const std::vector<uint8_t> bank(kPrgBankSize, b);
+        // Sized from the header rather than from prg32, so the file always
+        // matches what it declares - a loader rejecting a truncated image would
+        // otherwise mask the check under test.
+        for (uint8_t b = 0; b < prg16; ++b) {
+            const std::vector<uint8_t> bank(kPrgBankSize / 2, static_cast<uint8_t>(b / 2));
             out.write(reinterpret_cast<const char*>(bank.data()), bank.size());
         }
         for (uint8_t b = 0; b < chr8; ++b) {
@@ -204,6 +212,18 @@ GTEST_TEST(gxrom, a_chr_bank_count_that_is_not_a_power_of_two_is_rejected)
     GxRomImage rom("gxrom_three_chr.nes", 4, 3);
     Bus console;
     EXPECT_FALSE(console.load_cartridge(rom.path)) << "the same ambiguity on the CHR side";
+}
+
+// An ODD 16KB count, which is the only input that reaches the first clause of
+// check_gxrom - every other rejection here is caught by a later one first.
+//
+// It is also the only physically meaningful thing that clause says: this board
+// switches 32KB at a time, so half a bank cannot exist on it.
+GTEST_TEST(gxrom, an_odd_sixteen_kilobyte_bank_count_is_rejected)
+{
+    GxRomImage rom("gxrom_odd_prg.nes", 0, 4, 5);
+    Bus console;
+    EXPECT_FALSE(console.load_cartridge(rom.path)) << "80K is two and a half 32KB banks, which no GxROM is";
 }
 
 }  // namespace gxrom
