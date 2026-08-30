@@ -52,6 +52,12 @@ void FirstOrderFilter::reset()
 // rate, a low rate gives a capacity of ZERO, the full-test is true immediately,
 // and every sample is dropped - a sampler that silently produces nothing. Found
 // by a test using a 1 Hz rate to make the decimator's arithmetic legible.
+//
+// The 0.0f fill is the one mutant here that survives, and it is UNREACHABLE
+// rather than untested: read() stops at write_index, so no slot can be read
+// before something has written it, and what it was initialised to cannot be
+// observed. Swapping std::max's arguments is likewise equivalent - max is
+// commutative - and so is the std::min in push().
 SampleRing::SampleRing(const size_t capacity) : storage(std::max<size_t>(1024, capacity) + 1, 0.0f) {}
 
 // PRODUCER SIDE. The release on write_index is what publishes the slot: it

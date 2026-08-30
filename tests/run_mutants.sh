@@ -209,8 +209,37 @@ run_filter() {
     # Prints the names of failing tests, one per line. printf, never echo: gtest
     # prints \0 escapes in some assertion messages and a shell echo will chew
     # them, which has already corrupted one analysis in this project.
-    "$BIN" --gtest_filter="$FILTER" 2>&1 | tr -d '\000' |
+    #
+    # THE EXIT STATUS IS RECORDED SEPARATELY, and that is not tidiness. A mutant
+    # that CRASHES the binary prints no "[  FAILED  ]" line for the test that
+    # died, so this function returns an empty list - indistinguishable from a
+    # clean run. And the status cannot be read from the pipeline, because a
+    # pipeline's status is its LAST command's, which here is sort.
+    #
+    # Measured: `storage(0.0f, max + 1)` on SampleRing builds an empty vector, so
+    # `% storage.size()` divides by zero. The binary dies with SIGFPE, exit 136,
+    # on the third test - and this harness scored it SURVIVED. The most severe
+    # mutants there are, the ones that crash rather than merely compute wrong
+    # answers, were the ones it could not see.
+    #
+    # Wrapped in `if`, because `set -e` is on and a killing mutant makes the
+    # binary exit 1 by design. Taking it out of the pipeline removed the very
+    # thing that had been masking its status, which then aborted the whole run
+    # on the first mutant that worked.
+    if "$BIN" --gtest_filter="$FILTER" >"$OUT/raw" 2>&1; then
+        printf '0\n' >"$OUT/status"
+    else
+        printf '%s\n' "$?" >"$OUT/status"
+    fi
+    tr -d '\000' <"$OUT/raw" |
         awk '/^\[  FAILED  \] [A-Za-z]/ && !/ms\)$/ { print $3 }' | sed 's/,$//' | sort -u
+}
+
+# gtest exits 0 when everything passed and 1 when something failed. Anything
+# else - 134 for abort, 136 for SIGFPE, 139 for SIGSEGV - is the binary dying,
+# which no amount of parsing its output will reveal.
+crashed() {
+    [ "$1" != "0" ] && [ "$1" != "1" ]
 }
 
 printf 'building baseline...\n'
@@ -219,6 +248,11 @@ cmake --build "$BUILD" >"$OUT/baseline-build.log" 2>&1 || {
     exit 1
 }
 run_filter >"$OUT/baseline-failures"
+if crashed "$(cat "$OUT/status")"; then
+    printf 'the baseline CRASHES (exit %s) - every mutant would be scored against\n' "$(cat "$OUT/status")" >&2
+    printf 'a broken reference. Fix the tree first; see %s/raw\n' "$OUT" >&2
+    exit 1
+fi
 BASE_FAILURES=$(wc -l <"$OUT/baseline-failures" | tr -d ' ')
 
 # $2, not $1: the line is "[==========] 20 tests from 1 test suite ran." and
@@ -254,7 +288,13 @@ while IFS="$(printf '\t')" read -r file line payload label; do
         printf '  ....  %s:%s  %s\n' "$file" "$line" "$label"
     else
         run_filter >"$OUT/failures"
-        if [ "$(comm -13 "$OUT/baseline-failures" "$OUT/failures" | wc -l | tr -d ' ')" -gt 0 ]; then
+        if crashed "$(cat "$OUT/status")"; then
+            # Reported distinctly from an assertion failure: a mutant that takes
+            # the process down is a different finding, and one worth looking at
+            # even though it counts the same.
+            KILLED=$((KILLED + 1))
+            printf '  KILL  %s:%s  %s  (exit %s, crashed)\n' "$file" "$line" "$label" "$(cat "$OUT/status")"
+        elif [ "$(comm -13 "$OUT/baseline-failures" "$OUT/failures" | wc -l | tr -d ' ')" -gt 0 ]; then
             KILLED=$((KILLED + 1))
             printf '  kill  %s:%s  %s\n' "$file" "$line" "$label"
         else

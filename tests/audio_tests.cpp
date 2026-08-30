@@ -1183,5 +1183,105 @@ GTEST_TEST(testAudio, the_kernel_reaches_a_blackman_stopband_a_hamming_window_wo
                               << "; Blackman measures -80.9 here and Hamming -60.7";
 }
 
+// --- what the mutation sweep of audio.cpp found nothing watching -------------
+//
+// 36 of 69 killed on the first pass. The five tests below close the survivors
+// that are real; the rest are equivalent and recorded next to the code.
+
+// reset() clears the MEMORY and not the coefficients, and nothing checked the
+// first half: setting previous_input and previous_output to 1.0f instead of
+// 0.0f survived the whole suite. A filter that kept its history across a reset
+// would carry the last run's tail into the next one - audibly, since clear() is
+// what runs between pause and resume.
+GTEST_TEST(testAudio, resetting_a_filter_discards_the_samples_it_remembers)
+{
+    FirstOrderFilter filter{FirstOrderFilter::Kind::high_pass, 440.0f, 44100.0f};
+
+    filter.process(1.0f);
+    filter.process(1.0f);
+    filter.reset();
+
+    // Silence in, silence out - only true if BOTH remembered samples are zero.
+    // previous_input surviving would leave b1, previous_output would leave -a1,
+    // and neither is small for this corner.
+    EXPECT_EQ(0.0f, filter.process(0.0f)) << "a reset filter fed silence must produce silence";
+}
+
+// THE SPARE SLOT AND THE FLOOR, the two things SampleRing's constructor does.
+//
+// `std::max<size_t>(1024, capacity) + 1` had four surviving mutants. The `+ 1`
+// becoming `- 1` costs the spare slot the ring needs to tell full from empty;
+// the 1024 becoming 1025, or the 1 becoming 2, moves the floor. All of them were
+// invisible, including to the test that already asks for capacity() - because it
+// asked at a size where the floor does not apply.
+GTEST_TEST(testAudio, the_ring_holds_exactly_what_it_promises_at_and_below_the_floor)
+{
+    SampleRing large{2048};
+    EXPECT_EQ(2048u, large.capacity()) << "above the floor, capacity is what was asked for";
+
+    size_t written = 0;
+    while (large.write(1.0f)) {
+        ++written;
+    }
+    EXPECT_EQ(2048u, written) << "and it must actually accept that many - the spare slot is the "
+                                 "difference between a full ring and an empty one";
+
+    // Below the floor is where the 1024 itself is observable. A ring sized from
+    // a low output rate would otherwise have capacity zero and drop everything.
+    SampleRing small{10};
+    EXPECT_EQ(1024u, small.capacity()) << "below the floor, the floor applies";
+}
+
+// A READ MUST NOT WRITE PAST THE COUNT IT WAS GIVEN, and this is the survivor
+// that was a live buffer overrun rather than a tidiness question.
+//
+// `while (taken < requested && r != w)` survived both `<` becoming `<=` and `&&`
+// becoming `||`. Either one writes one element beyond the caller's buffer
+// whenever the ring holds more than was asked for - which is the normal case for
+// an audio callback draining a full ring. Nothing in the suite noticed, because
+// every existing read either drained the ring exactly or asked for more than it
+// held, and neither reaches the boundary.
+GTEST_TEST(testAudio, a_read_writes_no_further_than_the_count_it_was_given)
+{
+    SampleRing ring{64};
+    for (int i = 0; i < 10; ++i) {
+        ASSERT_TRUE(ring.write(static_cast<float>(i)));
+    }
+
+    // Ask for FEWER than are available, so the loop's count bound is what has to
+    // stop it rather than the ring running dry.
+    float out[8];
+    std::fill(std::begin(out), std::end(out), -999.0f);
+    const size_t got = ring.read(out, 5);
+
+    EXPECT_EQ(5u, got);
+    EXPECT_EQ(-999.0f, out[5]) << "read wrote past the 5 samples it was asked for";
+    EXPECT_EQ(4.0f, out[4]) << "and the last sample it was asked for is the right one";
+}
+
+// A read that was fully satisfied is not a starve. `take < requested` becoming
+// `take <= requested` counts one on EVERY successful read, which would turn the
+// counter from evidence about the plumbing into a count of callbacks - the exact
+// failure its own comment says it exists to avoid.
+GTEST_TEST(testAudio, a_fully_satisfied_read_is_not_counted_as_a_starve)
+{
+    AudioSampler sampler;
+    for (int i = 0; i < 200000; ++i) {
+        sampler.push((i / 400) % 2 == 0 ? 0.25f : -0.25f);
+    }
+
+    const size_t available = sampler.available();
+    ASSERT_GT(available, 16u) << "nothing to read, so the assertion below would be vacuous";
+
+    std::vector<float> out(available);
+    EXPECT_EQ(available, sampler.read(out.data(), available));
+    EXPECT_EQ(0u, sampler.starved()) << "a read given exactly what the ring held was not short";
+
+    // The other edge, so this cannot pass by never counting at all.
+    std::vector<float> more(available);
+    sampler.read(more.data(), available);
+    EXPECT_EQ(1u, sampler.starved()) << "a read of an empty ring IS short and must be counted";
+}
+
 }  // namespace audio
 }  // namespace tests
