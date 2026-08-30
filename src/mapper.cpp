@@ -81,6 +81,23 @@ std::unique_ptr<Mapper> construct(ROM& rom)
     return std::make_unique<T>(rom);
 }
 
+// THE HEADER CHECKS, AND THE ONE RULE THAT RUNS THROUGH THEM.
+//
+// A board that indexes its banks with a MASK - `bank & (count - 1)` - can only
+// decode a power-of-two count, and its check must say so. One that uses a MODULO
+// takes any count and needs no such clause. Mixing the two up is not a style
+// question: a masked board given 24 banks loads and silently aliases half of
+// them, which is what MMC1 and UNROM both did until measured.
+//
+// Audited across every board here, after the UNROM case was found:
+//
+//   masked, and the check now enforces it   MMC1 (PRG and CHR), UNROM,
+//                                           UNROM 7408, GxROM, AxROM, CNROM
+//   modulo, so no constraint is needed      NROM, MMC2, MMC4, MMC3, TxSROM,
+//                                           FME-7
+//
+// Three of those needed fixing and the rest were already right. If a new board
+// masks, its check owes a power-of-two clause; if it divides, it does not.
 std::string check_nrom(const size_t prg_16k_banks, const size_t chr_8k_banks)
 {
     // NROM carries one 16KB PRG bank (mirrored across $8000-$FFFF) or two
