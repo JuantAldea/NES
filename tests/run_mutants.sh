@@ -238,6 +238,28 @@ run_filter() {
 # gtest exits 0 when everything passed and 1 when something failed. Anything
 # else - 134 for abort, 136 for SIGFPE, 139 for SIGSEGV - is the binary dying,
 # which no amount of parsing its output will reveal.
+#
+# WHAT THE OLD BLINDNESS COST, checked rather than assumed, because every number
+# this harness had produced up to that point came out of it. Only LIVE can become
+# KILL under the fix, so re-scoring the RECORDED SURVIVORS is sufficient and the
+# kills need no re-run:
+#
+#   blip.cpp     8 survivors  all still survivors
+#   audio.cpp   13 survivors  all still survivors
+#   apu.cpp      the two rate-table index masks, both killed either way
+#   apu.h        kPulseDuty and kTriangleSequence generate NO mutants - pure
+#                variable indexing, nothing the operator set touches - so the
+#                out-of-bounds read that would crash cannot be expressed
+#
+# So the blindness cost exactly the two mutants it was found by, both in
+# audio.cpp, and no conclusion recorded anywhere else was wrong. That is a
+# negative result and is written down because the alternative is leaving the
+# question open in every comment the old harness contributed to.
+#
+# Note the sweeps run against the Checked build, not the ASan one. An
+# out-of-bounds read that stays inside .rodata returns garbage rather than
+# faulting, so it is caught here only if some test notices the value. Running
+# mutants under ASan would close that, at a cost nobody has measured yet.
 crashed() {
     [ "$1" != "0" ] && [ "$1" != "1" ]
 }
