@@ -92,7 +92,7 @@ check for regressions with `tests/test_counts.sh --check`.
 | `testPPUScroll` | 31 | yes |
 | `testSprite0Hit` | 23 | yes |
 | `testSprites` | 24 | yes |
-| `unrom` | 9 | yes |
+| `unrom` | 10 | yes |
 | `unrom7408` | 6 | yes |
 | `VblNmiTiming/VblNmiTimingRoms` | 7 | yes |
 | `visualRoms` | 4 | yes |
@@ -100,9 +100,9 @@ check for regressions with `tests/test_counts.sh --check`.
 
 | | Cases |
 |---|---:|
-| Registered | 1111 |
+| Registered | 1112 |
 | Skipped in CI | 518 |
-| **Executed in CI** | **593** |
+| **Executed in CI** | **594** |
 
 Skipped in CI: the 512 per-opcode SingleStepTests need 1.1 GB of vectors CI
 does not fetch, and `commercialRom` needs a cartridge dump nothing here will

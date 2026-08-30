@@ -278,6 +278,12 @@ GTEST_TEST(unrom7408, an_image_with_chr_rom_is_rejected)
     BankedRom huge("unrom7408_too_big.nes", 32, 180);
     Bus large;
     EXPECT_FALSE(large.load_cartridge(huge.path)) << "512K needs five bank bits; this board latches four";
+
+    // And the same non-power-of-two rejection UNROM needs, inherited with the
+    // rest of the board - see the mapper-2 test above for what it costs.
+    BankedRom twelve("unrom7408_twelve.nes", 12, 180);
+    Bus odd;
+    EXPECT_FALSE(odd.load_cartridge(twelve.path)) << "the bank-select mask would alias four of the twelve";
 }
 
 // BOTH ENDS OF THE ACCEPTED RANGE, which is what stops the check above from
@@ -299,6 +305,38 @@ GTEST_TEST(unrom7408, the_smallest_and_largest_legal_images_both_load)
     ASSERT_TRUE(b.load_cartridge(largest.path)) << "sixteen banks is 256K, the largest the four bits reach";
     b.write(0x8000, 15);
     EXPECT_EQ(15, b.read(0xC000)) << "the top bank is reachable";
+}
+
+// A BANK COUNT THAT IS NOT A POWER OF TWO IS REJECTED, and this test exists
+// because it used to be accepted and mis-banked in silence.
+//
+// MEASURED before the check was tightened, on a 12-bank image that loaded
+// cleanly. cpu_write latches `data & (prg_bank_count - 1)`, and 11 is 0b1011:
+//
+//     select 0..3   -> banks 0..3    correct
+//     select 4..7   -> banks 0..3    ALIASED, a third of the cartridge lost
+//     select 8..11  -> banks 8..11   correct, by coincidence
+//
+// Nothing reported anything. The banks that worked are what made it quiet.
+//
+// check_cnrom and check_axrom already required a power of two, and both say why
+// in as many words; this check was the one that omitted it, and mapper 180
+// inherited the omission by being wired from this board.
+GTEST_TEST(unrom, a_bank_count_that_is_not_a_power_of_two_is_rejected)
+{
+    BankedRom rom("unrom_twelve.nes", 12);
+    Bus console;
+    EXPECT_FALSE(console.load_cartridge(rom.path)) << "192K cannot be masked to twelve banks unambiguously";
+
+    // The accepted sizes on either side of it, so this cannot pass by rejecting
+    // everything - and 8 and 16 are the two real UNROM boards.
+    BankedRom eight("unrom_eight.nes", 8);
+    Bus a;
+    EXPECT_TRUE(a.load_cartridge(eight.path)) << "128K UNROM";
+
+    BankedRom sixteen("unrom_sixteen.nes", 16);
+    Bus b;
+    EXPECT_TRUE(b.load_cartridge(sixteen.path)) << "256K UOROM";
 }
 
 }  // namespace unrom

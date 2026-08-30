@@ -120,8 +120,23 @@ std::string check_uxrom(const size_t prg_16k_banks, const size_t chr_8k_banks)
     }
     // UNROM exists to carry more PRG than the CPU can address, so NROM's
     // two-bank ceiling does not apply. 8 or 16 banks are the real board sizes.
-    if (prg_16k_banks < 2 || prg_16k_banks > 16) {
-        return "UNROM requires 2 to 16 PRG-ROM banks, header advertises " + std::to_string(prg_16k_banks);
+    //
+    // A POWER OF TWO, for the reason check_cnrom and check_axrom already give
+    // and this one used to omit: cpu_write latches `data & (prg_bank_count - 1)`,
+    // which is only a bank-select mask when the count is a power of two.
+    //
+    // MEASURED before the clause was added. A 12-bank image loaded, and the mask
+    // 11 - 0b1011 - made banks 4 through 7 alias onto 0 through 3: a third of the
+    // cartridge unreachable, silently, while 8 through 11 worked by coincidence.
+    // Nothing reported anything.
+    //
+    // Rejecting rather than switching the mask to a modulo, because the mask IS
+    // the board: a real UNROM decodes as many bank lines as its ROM has, mask
+    // ambiguity is the hardware's too, and no such cartridge was made - ROM parts
+    // come in powers of two. A modulo would invent correct behaviour for a board
+    // that cannot exist.
+    if (prg_16k_banks < 2 || prg_16k_banks > 16 || (prg_16k_banks & (prg_16k_banks - 1)) != 0) {
+        return "UNROM requires 2, 4, 8 or 16 PRG-ROM banks, header advertises " + std::to_string(prg_16k_banks);
     }
     return {};
 }
@@ -183,8 +198,8 @@ std::string check_unrom_7408(const size_t prg_16k_banks, const size_t chr_8k_ban
     if (chr_8k_banks != 0) {
         return "UNROM 7408 has no CHR-ROM, header advertises " + std::to_string(chr_8k_banks) + " bank(s)";
     }
-    if (prg_16k_banks < 2 || prg_16k_banks > 16) {
-        return "UNROM 7408 requires 2 to 16 PRG-ROM banks, header advertises " + std::to_string(prg_16k_banks);
+    if (prg_16k_banks < 2 || prg_16k_banks > 16 || (prg_16k_banks & (prg_16k_banks - 1)) != 0) {
+        return "UNROM 7408 requires 2, 4, 8 or 16 PRG-ROM banks, header advertises " + std::to_string(prg_16k_banks);
     }
     return {};
 }
