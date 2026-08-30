@@ -29,12 +29,20 @@ namespace
 constexpr size_t kBankSize = 16 * 1024;
 
 // A UNROM image whose bank N is filled entirely with the byte N.
+//
+// `mapper` is a parameter so mapper 180 can reuse this: it is the same cartridge
+// with its two PRG windows exchanged, so the same synthetic image tests both and
+// the assertions can be read side by side.
 struct BankedRom {
-    explicit BankedRom(const std::string& name, uint8_t banks) : path(std::string(NES_TEST_FILES_DIR) + "/" + name)
+    explicit BankedRom(const std::string& name, uint8_t banks, uint8_t mapper = 2)
+        : path(std::string(NES_TEST_FILES_DIR) + "/" + name)
     {
         std::ofstream out(path, std::ios::binary | std::ios::trunc);
-        // flags6 bit 4 low nibble of mapper, flags7 high: mapper 2 -> flags6 $20.
-        const uint8_t header[16] = {'N', 'E', 'S', 0x1A, banks, 0, 0x20, 0x00, 0, 0, 0, 0, 0, 0, 0, 0};
+        // The mapper number straddles two bytes: flags6 carries its low nibble
+        // in the HIGH nibble, flags7 carries its high nibble in place.
+        const uint8_t flags6 = static_cast<uint8_t>((mapper & 0x0F) << 4);
+        const uint8_t flags7 = static_cast<uint8_t>(mapper & 0xF0);
+        const uint8_t header[16] = {'N', 'E', 'S', 0x1A, banks, 0, flags6, flags7, 0, 0, 0, 0, 0, 0, 0, 0};
         out.write(reinterpret_cast<const char*>(header), sizeof(header));
 
         for (uint8_t b = 0; b < banks; ++b) {
@@ -179,6 +187,90 @@ GTEST_TEST(unrom, a_single_bank_image_is_rejected)
     BankedRom rom("unrom_one_bank.nes", 1);
     Bus console;
     EXPECT_FALSE(console.load_cartridge(rom.path));
+}
+
+// --- UNROM 7408 (180), the same board with its windows exchanged -------------
+//
+// Every assertion below is the mirror of one above, and that is the point: the
+// two mappers differ in nothing else, so anything that reads the same in both
+// places is not testing the difference.
+//
+// Holy Mapperel's M180_P128K_H already identifies the board correctly, which is
+// a stronger statement than any of these. What it does NOT do is probe the
+// window boundary: mechanical mutation moved the split from $C000 to $C001 and
+// changed `<` to `<=`, and that ROM passed both times. A one-byte error at the
+// seam is invisible to a board-detection oracle and fatal to a game.
+
+GTEST_TEST(unrom7408, loads_and_reports_its_bank_count)
+{
+    BankedRom rom("unrom7408_load.nes", 8, 180);
+    Bus console;
+    ASSERT_TRUE(console.load_cartridge(rom.path));
+
+    EXPECT_EQ(MapperId::unrom_7408, console.rom.mapper_id);
+    EXPECT_EQ(8, console.rom.prg_bank_count);
+    EXPECT_EQ(0, console.rom.prg_bank) << "power-on bank is 0";
+    EXPECT_TRUE(console.rom.chr_rom.empty()) << "like UNROM, the console supplies CHR-RAM";
+}
+
+GTEST_TEST(unrom7408, the_high_window_follows_the_latched_bank)
+{
+    BankedRom rom("unrom7408_switch.nes", 8, 180);
+    Bus console;
+    ASSERT_TRUE(console.load_cartridge(rom.path));
+
+    for (uint8_t bank = 0; bank < 8; ++bank) {
+        console.write(0x8000, bank);
+        EXPECT_EQ(bank, console.read(0xC000)) << "start of the switchable window";
+        EXPECT_EQ(bank, console.read(0xFFFF)) << "end of it - and the vectors live here, which is the "
+                                                 "whole reason mapper 2 fixes this half instead";
+    }
+}
+
+GTEST_TEST(unrom7408, the_low_window_is_always_bank_zero)
+{
+    BankedRom rom("unrom7408_fixed.nes", 8, 180);
+    Bus console;
+    ASSERT_TRUE(console.load_cartridge(rom.path));
+
+    // The FIRST bank, not the last. That is the difference from UNROM, and it is
+    // why the board exists: the bank-select routine lives in this half, so what
+    // the CPU reads at the address it writes is a constant and cannot conflict
+    // with the bank being selected.
+    for (uint8_t bank = 0; bank < 8; ++bank) {
+        console.write(0x8000, bank);
+        EXPECT_EQ(0, console.read(0x8000)) << "start of the fixed window, after selecting " << int(bank);
+        EXPECT_EQ(0, console.read(0xBFFF)) << "end of the fixed window, after selecting " << int(bank);
+    }
+}
+
+GTEST_TEST(unrom7408, the_seam_between_the_windows_is_exactly_at_c000)
+{
+    BankedRom rom("unrom7408_seam.nes", 8, 180);
+    Bus console;
+    ASSERT_TRUE(console.load_cartridge(rom.path));
+
+    console.write(0x8000, 5);
+
+    // Two adjacent bytes that must come from different banks. Nothing else in
+    // this file or in Holy Mapperel pins the boundary to the byte, and both
+    // one-byte errors - moving the split to $C001, or letting $C000 fall on the
+    // fixed side - survived the oracle.
+    EXPECT_EQ(0, console.read(0xBFFF)) << "the last byte of the fixed half";
+    EXPECT_EQ(5, console.read(0xC000)) << "the first byte of the switchable half";
+}
+
+GTEST_TEST(unrom7408, an_image_with_chr_rom_is_rejected)
+{
+    // The check exists so a mislabelled header fails loudly rather than being
+    // half-read. This board carries CHR-RAM, like the UNROM it is wired from.
+    BankedRom rom("unrom7408_chr.nes", 8, 180);
+    Bus console;
+    ASSERT_TRUE(console.load_cartridge(rom.path)) << "the CHR-less image must still load";
+
+    BankedRom one("unrom7408_one_bank.nes", 1, 180);
+    Bus small;
+    EXPECT_FALSE(small.load_cartridge(one.path)) << "one PRG bank is NROM, not this board";
 }
 
 }  // namespace unrom
