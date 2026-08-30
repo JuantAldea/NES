@@ -135,6 +135,14 @@ std::string check_uxrom(const size_t prg_16k_banks, const size_t chr_8k_banks)
     // ambiguity is the hardware's too, and no such cartridge was made - ROM parts
     // come in powers of two. A modulo would invent correct behaviour for a board
     // that cannot exist.
+    //
+    // TWO MUTANTS OF THIS LINE SURVIVE AND BOTH ARE EQUIVALENT, worked out rather
+    // than assumed. `> 16` becoming `> 17` can only differ at exactly 17, which
+    // the power-of-two clause rejects anyway. And `n & (n - 1)` becoming
+    // `n & (n - 2)` agrees with it on EVERY value from 2 to 16 - checked one by
+    // one - which is the whole domain that reaches it, because the two clauses
+    // before have already excluded anything smaller or larger. The two differ
+    // only at n = 1, and n = 1 never gets here.
     if (prg_16k_banks < 2 || prg_16k_banks > 16 || (prg_16k_banks & (prg_16k_banks - 1)) != 0) {
         return "UNROM requires 2, 4, 8 or 16 PRG-ROM banks, header advertises " + std::to_string(prg_16k_banks);
     }
