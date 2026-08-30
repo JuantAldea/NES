@@ -109,4 +109,13 @@ ControllerSnapshot peek_controller(Bus& console, const int port)
     return snapshot;
 }
 
+// Muting stops the sampler as well as the device; pausing stops only the device.
+//
+// The asymmetry is the point. A paused machine is not clocking, so nothing is
+// produced anyway and the sampler can stay enabled - which is what lets audio
+// resume without a gap. A muted one IS clocking, so leaving the sampler on would
+// fill the ring with samples nobody drains, and every one of them would be
+// counted as dropped.
+AudioIntent audio_intent(const bool muted, const bool running) { return {!muted, running && !muted}; }
+
 }  // namespace nes_gui

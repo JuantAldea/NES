@@ -406,7 +406,13 @@ Not production ready.
 ```sh
 ./build/nes_frontend path/to/rom.nes    # loads and starts running
 ./build/nes_frontend                    # then type a path, or drag a .nes in
+./build/nes_frontend --mute rom.nes     # start silent; the Mute box unmutes
 ```
+
+`--mute` stops the sampler as well as the audio device, so a silent run does no
+synthesis at all. It is what `tests/run_functional.sh` passes, because that check
+opens a frontend window per mapper and twelve live audio devices in a row is not
+something anyone wants coming out of their speakers.
 
 Panel positions are saved to `imgui.ini` in the working directory.
 

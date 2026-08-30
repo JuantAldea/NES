@@ -47,6 +47,7 @@ check for regressions with `tests/test_counts.sh --check`.
 | `DmcDma/SprdmaAndDmcDma` | 2 | yes |
 | `frameDump` | 6 | yes |
 | `frameDumpEmphasis` | 6 | yes |
+| `frontendAudio` | 2 | yes |
 | `frontendController` | 3 | yes |
 | `frontendLoad` | 4 | yes |
 | `frontendPalette` | 3 | yes |
@@ -100,9 +101,9 @@ check for regressions with `tests/test_counts.sh --check`.
 
 | | Cases |
 |---|---:|
-| Registered | 1112 |
+| Registered | 1114 |
 | Skipped in CI | 518 |
-| **Executed in CI** | **594** |
+| **Executed in CI** | **596** |
 
 Skipped in CI: the 512 per-opcode SingleStepTests need 1.1 GB of vectors CI
 does not fetch, and `commercialRom` needs a cartridge dump nothing here will

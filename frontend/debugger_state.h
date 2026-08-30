@@ -34,6 +34,15 @@ struct FrontendState {
     // stdout.
     bool trace = false;
 
+    // Silence, from the UI toggle or from --mute on the command line.
+    //
+    // It stops the SAMPLER as well as the device, so a muted run does no
+    // synthesis at all rather than producing samples nobody hears. That matters
+    // more than it sounds: run_functional.sh opens a frontend window per mapper
+    // - twelve of them - and every one used to play through the speakers of
+    // whoever ran it.
+    bool muted = false;
+
     // Integer scale for the 256x240 screen. Integer only: a fractional scale
     // with nearest-neighbour filtering makes some scanlines taller than others,
     // which looks like a rendering bug and is not one.
@@ -108,5 +117,24 @@ struct ControllerSnapshot {
 // Reads one port without disturbing it. `port` is 0 or 1; anything else returns
 // an empty snapshot rather than indexing out of bounds.
 ControllerSnapshot peek_controller(Bus& console, int port);
+
+// What the audio device and the sampler should be doing, given the two
+// independent reasons for silence.
+//
+// Extracted from main.cpp so it can be tested at all: main.cpp is not linked
+// into the test binary, and a mute that quietly stopped working would be
+// invisible until somebody noticed the noise. This is the same split as
+// safe_to_peek and step_instruction - policy here, SDL calls there.
+struct AudioIntent {
+    // Whether Bus should synthesise at all. False while muted, so a silent
+    // session does no work rather than filling a ring nobody drains.
+    bool sampler_enabled;
+
+    // Whether the SDL device should be unpaused. Needs BOTH a running machine
+    // and an unmuted one; pausing alone would leave the sampler producing.
+    bool device_running;
+};
+
+AudioIntent audio_intent(bool muted, bool running);
 
 }  // namespace nes_gui

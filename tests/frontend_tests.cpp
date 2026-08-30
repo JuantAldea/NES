@@ -389,5 +389,46 @@ GTEST_TEST(frontendPalette, a_write_through_the_alias_is_what_the_panel_displays
         << "the alias and its target must display the same colour";
 }
 
+// MUTING AND PAUSING ARE NOT THE SAME SILENCE, and all four rows are asserted
+// because three of them agree - only one separates the two ideas.
+//
+// This is policy in debugger_state for the reason the header of this file gives:
+// main.cpp cannot be linked here, so a mute that quietly stopped working would
+// be invisible until somebody noticed the noise. Which is how it was noticed the
+// first time - run_functional.sh opens twelve frontend windows, each with a live
+// audio device.
+GTEST_TEST(frontendAudio, muting_stops_the_sampler_and_pausing_only_stops_the_device)
+{
+    using nes_gui::audio_intent;
+
+    // Running and unmuted: the only combination that makes sound.
+    EXPECT_TRUE(audio_intent(false, true).sampler_enabled);
+    EXPECT_TRUE(audio_intent(false, true).device_running);
+
+    // Paused. The device stops but the sampler stays ON - a paused machine is
+    // not clocking, so nothing is produced anyway, and leaving it enabled is
+    // what lets sound resume without a gap.
+    EXPECT_TRUE(audio_intent(false, false).sampler_enabled) << "pausing must not disable the sampler";
+    EXPECT_FALSE(audio_intent(false, false).device_running);
+
+    // Muted while running. THE ROW THAT MATTERS: the machine is still clocking,
+    // so the sampler has to stop too. Left enabled it would fill a ring nobody
+    // drains, and every sample would be counted as dropped.
+    EXPECT_FALSE(audio_intent(true, true).sampler_enabled) << "muting must stop the sampler, not just the device";
+    EXPECT_FALSE(audio_intent(true, true).device_running);
+
+    EXPECT_FALSE(audio_intent(true, false).sampler_enabled);
+    EXPECT_FALSE(audio_intent(true, false).device_running);
+}
+
+GTEST_TEST(frontendAudio, a_frontend_starts_unmuted)
+{
+    // --mute is opt-in: somebody launching the emulator wants sound. The
+    // functional pass passes it explicitly, which is the point of it being a
+    // flag rather than a default.
+    const nes_gui::FrontendState state;
+    EXPECT_FALSE(state.muted);
+}
+
 }  // namespace frontend
 }  // namespace tests

@@ -442,7 +442,11 @@ else
             continue
         }
 
-        SDL_VIDEODRIVER=x11 "$BUILD/nes_frontend" "$rom" >"$OUT/$tag.err" 2>&1 &
+        # --mute, because this loop starts a real emulator with a real audio
+        # device twelve times in a row and every one of them used to play through
+        # the speakers of whoever ran the pass. It also means no synthesis runs,
+        # so the check measures the frontend coming up rather than the APU.
+        SDL_VIDEODRIVER=x11 "$BUILD/nes_frontend" --mute "$rom" >"$OUT/$tag.err" 2>&1 &
         pid=$!
         wid=""
         i=0

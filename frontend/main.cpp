@@ -17,6 +17,7 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <string>
 #include <vector>
 
 #include "../include/bus.h"
@@ -139,6 +140,23 @@ void place(const float x, const float y, const float w, const float h)
 
 int main(int argc, char** argv)
 {
+    // BEFORE SDL_Init, so --help prints and exits without opening a window and
+    // without needing a display at all. Flags may come in any order; the ROM
+    // path is the first argument that is not one.
+    bool start_muted = false;
+    const char* rom_argument = nullptr;
+    for (int i = 1; i < argc; ++i) {
+        const std::string argument = argv[i];
+        if (argument == "--mute" || argument == "-m") {
+            start_muted = true;
+        } else if (argument == "--help" || argument == "-h") {
+            std::printf("usage: %s [--mute] [rom.nes]\n  --mute, -m  start silent; the UI can unmute\n", argv[0]);
+            return 0;
+        } else if (rom_argument == nullptr) {
+            rom_argument = argv[i];
+        }
+    }
+
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER | SDL_INIT_AUDIO) != 0) {
         SDL_Log("SDL_Init failed: %s", SDL_GetError());
         return 1;
@@ -233,10 +251,21 @@ int main(int argc, char** argv)
     }
     std::vector<uint32_t> scratch(screen_pixels, 0);
 
-    if (argc > 1) {
-        std::snprintf(state.rom_path, sizeof(state.rom_path), "%s", argv[1]);
-        nes_gui::load_cartridge(console, state, argv[1]);
+    state.muted = start_muted;
+
+    if (rom_argument != nullptr) {
+        std::snprintf(state.rom_path, sizeof(state.rom_path), "%s", rom_argument);
+        nes_gui::load_cartridge(console, state, rom_argument);
         state.running = true;
+    }
+
+    // Applied once here as well as in the loop below, because the device was
+    // unpaused when it opened - several frames before the loop's first pass - and
+    // a --mute run that is briefly audible has not done its job.
+    if (state.muted && audio_device != 0) {
+        SDL_PauseAudioDevice(audio_device, 1);
+        console.audio_enabled = false;
+        console.audio.clear();
     }
 
     bool quit = false;
@@ -333,7 +362,21 @@ int main(int argc, char** argv)
         // A pending cartridge swap is handled in the same breath and for the
         // same reason - it is the one moment the device is known stopped.
         if (audio_device != 0) {
-            const bool want_running = state.running;
+            // TWO INDEPENDENT REASONS FOR SILENCE, and they are not the same
+            // thing. Pausing stops the device but leaves the sampler producing;
+            // muting stops both, so a muted session does no synthesis at all
+            // rather than filling a ring nobody drains. That second part is what
+            // keeps dropped() meaningful while muted.
+            const nes_gui::AudioIntent intent = nes_gui::audio_intent(state.muted, state.running);
+            if (console.audio_enabled != intent.sampler_enabled) {
+                // The toggle just moved. Stop the consumer before touching the
+                // ring, for the reason spelled out above.
+                SDL_PauseAudioDevice(audio_device, 1);
+                console.audio_enabled = intent.sampler_enabled;
+                console.audio.clear();
+            }
+
+            const bool want_running = intent.device_running;
             if (!want_running || console.audio_reset_pending) {
                 SDL_PauseAudioDevice(audio_device, 1);
                 console.audio.clear();

@@ -181,6 +181,13 @@ void draw_controls_panel(Bus& console, FrontendState& state)
         console.trace_cpu = state.trace;
     }
 
+    // The device and the sampler are both driven from this flag by the audio
+    // block in main.cpp, which is the one place that knows when the consumer is
+    // stopped and so when the ring is safe to touch. Setting them here would be
+    // a data race with the SDL callback.
+    ImGui::SameLine();
+    ImGui::Checkbox("Mute", &state.muted);
+
     // Discoverability: the mapping is otherwise guessable only by trying keys.
     ImGui::TextDisabled("pad: arrows  X=A  Z=B  Shift=Select  Enter=Start");
 
