@@ -337,6 +337,18 @@ GTEST_TEST(unrom, a_bank_count_that_is_not_a_power_of_two_is_rejected)
     BankedRom sixteen("unrom_sixteen.nes", 16);
     Bus b;
     EXPECT_TRUE(b.load_cartridge(sixteen.path)) << "256K UOROM";
+
+    // Both ends of the range itself. Two banks is the smallest image with a
+    // window to switch, and thirty-two is the first power of two past the
+    // ceiling - the only size that reaches the upper bound on its own, since
+    // anything between is rejected for not being a power of two first.
+    BankedRom smallest("unrom_two.nes", 2);
+    Bus c;
+    EXPECT_TRUE(c.load_cartridge(smallest.path)) << "32K is two banks, the minimum this board can be";
+
+    BankedRom huge("unrom_thirtytwo.nes", 32);
+    Bus d;
+    EXPECT_FALSE(d.load_cartridge(huge.path)) << "512K needs five bank bits; UNROM latches four";
 }
 
 }  // namespace unrom
