@@ -206,14 +206,30 @@ public:
     float input_rate() const { return input_hz; }
     float output_rate() const { return output_hz; }
 
-    // THREE COEFFICIENT ACCESSORS WERE HERE AND ARE GONE. They were added
-    // because a corner-frequency mutation survived, and justified by a comment
-    // claiming it "survived every response-based test" - true of an earlier
-    // state of the branch and false by the time it was committed. A reference
-    // test written in the SAME commit already killed all three corner
-    // mutations, and kills a 0.11% shift where these were sold as necessary for
-    // 1%. Internals exposed to raise a mutation score, on a justification never
-    // re-measured.
+    // The three sections of the tone chain, const, so a test can check WHICH
+    // corner each was built with. There is no other way to see it: a filter does
+    // not store its corner, and the chain's audible output barely depends on it.
+    //
+    // THESE WERE HERE, WERE REMOVED, AND ARE BACK, so the round trip is worth
+    // recording. The removal's stated reason was that "a reference test written
+    // in the SAME commit already killed all three corner mutations, and kills a
+    // 0.11% shift where these were sold as necessary for 1%" - and that reference
+    // test is a_note_written_to_the_registers_reaches_the_sample_stream, which
+    // asserts an rms of 0.0551 to within 0.012.
+    //
+    // MEASURED, by moving the low-pass 1% to 14140 Hz and rebuilding: the rms
+    // goes from 0.055186 to 0.055197. That is 0.02%, against a tolerance 1100x
+    // larger, and the test passes comfortably. Mechanical mutation agrees - all
+    // three of 90, 440 and 14000 survive the whole testAudio suite, that test
+    // included.
+    //
+    // So the objection was right in principle and false in fact: internals should
+    // not be exposed to raise a mutation score, but nothing was covering these,
+    // and the sentence claiming otherwise was itself never measured - which is
+    // exactly what it accused the code it deleted of.
+    const FirstOrderFilter& first_high_pass() const { return high_pass_90; }
+    const FirstOrderFilter& second_high_pass() const { return high_pass_440; }
+    const FirstOrderFilter& low_pass() const { return low_pass_14k; }
 
 private:
     float input_hz;

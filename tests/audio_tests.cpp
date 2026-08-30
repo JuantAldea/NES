@@ -800,6 +800,11 @@ GTEST_TEST(testAudio, a_note_written_to_the_registers_reaches_the_sample_stream)
     // it is 0.3285. A range of 0.01 to 0.5 - which is what this used to assert -
     // accepts all three, so the test could not tell the chain from no chain at
     // all, in the one place standing behind a resampler with no oracle.
+    // THIS TEST DOES NOT CONSTRAIN THE CORNERS, and a comment in audio.h used to
+    // say it did. Measured: moving the low-pass 1%, 14000 to 14140, moves this
+    // rms from 0.055186 to 0.055197 - 0.02%, against a tolerance of 0.012 that
+    // is 1100x larger. It pins the chain's LEVEL, which is what it says, and the
+    // corners are pinned by the_sampler_builds_its_chain_at_the_documented_corners.
     EXPECT_NEAR(0.0551, rms, 0.012) << "the whole chain's output level; filters removed reads 0.105, ZOH 0.329";
 }
 
@@ -1181,6 +1186,52 @@ GTEST_TEST(testAudio, the_kernel_reaches_a_blackman_stopband_a_hamming_window_wo
     const double peak_db = 20.0 * std::log10(peak);
     EXPECT_LT(peak_db, -72.0) << "worst stopband sidelobe is " << peak_db << " dB at f=" << peak_at
                               << "; Blackman measures -80.9 here and Hamming -60.7";
+}
+
+// THE CHAIN'S THREE CORNERS ARE THE HARDWARE'S, and until this nothing checked
+// which ones AudioSampler passed to its filters.
+//
+// The gap was structural rather than an oversight. each_filter_is_minus_three_db
+// _at_its_corner tests FirstOrderFilter thoroughly - but it builds its own
+// filters, at its own corners, so it says nothing about the sampler's. And the
+// end-to-end test that looks like it would cover it,
+// a_note_written_to_the_registers_reaches_the_sample_stream, measures the chain's
+// rms level: moving the low-pass 1% changes that by 0.02%, inside a tolerance
+// 1100x larger. Mechanical mutation found all three corners free to move.
+//
+// -3 dB AT THE CORNER IS WHAT "CORNER" MEANS, so this asserts the definition
+// rather than the coefficients, and holds for any discretisation. A section
+// built at 90.9 Hz reads 0.7036 at 90 Hz against 0.70711 - three thousand times
+// the tolerance below, which is float noise.
+//
+// The frequencies are nesdev's, for the NES's own analogue output stage: two
+// high-passes at 90 Hz and 440 Hz and a low-pass at 14 kHz.
+GTEST_TEST(testAudio, the_sampler_builds_its_chain_at_the_documented_corners)
+{
+    const float rate = 44100.0f;
+    const AudioSampler sampler{rate};
+
+    EXPECT_NEAR(0.70710678, magnitude_at(sampler.first_high_pass(), 90.0, rate), 1e-6)
+        << "the first high-pass is not cornered at 90 Hz";
+    EXPECT_NEAR(0.70710678, magnitude_at(sampler.second_high_pass(), 440.0, rate), 1e-6)
+        << "the second high-pass is not cornered at 440 Hz";
+    EXPECT_NEAR(0.70710678, magnitude_at(sampler.low_pass(), 14000.0, rate), 1e-6)
+        << "the low-pass is not cornered at 14 kHz";
+
+    // The corners are built FROM the output rate, so they must follow it rather
+    // than being right only at 44.1 kHz. This is also what distinguishes passing
+    // the rate to the filter from hard-coding a coefficient.
+    const float other = 96000.0f;
+    const AudioSampler faster{other};
+    EXPECT_NEAR(0.70710678, magnitude_at(faster.low_pass(), 14000.0, other), 1e-6)
+        << "the 14 kHz corner did not follow the output rate";
+}
+
+// Half a second of audio, which is the sizing rule the constructor documents.
+GTEST_TEST(testAudio, the_ring_is_sized_to_half_a_second_of_output)
+{
+    const AudioSampler sampler{44100.0f};
+    EXPECT_EQ(static_cast<size_t>(44100.0f / 2.0f), sampler.capacity()) << "half a second at 44.1 kHz";
 }
 
 // --- what the mutation sweep of audio.cpp found nothing watching -------------
