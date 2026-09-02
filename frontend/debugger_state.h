@@ -37,10 +37,8 @@ struct FrontendState {
     // Silence, from the UI toggle or from --mute on the command line.
     //
     // It stops the SAMPLER as well as the device, so a muted run does no
-    // synthesis at all rather than producing samples nobody hears. That matters
-    // more than it sounds: run_functional.sh opens a frontend window per mapper
-    // - twelve of them - and every one used to play through the speakers of
-    // whoever ran it.
+    // synthesis rather than producing samples nobody hears - which is what keeps
+    // dropped() meaningful while muted.
     bool muted = false;
 
     // Integer scale for the 256x240 screen. Integer only: a fractional scale

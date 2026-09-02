@@ -65,11 +65,11 @@ const KnownMapper kKnownMappers[] = {
 
 // --- the board table --------------------------------------------------------
 //
-// The single place a mapper number becomes behaviour. It used to be two places
-// - a chain of `!=` comparisons in the header check and a switch further down
-// in load() - and keeping those in step was a standing invitation to add a
-// board that got rejected before it could run, or accept a cartridge with no
-// board behind it. Both failure modes are silent from the header check's side.
+// The single place a mapper number becomes behaviour. Splitting it in two - a
+// header check that decides what is accepted, and a separate switch that
+// decides what gets constructed - lets a board be rejected before it can run,
+// or a cartridge be accepted with no board behind it. Both are silent from the
+// header check's side, which is why the two answers come from one table.
 //
 // Each row's `check` validates the bank counts the iNES header advertises
 // against what the board can physically be. Boards whose only constraint is
@@ -89,15 +89,10 @@ std::unique_ptr<Mapper> construct(ROM& rom)
 // question: a masked board given 24 banks loads and silently aliases half of
 // them, which is what MMC1 and UNROM both did until measured.
 //
-// Audited across every board here, after the UNROM case was found:
-//
-//   masked, and the check now enforces it   MMC1 (PRG and CHR), UNROM,
-//                                           UNROM 7408, GxROM, AxROM, CNROM
-//   modulo, so no constraint is needed      NROM, MMC2, MMC4, MMC3, TxSROM,
-//                                           FME-7
-//
-// Three of those needed fixing and the rest were already right. If a new board
-// masks, its check owes a power-of-two clause; if it divides, it does not.
+// Every board was audited against this after the UNROM case was found, so a
+// power-of-two clause in a check below is the mark of a board that masks, and
+// its absence means that board divides. A new board that masks owes its check
+// that clause; one that divides does not.
 std::string check_nrom(const size_t prg_16k_banks, const size_t chr_8k_banks)
 {
     // NROM carries one 16KB PRG bank (mirrored across $8000-$FFFF) or two
@@ -141,8 +136,7 @@ std::string check_mmc1(const size_t prg_16k_banks, const size_t chr_8k_banks)
 
     // CHR-ROM is optional - SGROM and SUROM carry CHR-RAM, and chr_offset banks
     // that from chr_ram_size instead. But when it IS present, chr_offset masks it
-    // the same way, and this check used to discard the argument with a (void)
-    // cast and never look at it.
+    // the same way, so the count is constrained even though it may be zero.
     //
     // 16 banks is 128KB, the ceiling: the CHR registers are five bits, which
     // address 32 banks of 4KB.
@@ -164,9 +158,8 @@ std::string check_uxrom(const size_t prg_16k_banks, const size_t chr_8k_banks)
     // UNROM exists to carry more PRG than the CPU can address, so NROM's
     // two-bank ceiling does not apply. 8 or 16 banks are the real board sizes.
     //
-    // A POWER OF TWO, for the reason check_cnrom and check_axrom already give
-    // and this one used to omit: cpu_write latches `data & (prg_bank_count - 1)`,
-    // which is only a bank-select mask when the count is a power of two.
+    // A POWER OF TWO: cpu_write latches `data & (prg_bank_count - 1)`, which is
+    // only a bank-select mask when the count is a power of two.
     //
     // MEASURED before the clause was added. A 12-bank image loaded, and the mask
     // 11 - 0b1011 - made banks 4 through 7 alias onto 0 through 3: a third of the
@@ -402,9 +395,10 @@ std::unique_ptr<Mapper> make_mapper(const MapperId id, ROM& rom)
     return board == nullptr ? nullptr : board->make(rom);
 }
 
-// The single 8KB window, at whatever bank a one-latch board last selected.
-// NROM, UNROM and CNROM are all exactly this - chr_bank never leaves 0 on the
-// first two - so none of them overrides it.
+// The single 8KB window, at whatever bank a one-latch board last selected. Any
+// board whose whole CHR story is one window driven by rom.chr_bank takes this
+// and overrides nothing: the CHR-switching boards move that latch, and the
+// CHR-RAM boards leave it at 0 and get a flat 8KB out of the same arithmetic.
 uint32_t Mapper::chr_offset(const uint16_t ppu_addr) const
 {
     return static_cast<uint32_t>(rom.chr_bank) * CHR_ROM_BANK_SIZE + (ppu_addr & 0x1FFF);
@@ -652,11 +646,10 @@ uint8_t UnRom::prg_read(const uint16_t addr) const
     return rom.prg_rom[bank * PRG_ROM_BANK_SIZE + (addr & 0x3FFF)];
 }
 
-// --- CNROM (3) --------------------------------------------------------------
+// --- UNROM 7408 (180) -------------------------------------------------------
 
-// A write anywhere in $8000-$FFFF latches the low bits as the CHR bank number.
-// Bus conflicts are not modelled, for the same reason as UNROM's.
-// Identical to UnRom's - the boards differ only in which window is fixed.
+// Byte-for-byte UnRom::cpu_write - the boards differ only in which window is
+// fixed, which is prg_read's business and not this one's.
 //
 // BOTH HALVES OF THE GUARD ARE UNREACHABLE, and are kept anyway. Mutation leaves
 // them alive: `addr >= 0x8000` because Bus only routes cartridge-space writes
@@ -680,6 +673,10 @@ uint8_t UnRom7408::prg_read(const uint16_t addr) const
     return rom.prg_rom[bank * PRG_ROM_BANK_SIZE + (addr & 0x3FFF)];
 }
 
+// --- GxROM (66) -------------------------------------------------------------
+
+// One register, both halves: bits 5-4 select a 32KB PRG bank and bits 1-0 an
+// 8KB CHR bank. Bus conflicts are not modelled, for the same reason as UNROM's.
 void GxRom::cpu_write(const uint16_t addr, const uint8_t data)
 {
     if (addr < 0x8000) {
@@ -706,6 +703,12 @@ uint8_t GxRom::prg_read(const uint16_t addr) const
     return rom.prg_rom[bank * 32u * 1024u + (addr & 0x7FFFu)];
 }
 
+// --- CNROM (3) --------------------------------------------------------------
+
+// A write anywhere in $8000-$FFFF latches the low bits as the CHR bank number.
+// Bus conflicts are not modelled, for the same reason as UNROM's. Masked by the
+// bank count rather than a fixed width, as on UNROM: a real board decodes only
+// as many lines as it has banks.
 void CnRom::cpu_write(const uint16_t addr, const uint8_t data)
 {
     if (addr >= 0x8000 && rom.chr_bank_count != 0) {
@@ -909,8 +912,10 @@ void Fme7::write_register(const uint8_t value)
         break;
 
     case 0x0C:
-        // The only board here that can select all four mirroring modes from one
-        // register, in the order the hardware numbers them.
+        // All four modes, in the order the FME-7 numbers them - which is NOT
+        // MMC1's order for the same four values. Mmc1::apply_mirroring reads 0
+        // and 1 as the single-screen pair; here they are vertical and
+        // horizontal, and the single-screen pair is 2 and 3.
         switch (value & 0x03) {
         case 0:
             rom.mirroring = ROM::Mirroring::vertical;
@@ -994,8 +999,9 @@ uint32_t Fme7::chr_offset(const uint16_t ppu_addr) const
         return ppu_addr & 0x1FFF;
     }
 
-    // Eight registers, one per 1KB of pattern space - the finest CHR granularity
-    // of any board here, matching the MMC3's but without its mode bits.
+    // Eight registers, one per 1KB of pattern space: the MMC3's granularity
+    // without its mode bits, so every window is independently selectable and
+    // there is no fixed half.
     const uint32_t bank = chr[(ppu_addr >> 10) & 0x07] % banks;
     return bank * 1024u + (ppu_addr & 0x03FFu);
 }
@@ -1134,8 +1140,8 @@ void Mmc3::cpu_write(const uint16_t addr, const uint8_t data)
         break;
 
     default:
-        // $8000-$FFFF is fully decoded by the three cases above; nothing else
-        // reaches here.
+        // Unreachable: the early return excludes everything below $8000, and
+        // `addr & 0xE000` on the rest can only be one of the four cases above.
         break;
     }
 }
@@ -1214,8 +1220,7 @@ uint8_t Mmc3::prg_read(const uint16_t addr) const
 
 uint32_t Mmc3::chr_offset(const uint16_t ppu_addr) const
 {
-    // The M4 images DID settle it, which is what this comment used to say they
-    // would. CHR-RAM is banked here exactly as CHR-ROM is, in 1KB units, for the
+    // CHR-RAM is banked here exactly as CHR-ROM is, in 1KB units, for the
     // same reason MMC1 banks it: the RAM sits on the cartridge behind the same
     // mapper CHR address lines, so "no CHR-ROM" changes which chip answers and
     // not how it is addressed.

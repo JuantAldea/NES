@@ -7,7 +7,9 @@ using c = CPU;
 const Instruction InstructionSet::NMI{"NMI", Addressing::implicit, &c::NMI};
 const Instruction InstructionSet::IRQ{"IRQ", Addressing::implicit, &c::IRQ};
 
-//Aligned to 10 so that they are easier to count
+// Indexed by opcode, so all 256 entries must be present and in order - the
+// undocumented ones included, which is why STP and the combined operations
+// appear rather than a default.
 const std::valarray<Instruction> InstructionSet::Table{
     {"BRK", Addressing::implicit, &c::BRK},
     {"ORA", Addressing::indexed_indirect, &c::ORA},
@@ -266,4 +268,4 @@ const std::valarray<Instruction> InstructionSet::Table{
     {"INC", Addressing::absolute_X, &c::INC},
     {"ISC", Addressing::absolute_X, &c::ISC}};
 
-// clang-format off
+// clang-format on

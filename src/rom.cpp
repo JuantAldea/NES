@@ -77,10 +77,9 @@ bool ROM::load(const std::string& path)
 
     // Byte 9's nibbles extend the PRG and CHR sizes by 256 banks each, and the
     // value $F switches that field to an exponent-multiplier encoding entirely.
-    // Nothing here carries either: the largest board this emulator implements
-    // is 512KB, which is 32 banks. Rejecting rather than ignoring, because
-    // ignoring loads a multi-megabyte image at a thirty-second of its size with
-    // no complaint.
+    // Neither is decoded here. Rejecting rather than ignoring, because ignoring
+    // takes only the low byte of the bank count and so loads a multi-megabyte
+    // image at a fraction of its size with no complaint.
     if (parsed_nes2 && data[9] != 0) {
         std::cerr << "ROM: NES 2.0 byte 9 is " << static_cast<int>(data[9])
                   << ", so the image is larger than 4MB or uses the exponent size form; neither is supported\n";
@@ -185,13 +184,12 @@ bool ROM::load(const std::string& path)
     mapper_wants_cpu_clock = mapper->wants_cpu_clock();
     mapper_drives_ciram_a10 = mapper->drives_ciram_a10();
 
-    // A fresh board comes up with its registers at their power-on values, so the
-    // long reset block that used to live here is now the Mmc3 members' own
-    // initialisers. The /IRQ line is the exception and must still be released
-    // explicitly: it is the CONSOLE's wire, not the cartridge's, so a new
-    // cartridge inherits whatever the previous one left latched in the CPU and
-    // would take an interrupt it never asked for before executing an
-    // instruction.
+    // A freshly constructed board already has its registers at their power-on
+    // values, from its own member initialisers. The /IRQ line is the exception
+    // and must still be released explicitly: it is the CONSOLE's wire, not the
+    // cartridge's, so a new cartridge inherits whatever the previous one left
+    // latched in the CPU and would take an interrupt it never asked for before
+    // executing an instruction.
     drive_irq_line(false);
 
     prg_rom.assign(data.begin() + offset, data.begin() + offset + prg_size);
@@ -269,9 +267,9 @@ uint16_t ROM::prg_ram_offset(const uint16_t addr) const
     return static_cast<uint16_t>(folded % PrgRAM::SIZE);
 }
 
-// A change on PPU address line A12. Only the MMC3 has the wire; Mapper's
-// default override is what makes that true of three boards without them saying
-// so.
+// A completed pattern-table fetch, for the boards that latch a CHR bank on one.
+// Reported after the byte was served, because the triggering read comes from
+// the old bank - see the ordering note on Mapper::observe_pattern_fetch.
 void ROM::observe_pattern_fetch(const uint16_t ppu_addr)
 {
     if (mapper) {
@@ -279,6 +277,9 @@ void ROM::observe_pattern_fetch(const uint16_t ppu_addr)
     }
 }
 
+// A change on PPU address line A12, which clocks the MMC3's scanline counter.
+// Mapper's default override is what lets every board without the wire stay
+// silent about not having it.
 void ROM::mmc3_observe_a12(const uint16_t ppu_addr, const uint64_t ppu_cycle)
 {
     if (mapper) {

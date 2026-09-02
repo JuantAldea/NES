@@ -4,36 +4,6 @@
 #include <cstring>
 
 #include "../include/bus.h"
-/*
-1uint8_t& PPU::get_register(const RegisterMMap reg)
-{
-    assert((addr >= PPUCTRL && addr <= PPUCTRL) || addr == OAMDMA);
-    switch (reg) {
-    case PPUCTRL:
-        return registers.PPUCTRL;
-    case PPUMASK:
-        return registers.PPUMASK;
-    case PPUSTATUS:
-        return registers.PPUSTATUS;
-    case OAMADDR:
-        return registers.OAMADDR;
-    case OAMDATA:
-        return registers.OAMDATA;
-    case PPUSCROLL:
-        return registers.PPUSCROLL;
-    case PPUADDR:
-        return registers.PPUADDR;
-    case PPUDATA:
-        return registers.PPUDATA;
-    case OAMDMA:
-        return registers.OAMDMA;
-    default:
-        break;
-    }
-}
-*/
-
-// https://wiki.nesdev.com/w/index.php/PPU_sprite_evaluation
 
 // Drives some or all of the eight bits of the PPU's data bus latch.
 //
@@ -202,10 +172,6 @@ void PPU::clock()
     // the CPU's rate; Bus::clock runs it. Ticking it once per dot made the
     // transfer three times too short.
 
-    //341 clocks/scanline
-    // external PPU memory accessed every two clocks = 170 reads
-    //+ 1 spare cycle
-
     // An if-chain rather than a switch, because `case 0 ... 239:` is a GCC
     // range extension and -pedantic rejects it. The two warnings it produced
     // were invisible in practice: this file only recompiles when something it
@@ -234,8 +200,8 @@ void PPU::clock()
             suppress_vblank_flag_set = false;
         }
     } else if (scanline > vblank_start_scanline && scanline < pre_render_scanline) {
-        // Idle, which is the question this comment used to ask. NESdev's PPU
-        // rendering page, on the vblank lines after 241: "The PPU makes no
+        // Idle. NESdev's PPU rendering page, on the vblank lines after 241:
+        // "The PPU makes no
         // memory accesses during these scanlines, so PPU memory can be freely
         // accessed by the program."
         //
@@ -267,18 +233,6 @@ void PPU::clock()
 
     // Anything above may have moved the vblank flag, and /NMI follows it.
     update_nmi_line();
-    /*
-
-    - Sprite DMA is 6144 clock cycles long (or in CPU clock cycles, 6144/12).
-    256 individual transfers are made from CPU memory to a temp register inside
-    the CPU, then from the CPU's temp reg, to $2004.
-
-    - One scanline is EXACTLY 1364 cycles long. In comparison to the CPU's
-    speed, one scanline is 1364/12 CPU cycles long.
-
-    - One frame is EXACTLY 357368 cycles long, or EXACTLY 262 scanlines long.
-
-    */
 }
 
 void PPU::advance_dot()
@@ -612,15 +566,6 @@ void PPU::clear_secondary_oam_dot()
     }
 }
 
-// Dot 65: the scan's starting point is fixed here.
-//
-// "Sprite 0" is not necessarily OAM[0]. Hardware sprite evaluation begins at
-// whatever OAMADDR holds when it starts, so a non-zero OAMADDR shifts which
-// sprite lands in secondary OAM slot 0 - and only that slot can raise the hit
-// flag. Games are expected to set OAMADDR to 0 before an OAM DMA precisely
-// because of this.
-//
-// Aligned down to a four-byte boundary: OAM is read as sprite records, so an
 // The 2C02G/H OAM hardware refresh bug.
 //
 // NESdev, $2003: "if OAMADDR is not less than eight when rendering starts, the
@@ -648,7 +593,7 @@ void PPU::oam_refresh_bug()
     }
 }
 
-// Evaluation starts at OAMADDR exactly, INCLUDING its low two bits.
+// Dot 65. Evaluation starts at OAMADDR exactly, INCLUDING its low two bits.
 //
 // NESdev, $2003: "If OAMADDR is unaligned and does not point to the Y position
 // (first byte) of an OAM entry, then whatever it points to (tile index,
@@ -656,9 +601,9 @@ void PPU::oam_refresh_bug()
 // following bytes will be similarly reinterpreted."
 //
 // So m is the byte index within the record, seeded from OAMADDR rather than
-// forced to 0. An earlier version masked with $FC and a test asserted that as
-// though it were hardware; it was neither, and it would have had to be deleted
-// before this could be corrected.
+// forced to 0. Masking OAMADDR with $FC to align it to a record boundary is the
+// obvious reading and is not what the hardware does - and a test here once
+// asserted the masked form as though it were a hardware fact.
 void PPU::begin_sprite_evaluation()
 {
     sprite_eval_oamaddr = registers.OAMADDR;
@@ -703,9 +648,6 @@ void PPU::sprite_evaluation_read()
     sprite_eval_latch = OAM_memory[address];
 }
 
-// n only ever moves forward, and the scan ends when it runs off the end of OAM
-// rather than wrapping. That is why a non-zero OAMADDR makes the sprites below
-// it disappear instead of being picked up on a second pass.
 // One byte forward through OAM, carrying from m into n. A copy walks the array
 // linearly; only the out-of-range path in ScanY skips a whole record at a time.
 void PPU::sprite_evaluation_advance_byte()
@@ -717,6 +659,9 @@ void PPU::sprite_evaluation_advance_byte()
     }
 }
 
+// n only ever moves forward, and the scan ends when it runs off the end of OAM
+// rather than wrapping. That is why a non-zero OAMADDR makes the sprites below
+// it disappear instead of being picked up on a second pass.
 void PPU::sprite_evaluation_advance_n()
 {
     ++sprite_eval_n;
@@ -876,12 +821,11 @@ void PPU::load_sprite_units()
 // and that single dot was the whole of the failure it reported for a long time.
 //
 // The two GARBAGE fetches of each group, at dots 257-258 and 259-260, are two
-// garbage NAMETABLE bytes - not a nametable and an attribute. This comment
-// claimed the latter for a long time and was wrong. NESdev's PPU rendering page
-// lists the group as "Garbage nametable byte, Garbage nametable byte, Pattern
-// table tile low, Pattern table tile high". Both are $2xxx either way, so
-// nothing downstream changed, but a wrong claim about bus phases is not worth
-// keeping in a file whose whole job is bus phases.
+// garbage NAMETABLE bytes - NOT a nametable and an attribute, which is the
+// natural reading and the wrong one. NESdev's PPU rendering page lists the
+// group as "Garbage nametable byte, Garbage nametable byte, Pattern table tile
+// low, Pattern table tile high". Both are $2xxx either way, so nothing
+// downstream depends on it.
 //
 // Same page: "All garbage nametable bytes except the first are the same address
 // as the first nametable fetch on the upcoming scanline", the first being "a
@@ -1077,11 +1021,6 @@ void PPU::process_visible_scanline()
             registers.OAMADDR = 0;
         }
 
-        // Dots 1-256 fetch the tiles for THIS line (two tiles ahead of the
-        // pixel being drawn), and 321-336 the first two tiles of the NEXT one.
-        // Both regions shift; the gap between them, where hardware is fetching
-        // sprite patterns, does not.
-        //
         // Shifting, reloading and fetching are on three different dot ranges,
         // and collapsing them into one was a real bug: with the fetch region
         // starting at dot 2, case 0 of fetch_background_byte never ran at dot
@@ -1106,8 +1045,10 @@ void PPU::process_visible_scanline()
             reload_background_shifters();
         }
 
-        // Dots 1-256 fetch the tiles for THIS line, 321-336 the first two of
-        // the NEXT one.
+        // Dots 1-256 fetch the tiles for THIS line (two tiles ahead of the
+        // pixel being drawn), 321-336 the first two of the NEXT one. Both
+        // regions shift; the gap between them, where hardware is fetching
+        // sprite patterns, does not.
         if ((cycle >= 1 && cycle <= 256) || (cycle >= 321 && cycle <= 336)) {
             fetch_background_byte();
         }
@@ -1304,10 +1245,9 @@ void PPU::request_OAM_DMA()
 
 void PPU::perform_OAM_DMA_cycle()
 {
-    // first 1 or 2 cyles are dummy
+    // The leading halt cycle, plus the alignment cycle when there was one.
     remaining_dma_cycles--;
     if (remaining_dma_cycles >= 512) {
-        // std::cout << "DUMMY " << std::dec << remaining_dma_cycles << std::endl;
         return;
     }
 
@@ -1330,8 +1270,6 @@ void PPU::perform_OAM_DMA_cycle()
 
 void PPU::write(const uint16_t addr, const uint8_t data)
 {
-    // std::cout << "PPU WRITE " << std::hex << addr << " " << (unsigned)data << std::endl;
-
     // Every write to the PPU's own register file drives its internal data bus
     // latch, regardless of which register it targets - including PPUSTATUS,
     // which is read-only: the write still reaches the bus, it just has no
@@ -1482,7 +1420,6 @@ void PPU::write(const uint16_t addr, const uint8_t data)
         high_byte_input = !high_byte_input;
         break;
     case PPUDATA:
-        // std::cout << "WRITE TO PPUDATA " << std::hex << "(" << (unsigned)registers.PPUDATA << ") <= " << std::hex << (unsigned)data << " PTR " << registers.PPUADDR << std::endl;
         // Must use vram_step, not ++, so the write path agrees with the read
         // path below.
         ppu_bus_write(registers.PPUADDR, data);
@@ -1493,7 +1430,6 @@ void PPU::write(const uint16_t addr, const uint8_t data)
         break;
     case OAMDMA:
         registers.OAMDMA = data;
-        // std::cout << "WRITE TO OAMDMA " << std::hex << "(" << (unsigned)registers.OAMDMA << ") <= " << std::hex << (unsigned)data << std::endl;
         request_OAM_DMA();
         break;
     }
@@ -1651,12 +1587,10 @@ uint8_t PPU::read(const uint16_t addr)
 
 void PPU::update_flags()
 {
-    // NOTE: this reads the internal register state directly (registers.*),
-    // not through PPU::read(). PPU::read() models CPU-facing register access
-    // semantics (e.g. PPUCTRL/PPUMASK are write-only from the CPU's side and
-    // now correctly return open-bus there); calling it here would either hit
-    // the write-only open-bus path (wrong value) or, previously, an assert.
-    // This function needs the PPU's own idea of what was last written.
+    // Reads registers.* directly, NOT through PPU::read(). That models the
+    // CPU's view, where PPUCTRL and PPUMASK are write-only and come back as
+    // open bus - so decoding the flags through it would read the bus latch
+    // instead of the value last written. This needs the PPU's own copy.
     base_nametable_addr = 0x2000 + 0x400 * (registers.PPUCTRL & 0x3);
     vram_step = registers.PPUCTRL & 0x4 ? Vertical : Horizontal;
     // Bit 3 selects the sprite pattern table and bit 4 the background one;

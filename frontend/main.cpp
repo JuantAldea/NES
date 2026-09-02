@@ -33,10 +33,11 @@ namespace
 {
 
 // NTSC, to four places: 21477272 / 4 master clocks per dot, 341 dots per
-// scanline, 262 scanlines minus the odd-frame skip. Not 60 - running the
-// emulator at exactly 60 Hz would drift about a second every twenty minutes,
-// which is inaudible now and will not be once the APU is generating samples
-// against this same clock.
+// scanline, 262 scanlines less the odd-frame skip - half a dot per frame on
+// average, which is what moves 60.0985 to 60.0988. Not 60: running at exactly
+// 60 Hz drifts about a second every twenty minutes, and the APU is sampled
+// against this same clock, so the drift is a pitch error rather than only a
+// pacing one.
 constexpr double frames_per_second = 60.0988;
 constexpr double seconds_per_frame = 1.0 / frames_per_second;
 

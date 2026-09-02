@@ -39,10 +39,13 @@ void hex_byte(const uint8_t value, const ImVec4* colour)
 
 // --- the pad diagram -------------------------------------------------------
 //
-// Unlit and lit, for the three groups of button. Real hardware colours the
-// D-pad and the two shoulder-less action buttons differently, and keeping that
-// distinction means a glance tells you WHICH group is lit without reading a
-// label. Lit is a wash rather than a colour change so the shape stays legible.
+// Unlit and lit, for the three groups of button.
+//
+// The UNLIT colours follow the moulding: the D-pad and the Select/Start pills
+// share one grey, and A/B are red. The LIT ones deliberately do not - each
+// group lights a different hue, so a glance says which group is down without
+// reading a label. Only A/B brighten in place; the other two change hue
+// outright, which is legible because their shapes are already distinct.
 constexpr ImU32 pad_body = IM_COL32(46, 46, 52, 255);
 constexpr ImU32 pad_edge = IM_COL32(96, 96, 108, 255);
 constexpr ImU32 dpad_off = IM_COL32(64, 64, 72, 255);

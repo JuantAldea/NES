@@ -54,6 +54,16 @@ void CPU::set_IRQ_line(const IRQSource source, const bool asserted)
     irq_sources = asserted ? (irq_sources | bit) : static_cast<uint8_t>(irq_sources & ~bit);
 }
 
+// The edge-detector half of sampling, separated so it can also run on CPU
+// cycles the CPU does not execute (those stolen by OAM DMA). Once an edge has
+// been seen here it can no longer be revoked by the line going back high.
+void CPU::latch_nmi_edge()
+{
+    if (nmi_requested) {
+        nmi_committed = true;
+    }
+}
+
 // Once per CPU cycle, after that cycle's bus access.
 //
 // Two distinct things happen here, and conflating them is what made the NMI
@@ -70,16 +80,6 @@ void CPU::set_IRQ_line(const IRQSource source, const bool asserted)
 //      (04-nmi_control's "Immediate occurence should be after NEXT
 //      instruction"), and why CLI/SEI/PLP - which write I on their last cycle
 //      - are polled against I's *old* value.
-// The edge-detector half of sampling, separated so it can also run on CPU
-// cycles the CPU does not execute (those stolen by OAM DMA). Once an edge has
-// been seen here it can no longer be revoked by the line going back high.
-void CPU::latch_nmi_edge()
-{
-    if (nmi_requested) {
-        nmi_committed = true;
-    }
-}
-
 void CPU::sample_interrupts()
 {
     latch_nmi_edge();
@@ -201,9 +201,9 @@ void CPU::sample_interrupts()
 // Schedule::software_interrupt` from the caller flips 6502_interrupt_test to
 // its success trap at $06f5 and 2-nmi_and_brk to a failure, one for one. The
 // only other test that moves is CpuInterrupts.an_interrupt_sequence_does_not_
-// poll, which pins the same five-cycle window directly; the rest of the 640 -
-// nestest, all 512 SingleStepTests, the ten ppu_vbl_nmi ROMs, the other four
-// cpu_interrupts_v2 ROMs and Klaus's functional test - are indifferent.
+// poll, which pins the same five-cycle window directly. Everything else is
+// indifferent - nestest, all 512 SingleStepTests, the ten ppu_vbl_nmi ROMs, the
+// other four cpu_interrupts_v2 ROMs and Klaus's functional test included.
 // Hardware wins; the Klaus case is left failing deliberately rather than traded
 // for a ROM.
 // ---------------------------------------------------------------------------
@@ -251,7 +251,7 @@ bool CPU::branch_is_taken() const
     return get_flag(flag) == branch_on;
 }
 
-// Which of the ~30 access schedules an opcode follows.
+// Which access schedule an opcode follows.
 //
 // Derived from the instruction table rather than transcribed as a 256-row list
 // of its own: the schedule is a function of the addressing mode and of what the
@@ -384,7 +384,7 @@ bool CPU::clock(bool trace)
     }
 
     // The instruction is over. U is not a real flag, but it reads as set, so
-    // pin it once per instruction rather than in each of the 79 operations.
+    // pin it once per instruction rather than in every operation.
     cycles_left = 0;
     set_flag(FLAGS::U, true);
 
@@ -1224,6 +1224,14 @@ void CPU::ADC() { ADC_SBC_internal(operand_value()); }
 
 void CPU::SBC() { ADC_SBC_internal(operand_value() ^ 0xFF); }
 
+// SBC is ADC of the operand's complement, which is why one body serves both:
+// A - v - !C is A + ~v + C, and the flags fall out identically.
+//
+// THE D FLAG IS NOT CONSULTED, and that is the 2A03 rather than a shortcut.
+// Nintendo's variant has decimal mode disconnected - SED and CLD still set and
+// clear the bit, and PHP/RTI still carry it, but the adder ignores it. So there
+// is no BCD correction to apply here, and adding one would break every ROM that
+// leaves D set and expects binary arithmetic anyway.
 void CPU::ADC_SBC_internal(const uint8_t value)
 {
     const uint16_t temp = static_cast<uint16_t>(registers.A) + value + get_flag(FLAGS::C);
@@ -1234,58 +1242,6 @@ void CPU::ADC_SBC_internal(const uint8_t value)
     set_flag(FLAGS::V, (registers.A ^ result) & (value ^ result) & 0x80);
     registers.A = result;
 }
-
-/*
-void CPU::ADC()
-{
-    const uint8_t value = operand_value();
-    uint16_t temp = static_cast<uint16_t>(registers.A) + value + get_flag(FLAGS::C);
-
-    if (get_flag(FLAGS::D)) {
-        if (((registers.A & 0xF) + (value & 0xF) + (get_flag(FLAGS::C) ? 1 : 0)) > 9) {
-            temp += 0x6;
-        }
-
-                if (temp > 0x99) {
-                        temp += 0x60;
-                }
-
-                set_flag(FLAGS::C, temp > 0x99);
-    } else {
-        set_flag(FLAGS::C, temp > 0xFF);
-    }
-
-    const uint8_t result = temp & 0xFF;
-    set_flag(FLAGS::Z, !result);
-    set_flag(FLAGS::V, (registers.A ^ result) & (value ^ result) & 0x80);
-    set_flag(FLAGS::N, result & 0x80);
-    registers.A = result;
-}
-
-void CPU::SBC()
-{
-    const uint8_t value = operand_value() ^ 0xFF;
-    //same as ADC
-    uint16_t temp = static_cast<uint16_t>(registers.A) + value + get_flag(FLAGS::C);
-    const uint8_t result = temp & 0xFF;
-    set_flag(FLAGS::N, result & 0x80);
-    set_flag(FLAGS::Z, !result);
-    set_flag(FLAGS::C, temp > 0xFF);
-    set_flag(FLAGS::V, (registers.A ^ result) & (value ^ result) & 0x80);
-
-        if (get_flag(FLAGS::D))
-        {
-                if (((registers.A & 0x0F) - (get_flag(FLAGS::C) ? 1 : 0)) < (value & 0x0F)) {
-            temp -= 0x6;
-                if (temp > 0x99)
-                {
-                        temp -= 0x60;
-                }
-        }
-
-    registers.A = temp & 0xFF;
-}
-*/
 
 void CPU::AND()
 {
@@ -1587,7 +1543,7 @@ void CPU::BEQ()
 
 /* Control flow.
  *
- * These six are the one place where an "operation" is not separable from its
+ * This is the one group where an "operation" is not separable from its
  * timing: the pushes, the pulls and the vector fetch ARE the instruction, and
  * they happen on specific cycles. The schedule in step() performs them, one
  * access per cycle. What is left here is the state change that lands on the
@@ -1626,6 +1582,9 @@ void CPU::CLC() { set_flag(FLAGS::C, false); }
 
 void CPU::SEC() { set_flag(FLAGS::C, true); }
 
+// D is a bit that stores and reads back but drives nothing: the 2A03's adder
+// has no decimal mode. See ADC_SBC_internal. Both still have to work, because
+// PHP/PLP and RTI carry the bit and ROMs check that it round-trips.
 void CPU::CLD() { set_flag(FLAGS::D, false); }
 
 void CPU::SED() { set_flag(FLAGS::D, true); }
@@ -1769,10 +1728,10 @@ void CPU::TAS()
 
 /* The remaining undocumented opcodes.
  *
- * These were previously left as no-ops on the grounds that there was "no oracle
- * to test against". That was wrong: the SingleStepTests vectors in this repo
- * cover all 256 opcodes, and each of the behaviours below was derived from them
- * and then checked against 10,000 cases apiece rather than guessed.
+ * "There is no oracle for these" is the obvious reason to leave them as no-ops
+ * and it is false: the SingleStepTests vectors cover all 256 opcodes. Each
+ * behaviour below was derived from them and checked against 10,000 cases
+ * apiece rather than guessed.
  */
 
 // Halts the CPU until RESET ("jam"/"KIL"). The bus pattern of a halted CPU is

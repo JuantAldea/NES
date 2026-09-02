@@ -359,9 +359,9 @@ bool Bus::clock()
             audio.push(apu.mixer_output());
         }
         // Sunsoft's FME-7 counts M2 cycles rather than PPU A12 edges, so it is
-        // the first cartridge here that needs the CPU clock at all. Gated on a
-        // flag rather than always dispatching: this is the hottest line in the
-        // emulator and seven of the eight boards want nothing from it.
+        // the only board here that needs the CPU clock at all. Gated on a flag
+        // rather than always dispatching, because this is the hottest line in
+        // the emulator and the flag is false for whatever else is plugged in.
         rom.clock_cpu_cycle();
     }
 
@@ -380,11 +380,11 @@ bool Bus::clock()
         // cycles. If the CPU is writing, it ignores the halt...repeating until
         // successful" - and the CPU has no notion of that itself.
         //
-        // Rather than thread a flag through all 79 operations and every
-        // addressing mode, this observes the one place every access already
-        // passes through. The CPU is cycle-stepped at exactly one bus access
-        // per cycle, so whether Bus::write was reached during clock_CPU() is
-        // the whole answer.
+        // Rather than thread a flag through every operation and addressing
+        // mode, this observes the one place every access already passes
+        // through. The CPU is cycle-stepped at exactly one bus access per
+        // cycle, so whether Bus::write was reached during clock_CPU() is the
+        // whole answer.
         //
         // Gated on `watching_cpu_access` because Bus::write is public: tests,
         // the cartridge loader and the debugger all use it, and none of those

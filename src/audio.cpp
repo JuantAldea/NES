@@ -8,11 +8,6 @@ namespace
 constexpr double kPi = 3.14159265358979323846;
 }  // namespace
 
-// Bilinear, with prewarping. The comment that stood here described the RC
-// difference equations in detail - "y[i] = a(y[i-1] + x[i] - x[i-1])", the two
-// alphas, why they are not the same quantity - which is the form the commit
-// that replaced it had already established was wrong at these rates. It
-// documented deleted code, thoroughly.
 FirstOrderFilter::FirstOrderFilter(const Kind filter_kind, const float corner_hz, const float rate_hz)
     : kind{filter_kind}
 {

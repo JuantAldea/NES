@@ -18,22 +18,17 @@ double sinc(const double x)
 // Blackman, chosen over Hamming for the stopband, for a transition band roughly
 // 1.5x wider. With the cutoff at 0.45 there is room for the wider transition.
 //
-// TWO SETS OF NUMBERS, and this comment used to confuse them. Blackman's and
-// Hamming's own asymptotic sidelobe levels are about -74 dB and -41 dB; those
-// are a textbook's, they describe the windows and not this filter, and they were
-// quoted here as if they were the second thing. What the windowed sinc built
-// from each actually delivers, MEASURED over the reassembled polyphase kernel by
+// TWO SETS OF NUMBERS, easily confused. A window's own asymptotic sidelobe level
+// - about -74 dB for Blackman, -41 dB for Hamming - is a textbook figure
+// describing the WINDOW. What the windowed sinc built from it delivers is a
+// different quantity, MEASURED over the reassembled polyphase kernel by
 // testAudio.the_kernel_reaches_a_blackman_stopband_a_hamming_window_would_not:
 //
 //     Blackman   -80.9 dB      Hamming   -60.7 dB
 //
-// The conclusion the old numbers supported still holds, and by a similar margin.
-// The figures were simply never this filter's.
-//
-// Hamming was installed by hand to get that second number, and the finding that
-// justifies the test existing is what happened next: BOTH kernel tests that
-// existed at the time passed with it in place. The window could be swapped
-// wholesale and the suite did not notice.
+// Hamming was installed by hand to get that second number, and both kernel tests
+// that existed at the time passed with it in place - the window could be swapped
+// wholesale and the suite did not notice. That is what the stopband test is for.
 double blackman(const double n, const double n_max)
 {
     const double t = n / n_max;

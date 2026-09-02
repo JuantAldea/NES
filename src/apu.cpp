@@ -131,17 +131,12 @@ void APU::clock_dmc()
         // would cause the output level to leave the 0-127 range, leave the
         // output level unchanged." Clamped, then, rather than wrapped.
         //
-        // This used to say the clamp was unverifiable here - that no ROM reads
-        // the level back, so "only something that renders audio can catch it",
-        // and there was "nothing to assert against yet". The first clause is
-        // true and is why no oracle covers this. The rest was false: dmc_level()
-        // has always been public, and the only thing actually missing was a way
-        // to choose the sample byte, which dmc_deliver_sample_byte provides.
-        //
-        // The cost of believing it: mechanical mutation of these seven lines
-        // killed 0 of 11 against the whole suite, so a DMC decoding every sample
-        // backwards read as correct. Four tests in dmc_buffer_tests.cpp now kill
-        // all 11 - see the block comment there before weakening any of them.
+        // NO ORACLE COVERS THIS: the level is analogue and no ROM reads it back.
+        // That does not make it untestable - dmc_level() is public and
+        // dmc_deliver_sample_byte chooses the sample byte, which is all a test
+        // needs. Believing otherwise cost 0 of 11 mutants killed here, so a DMC
+        // decoding every sample backwards read as correct. dmc_buffer_tests.cpp
+        // kills all 11; read the block comment there before weakening any.
         if ((dmc.shift_register & 0x01) != 0) {
             if (dmc.output_level <= 125) {
                 dmc.output_level = static_cast<uint8_t>(dmc.output_level + 2);
@@ -720,8 +715,9 @@ void APU::write(const uint16_t addr, const uint8_t data)
     switch (addr) {
     case APUSTATUS:
         // Channel enables, one bit each in Channel order. Writing $4015 also
-        // clears the DMC interrupt, which does not exist yet; it does NOT touch
-        // the frame interrupt, which is why set_frame_irq is absent here.
+        // clears the DMC interrupt - see set_dmc_irq(false) further down this
+        // case - but it does NOT touch the frame interrupt, which is why
+        // set_frame_irq is absent here.
         for (int channel = 0; channel < length_channels; ++channel) {
             const bool enable = (data & (1 << channel)) != 0;
             lengths[channel].enabled = enable;
