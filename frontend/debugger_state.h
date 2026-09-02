@@ -30,8 +30,12 @@ struct FrontendState {
     // is set. Cleared by Pause, by the step buttons, and by a CPU trap.
     bool running = false;
 
-    // Passed through to Bus::trace_cpu, which prints a line per instruction to
-    // stdout.
+    // Passed through to Bus::trace_cpu, which reaches CPU::clock's `trace`
+    // parameter and calls signal_update() on each instruction boundary.
+    //
+    // The sink is registered in main.cpp, which is also where the format lives.
+    // A trace line reports POST-instruction state - PC has already moved to the
+    // next one - so the opcode and the PC on a line do not correspond.
     bool trace = false;
 
     // Silence, from the UI toggle or from --mute on the command line.

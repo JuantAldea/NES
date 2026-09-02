@@ -545,6 +545,36 @@ else
             report FAIL "renders $tag" "$detail"
         fi
     done
+
+    # BOTH DIRECTIONS, because only the positive one catches what actually went
+    # wrong here. --trace was wired from the checkbox through Bus::trace_cpu to
+    # CPU::clock with no sink registered, so it printed nothing and nothing
+    # noticed; a check that only asserted silence-when-off would have passed the
+    # whole time.
+    #
+    # The negative half is not padding either: CPU::reset calls signal_update()
+    # unconditionally, so a sink that did not consult trace_cpu itself would emit
+    # a line with tracing switched off.
+    #
+    # Uses the first FRONTEND_ROMS entry that exists, so this cannot drift onto a
+    # cartridge the rest of the pass does not use.
+    trace_rom=""
+    for entry in $FRONTEND_ROMS; do
+        [ -f "${entry#*:}" ] && trace_rom=${entry#*:} && break
+    done
+    if [ -n "$trace_rom" ]; then
+        on=$(timeout 120 "$BUILD/nes_frontend" --trace --frames 1 "$trace_rom" 2>/dev/null |
+            grep -cE '^[A-Z]{3} +PC:[0-9A-F]{4} ') || true
+        off=$(timeout 120 "$BUILD/nes_frontend" --frames 1 "$trace_rom" 2>/dev/null |
+            grep -cE '^[A-Z]{3} +PC:[0-9A-F]{4} ') || true
+        if [ "${on:-0}" -gt 1000 ] && [ "${off:-0}" -eq 0 ]; then
+            report PASS "--trace prints, and only when asked" "${on} lines on, ${off} off"
+        else
+            report FAIL "--trace prints, and only when asked" "${on:-0} lines on, ${off:-0} off"
+        fi
+    else
+        report SKIP "--trace prints, and only when asked" "no ROM"
+    fi
 fi
 
 wall=$(( $(date +%s) - WALL_START ))

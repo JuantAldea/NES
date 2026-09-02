@@ -24,6 +24,7 @@
 
 #include "../include/bus.h"
 #include "../include/frame_dump.h"
+#include "../include/instruction.h"
 #include "debugger.h"
 #include "imgui.h"
 #include "imgui_impl_sdl2.h"
@@ -161,6 +162,11 @@ int main(int argc, char** argv)
         .scan<'i', int>()
         .default_value(2)
         .metavar("N");
+    // The same state the "Trace to stdout" checkbox sets, reachable without a
+    // window. A GUI-only toggle cannot be exercised headlessly, so the feature
+    // would have had no way to be checked - which is how it came to be wired end
+    // to end with no sink and nobody noticing.
+    args.add_argument("-t", "--trace").help("print one line per retired instruction to stdout").flag();
 
     // For run_functional.sh, which needs a reproducible moment to look at. A
     // wall-clock wait is not one: it landed near frame 200 here and undefined
@@ -192,6 +198,7 @@ int main(int argc, char** argv)
     }
 
     const bool start_muted = args.get<bool>("--mute");
+    const bool start_tracing = args.get<bool>("--trace");
     const int requested_scale = args.get<int>("--scale");
     const int frame_limit = args.get<int>("--frames");
     const int pause_at = args.get<int>("--pause-at");
@@ -270,6 +277,34 @@ int main(int argc, char** argv)
     Bus console;
     nes_gui::FrontendState state;
 
+    // The sink for the "Trace to stdout" toggle. Without one registered,
+    // CPU::signal_update stays the default no-op and Bus::trace_cpu reaches
+    // nothing - the checkbox was wired end to end except for this.
+    //
+    // IT CHECKS trace_cpu ITSELF rather than trusting the call. CPU::clock only
+    // fires this while tracing, but CPU::reset fires it unconditionally, so a
+    // sink that printed on every call would emit a line on reset with tracing
+    // switched off.
+    //
+    // NO BUS READ. Every field is a CPU member, and current_op_code is the
+    // instruction that just retired - which is the whole reason this can exist
+    // safely. Recovering the opcode by reading PC instead would clear the vblank
+    // flag at $2002, advance the VRAM address at $2007, or acknowledge an IRQ at
+    // $4015, changing the run it is meant to be observing.
+    //
+    // State is POST-instruction: PC already points at the next one, which is why
+    // the opcode and the PC on a line do not correspond.
+    console.cpu.register_update_signal_callback([&console] {
+        if (!console.trace_cpu) {
+            return;
+        }
+        const CPU& cpu = console.cpu;
+        std::printf("%-3s  PC:%04X A:%02X X:%02X Y:%02X P:%02X SP:%02X CYC:%llu\n",
+                    InstructionSet::Table[cpu.current_op_code].name.c_str(), cpu.registers.PC, cpu.registers.A,
+                    cpu.registers.X, cpu.registers.Y, cpu.registers.P, cpu.registers.SP,
+                    static_cast<unsigned long long>(cpu.total_cycles));
+    });
+
     // --- audio ---------------------------------------------------------------
     //
     // The callback runs on SDL's own thread and does exactly one thing: drain
@@ -318,6 +353,11 @@ int main(int argc, char** argv)
 
     state.muted = start_muted;
     state.screen_scale = requested_scale;
+
+    // Both, because the checkbox reads state.trace and the CPU reads
+    // Bus::trace_cpu; setting only one leaves the UI disagreeing with the run.
+    state.trace = start_tracing;
+    console.trace_cpu = start_tracing;
 
     if (!rom_argument.empty()) {
         std::snprintf(state.rom_path, sizeof(state.rom_path), "%s", rom_argument.c_str());
