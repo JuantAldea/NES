@@ -7,17 +7,9 @@
 #include "device.h"
 #include "mapper.h"
 
-// iNES (.nes) cartridge loader for NROM (0), UNROM (2), CNROM (3) and MMC3 (4).
-//
-// The first three are one latch each. CNROM is NROM plus a switchable CHR
-// window: a write anywhere in $8000-$FFFF latches which 8KB CHR-ROM bank the
-// PPU sees, and PRG behaves exactly as NROM's does. UNROM is the mirror image -
-// a switchable 16KB PRG window with $C000-$FFFF wired down so the vectors
-// cannot be banked away.
-//
-// MMC3 is the first with real state: a register file, mode bits, mirroring
-// changed at runtime, and a counter that watches the PPU's address bus. See the
-// MMC3 section below.
+// iNES and NES 2.0 cartridge loader. This file parses the header and owns the
+// cartridge's memory; which BOARDS are supported is kBoards in src/mapper.cpp,
+// and listing them here as well would only be somewhere for the two to differ.
 //
 // iNES header layout (16 bytes):
 //   0-3  magic "NES\x1A"
@@ -36,7 +28,8 @@
 // Bytes 10 and 11 were "unused by this loader" until the Holy Mapperel mapper-1
 // images arrived: all nine carry NES 2.0 headers, and the RAM sizes those ROMs
 // exist to measure appear NOWHERE ELSE in the file. A loader that skips them
-// gives every cartridge 8KB of work RAM, which is wrong for six of the nine.
+// gives every cartridge 8KB of work RAM, which is wrong for four of them - the
+// three with none and the one with 32KB.
 class ROM : public Device
 {
 public:
@@ -119,7 +112,7 @@ public:
 
     // Is there anything at all behind $6000-$7FFF? Bus::decode asks, because a
     // board with no work RAM must read open bus there rather than a phantom
-    // 8KB that only this emulator has. Six of the nine Holy Mapperel mapper-1
+    // 8KB that only this emulator has. Three of the nine Holy Mapperel mapper-1
     // images are exactly that case, and detecting it is one of their tests.
     bool has_prg_ram() const { return prg_ram_size + prg_nvram_size > 0; }
 

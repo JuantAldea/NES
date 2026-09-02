@@ -52,8 +52,6 @@ public:
         uint8_t SP = 0;
     } registers;
 
-    // int8_t interrupt_delay = 0;
-
     // The /NMI line's two edges. Only the falling one latches; see the
     // definitions in cpu.cpp for why that latch stays revocable until sampled.
     void raise_NMI();
@@ -80,15 +78,14 @@ public:
     void sample_interrupts();
     void latch_nmi_edge();
 
-    // Set by Bus, which owns the sample point. Left false, the PPU-less
-    // harnesses (nestest, SingleStepTests, Klaus2m5) stay self-contained.
-    // Set by whatever drives this CPU. A Bus samples the interrupt lines
-    // itself, one PPU dot after the cycle's bus access (see Bus::clock);
-    // standalone harnesses have no dots, so the CPU samples at the end of its
-    // own cycle instead. Defaulting to false means a driver that forgets to set
-    // it gets the standalone behaviour - one sample per cycle - rather than two,
-    // which would commit /NMI edges that should still be revocable and silently
-    // break NMI suppression.
+    // Set by whatever drives this CPU. A Bus samples the interrupt lines itself,
+    // one PPU dot after the cycle's bus access (see Bus::clock); the PPU-less
+    // harnesses - nestest, SingleStepTests, Klaus2m5 - have no dots, so the CPU
+    // samples at the end of its own cycle instead.
+    //
+    // Defaulting to false gives a driver that forgets to set it the standalone
+    // behaviour, one sample per cycle rather than two - two would commit /NMI
+    // edges that should still be revocable and silently break NMI suppression.
     bool external_interrupt_sampling = false;
 
     void set_flag(const FLAGS flag, const bool value);
@@ -166,7 +163,8 @@ protected:
 
     void NMI(); void IRQ();
 
-    //purely unoficial
+    // Unofficial opcodes only: undocumented but real, and several games use
+    // them. See instr_test_roms.cpp on $AB, where two oracles disagree.
     void STP(); void SLO(); void ANC(); void RLA();
     void LAX(); void AXS(); void DCP();
     void SAX(); void RRA(); void SRE(); void ALR();

@@ -4,18 +4,22 @@
 
 #include "device.h"
 
-// Audio generation is not implemented. What IS implemented is the frame
-// counter - because it is the NES's only source of maskable interrupts and the
-// CPU's /IRQ path is otherwise untestable, the SingleStepTests vectors carrying
-// no interrupts and the PPU driving only /NMI - and the length counters, which
-// are the first piece of the channels themselves and are entirely CPU-visible,
-// so they are verifiable long before anything makes a sound.
-//
 // The frame counter is a divider driving a 4- or 5-step sequence. Quarter-frame
-// steps clock the envelope and the triangle's linear counter, neither of which
-// exists yet; half-frame steps clock the length counters and the sweep, of
-// which only the length counters exist. In 4-step mode the final step also
-// asserts /IRQ unless inhibited.
+// steps clock the envelopes and the triangle's linear counter; half-frame steps
+// clock the length counters and the sweeps. In 4-step mode the final step also
+// asserts /IRQ unless inhibited - the NES's only source of maskable interrupts,
+// and the reason this was built before anything made a sound: the CPU's /IRQ
+// path is otherwise untestable, the SingleStepTests vectors carrying none and
+// the PPU driving only /NMI.
+//
+// All five channels and the non-linear mixer are here. The one piece that is
+// not is the DMC's CPU stall - see the parked rows in dmc_dma_tests.cpp.
+//
+// MOST OF THIS HAS NO ORACLE. The envelope, the sweep, the waveform generators
+// and the mixer are invisible to the CPU, so no test ROM can reach them; the
+// accessors below exist for that reason and the coverage is unit tests, cited
+// documentation and mutation. What DOES have one is the channel balance, which
+// volume_tests measures against a recording from real hardware.
 class APU : public Device
 {
 public:
@@ -141,14 +145,14 @@ public:
         return sweep_muting(pulse);
     }
 
-    // The waveform generators' live output, before the mixer exists to consume
-    // it. Same justification as the accessors above: nothing in the register
-    // file reports any of this.
+    // The waveform generators' live output, upstream of the mixer. Same
+    // justification as the accessors above: nothing in the register file reports
+    // any of this.
     //
-    // pulse_output is the DUTY BIT, not the volume - the gating that turns it
-    // into a mixer level (length counter, sweep muting, the envelope) is phase 3
-    // and is deliberately not folded in here, so a test of the sequencer is a
-    // test of the sequencer.
+    // pulse_output is the DUTY BIT, not the volume. The gating that turns it into
+    // a mixer level - length counter, sweep muting, envelope - is deliberately
+    // not folded in, so a test of the sequencer is a test of the sequencer.
+    // pulse_level() is the gated one.
     uint8_t pulse_output(const int pulse) const
     {
         assert(pulse == pulse1 || pulse == pulse2);
@@ -173,10 +177,10 @@ public:
     //
     // THIS IS HALF THE MIXER'S CONDITION, not all of it. nesdev lists two: "Bit
     // 0 of the shift register is set, or The length counter is zero." Only the
-    // first is here, for the same reason pulse_output() returns a raw duty bit -
-    // the gating is phase 3. A mixer that used this as its whole gate would emit
-    // noise from a channel whose length counter has expired, so the name is
-    // about the SHIFT REGISTER's contribution and nothing more.
+    // first is here, for the same reason pulse_output() returns a raw duty bit:
+    // the gating belongs to noise_level(). A mixer using this as its whole gate
+    // would emit noise from a channel whose length counter has expired, so the
+    // name is about the SHIFT REGISTER's contribution and nothing more.
     bool noise_output_is_silent() const { return (noise_shift & 1u) != 0; }
 
     // --- the mixer ----------------------------------------------------------

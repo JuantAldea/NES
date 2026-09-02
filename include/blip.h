@@ -4,12 +4,8 @@
 
 // Band-limited step synthesis, the thing a box-average decimator is not.
 //
-// WHY THIS REPLACED THE BOX FILTER, with numbers that were actually measured.
-//
-// An earlier version of this table quoted -56 dB for the band-limited column.
-// Those figures were never measured here: they were the previous review's
-// estimate of what an IDEAL synthesiser would achieve, copied across and
-// presented as a result. What this implementation delivers, measured:
+// WHY THIS REPLACED THE BOX FILTER. In-band inharmonic energy over harmonic,
+// measured through the deployed chain on a 25% duty pulse:
 //
 //     note              box average   point-sampled   this
 //     A5    880 Hz        -35.7 dB       -26.9 dB      -40.5 dB
@@ -17,21 +13,15 @@
 //          3608 Hz        -28.9 dB       -20.6 dB      -39.7 dB
 //         12429 Hz        -10.6 dB        -6.1 dB      -35.2 dB
 //
-// A clear win, and nothing like the 20-to-48 dB the first version of this
-// comment claimed.
-//
 // TWO CAVEATS ON THAT TABLE. The box and point-sampled columns were measured
 // through the OLD arrangement, with the filters at the input rate before
 // decimation; the last column is the new one. They are not the same experiment,
 // and the row-wise differences are taken across it.
 //
-// And these rows are INSTRUMENT-limited. An independent harness puts this
+// And these rows are INSTRUMENT-limited: an independent harness puts this
 // implementation at -44.6 / -42.4 / -43.8 / -36.3, better everywhere. The
-// evidence for that floor is the suspicious flatness of the first three - a
-// real response does not sit within 1 dB across three octaves - and NOT, as an
-// earlier version of this comment argued, that the harness disagrees with the
-// review's point-sampled figure. It does disagree, but a third instrument sides
-// with the harness, so that comparison was never evidence of anything.
+// evidence for that floor is the suspicious flatness of the first three - a real
+// response does not sit within 1 dB across three octaves.
 //
 // HOW IT WORKS, and why it is cheap. The APU's output is piecewise constant: it
 // holds a level and then steps to another. Point-sampling such a signal at
@@ -51,12 +41,8 @@
 class BlipSynth
 {
 public:
-    // Taps either side of a transition. THIRTY-TWO total, and this is the
-    // parameter that actually binds - the opposite of what the first version of
-    // this file concluded.
-    //
-    // Measured through the deployed chain, 25% duty pulse, in-band inharmonic
-    // energy over harmonic:
+    // Taps either side of a transition. THIRTY-TWO total, and the width is what
+    // binds - a wider kernel is worth real rejection at the top of the range:
     //
     //     half_width      880 Hz   1776 Hz   3608 Hz   12429 Hz
     //              8      -62.7     -59.6     -59.8     -44.7
@@ -74,21 +60,14 @@ public:
     static constexpr int half_width = 16;
     static constexpr int width = half_width * 2;
 
-    // THE FACTOR OF TWO IS GEOMETRY, not a choice, and the assert is here
-    // because mutating it to 3 was invisible to every test in the suite.
+    // THE FACTOR OF TWO IS GEOMETRY, not a choice. blip.cpp centres the sinc at
+    // tap `half_width` and the window at tap `width / 2`; those coincide only at
+    // exactly twice. At three times the window's peak sits eight taps from the
+    // sinc's and truncates it asymmetrically, which costs linear phase rather
+    // than stopband - so no magnitude-based test sees it, and none did.
     //
-    // blip.cpp evaluates the sinc at x = tap - half_width + 1 - offset, so it is
-    // centred at tap `half_width`; and it windows with blackman(x + half_width,
-    // width), which spreads the window over the whole tap range and so centres
-    // it at tap `width / 2`. Those are the same tap only when width is exactly
-    // twice half_width. At three times, the window's peak sits eight taps away
-    // from the sinc's, truncating it asymmetrically - which costs linear phase
-    // rather than stopband, and is why a magnitude-based test did not see it.
-    //
-    // Stated as an invariant instead of pinned by a test on purpose: half_width
-    // is a tuning parameter and is meant to be changed, while this relationship
-    // is not. A test asserting width == 32 would forbid the first to protect the
-    // second.
+    // An invariant rather than a test on purpose: half_width is meant to be
+    // tuned, and asserting width == 32 would forbid that to protect this.
     static_assert(width == half_width * 2,
                   "the window centres on width/2 and the sinc on half_width; they must coincide");
 
@@ -113,31 +92,12 @@ public:
     // grid is already 6.3x finer than the input clock's own 1/40.58 spacing,
     // which bounds what remains past about 128.
     //
-    // A SENTENCE USED TO FOLLOW THIS SAYING "a sweep of half_width from 8 to 32
-    // and cutoff from 0.40 to 0.45 moved these numbers by less than 0.1 dB at
-    // every frequency, which is how the limit was identified: the kernel was
-    // never the constraint". That is the retracted claim, and it survived its own
-    // retraction by twenty lines: half_width's comment above already carries the
-    // table that refutes it - 8.7 dB at 12429 Hz between half_width 8 and 16 -
-    // and says in as many words that this is "the parameter that actually binds,
-    // the opposite of what the first version of this file concluded".
-    //
-    // The five identical numbers that sweep produced were its harness reading its
-    // own noise floor, near -40 dB. Both statements stood in the same header for
-    // four commits, which is the argument for deleting a retracted claim rather
-    // than adding the correction beside it.
-    //
     // The table costs 257 x 16 floats, 16 KB, built once.
     //
-    // DELIBERATELY NOT PINNED BY A TEST, and neither is half_width. Mutating
-    // this to 257 or half_width to 17 survives the whole suite, and that is the
-    // right outcome: both are tuning parameters whose defensible range is the
-    // measured tables above, and a filter built at either value is CORRECT, just
-    // differently traded. A test asserting 256 would forbid the tuning these
-    // comments exist to inform.
-    //
-    // What must not move is the relationship between half_width and width, which
-    // is geometry rather than tuning, and is a static_assert for that reason.
+    // NOT PINNED BY A TEST, and neither is half_width: mutating this to 257 or
+    // half_width to 17 survives the suite, and should. Both are tuning
+    // parameters bounded by the tables above, and a filter built at either value
+    // is correct, just differently traded.
     static constexpr int phases = 256;
 
     // Fraction of the OUTPUT SAMPLE RATE the sinc is cut off at. 0.45 puts it

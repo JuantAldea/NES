@@ -140,7 +140,8 @@ public:
 
     // Does this board need a tick on every CPU cycle? Asked once, at load, and
     // cached on ROM - the alternative is a virtual call on the emulator's
-    // hottest path for the seven boards out of eight that would ignore it.
+    // hottest path for every board but the FME-7, which is the only one that
+    // counts CPU cycles.
     virtual bool wants_cpu_clock() const { return false; }
 
     // Does the cartridge drive CIRAM A10 itself, rather than through the
@@ -176,9 +177,9 @@ public:
     virtual void observe_pattern_fetch(const uint16_t ppu_addr) { (void)ppu_addr; }
 
     // PPU address line A12, watched for the MMC3's scanline counter. A default
-    // rather than a pure virtual because three of the four boards genuinely do
-    // not have the wire - making them each write an empty override would state
-    // the same thing four times and invite one of them to be filled in.
+    // rather than a pure virtual because only the MMC3 has the wire, TxSROM by
+    // inheritance - making every other board write an empty override would
+    // state the same thing repeatedly and invite one of them to be filled in.
     virtual void observe_a12(const uint16_t ppu_addr, const uint64_t ppu_cycle)
     {
         (void)ppu_addr;

@@ -23,7 +23,7 @@ OAMDMA 	    $4014   aaaa aaaa 	OAM DMA high address
 #include <cstdint>
 #include <limits>
 
-//_RP2A03
+// The RP2C02, the NTSC PPU. (The RP2A03 is the other die - CPU and APU.)
 class PPU : public Device
 {
 public:
@@ -32,17 +32,6 @@ public:
     uint8_t read(const uint16_t addr);
     void clock();
 
-    /*
-    uint8_t& PPUCTRL();
-    uint8_t& PPUMASK();
-    uint8_t PPUSTATUS();
-    uint8_t& OAMADDR();
-    uint8_t& OAMDATA();
-    uint8_t& PPUSCROLL();
-    uint8_t& PPUADDR();
-    uint8_t& PPUDATA();
-    uint8_t& OAMDMA();
-*/
     enum RegisterMMap : uint16_t {
         PPUCTRL = 0x2000,
         PPUMASK = 0x2001,
@@ -350,29 +339,15 @@ public:
     }
     void render_pixel();
 
-    // The finished picture: one 6-bit palette index per pixel, already through
-    // the greyscale mask, ready to be looked up in nes_palette.
-    //
-    // The finished picture. This carried a KNOWN GAPS list from the day the
-    // renderer was written until both entries were closed - PPUMASK colour
-    // emphasis, and the forced-backdrop case. Neither was open for want of
-    // understanding; both were open for want of an oracle, and both fell within
-    // one change of blargg's full_palette suite being wired up. That is the
-    // lesson worth keeping here: a gap nothing can turn red does not close.
-    //
-    // Nine bits per pixel, not eight:
+    // The finished picture. Nine bits per pixel:
     //
     //   bits 0-5   the 6-bit palette index, already through the greyscale mask
     //   bits 6-8   PPUMASK colour emphasis (bits 5-7) as they stood at this dot
     //
-    // Emphasis lives here rather than being read from PPUMASK at display time,
-    // and that is not a preference. This header used to argue the opposite -
-    // that emphasis is a property of the video signal and so belongs to the
-    // display path - and that was half wrong. APPLYING it does belong there,
-    // and still happens there. CAPTURING it cannot: blargg's full_palette
-    // rewrites $2001 mid-frame, so emphasis varies per scanline, and a display
-    // path reading one current value would paint the whole frame with whatever
-    // the last write happened to leave.
+    // Emphasis is CAPTURED here and APPLIED in the display path, and the split is
+    // forced rather than chosen: blargg's full_palette rewrites $2001 mid-frame,
+    // so emphasis varies per scanline. A display path reading one current value
+    // would paint the whole frame with whatever the last write left.
     //
     // 64 colours x 8 emphasis states is the established representation rather
     // than an invention here - it is what the .pal format's 1536-byte
@@ -446,15 +421,10 @@ public:
     // Sprites copied into secondary OAM so far, 0-8. Doubles as the write
     // cursor: the next sprite lands at secondary_oam[4 * found].
     //
-    // The known gap that used to be recorded here - fetch_sprite_pattern
-    // returning early for slots past sprite_count, where hardware always
-    // performs eight fetches - is CLOSED. It was unobservable until a mapper
-    // watched the PPU address bus, and MMC3 is that mapper; see the dummy-fetch
-    // branch in fetch_sprite_pattern.
-    //
-    // Two sibling findings from the same adversarial review against the NESdev
-    // pages are also implemented: the 2C02G/H OAM refresh bug (oam_refresh_bug)
-    // and the glitchy OAMADDR increment on a $2004 write during rendering.
+    // Hardware always performs eight sprite pattern fetches, including for
+    // slots past sprite_count - unobservable until a mapper watches the PPU
+    // address bus, which the MMC3 does. See the dummy-fetch branch in
+    // fetch_sprite_pattern.
     //
     // Destination offset within the secondary-OAM slot being filled, counted
     // separately from sprite_eval_m (the SOURCE byte index). They agree only

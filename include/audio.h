@@ -101,13 +101,10 @@ private:
 // ASan could never see it, and nothing here runs TSan. It survived a green
 // suite. The fix is the standard SPSC ring: no shared counter at all.
 //
-// SEPARATE FROM AudioSampler BECAUSE THE HEADER CLAIMED IT ALREADY WAS. This
-// file opened by saying the three jobs are "kept separate", and they were not -
-// the ring was a handful of members inside the sampler, reachable only through
-// push(), which filters. Testing whether a wraparound reorders therefore meant
-// pushing a ramp through a 90 Hz high-pass and asserting it came out monotonic,
-// which it does not and should not. The claim was true of the intent and false
-// of the code; this makes it true of the code.
+// SEPARATE FROM AudioSampler SO IT CAN BE TESTED DIRECTLY. As members inside the
+// sampler it was reachable only through push(), which filters - so asking
+// whether a wraparound reorders meant pushing a ramp through a 90 Hz high-pass
+// and asserting the output was monotonic, which it is not and should not be.
 class SampleRing
 {
 public:
