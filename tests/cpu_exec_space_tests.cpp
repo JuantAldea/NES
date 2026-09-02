@@ -47,10 +47,8 @@ std::string rom_path(const std::string& name)
 // CPU before a cartridge was mapped, and a reset subtracts 3 from S rather than
 // reloading it.
 //
-// This used to be a private copy of the $6000 loop that handled every status
-// except $81, so a ROM asking for a reset would have been reported as "failed
-// with code 129" - a request misread as a verdict. Neither of these two asks
-// today, which is the only reason that never showed.
+// Through the shared harness, which answers $81. Neither of these two ROMs asks
+// for a reset today, so a loop that mishandled $81 looks correct here.
 blargg::RomResult run_rom(const std::string& name)
 {
     return blargg::run_rom(rom_path(name), kMaxFrames, blargg::Start::PowerOn);

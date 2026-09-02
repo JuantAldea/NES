@@ -7,9 +7,9 @@
 // otherwise pinned by hand-written unit tests alone, having been added on the
 // false assumption that blargg's vram_access covered it.
 //
-// A note in fetch_ppu_address_space.sh says this ROM "does not use the protocol
-// either". That is wrong, and is corrected there: it reports through the
-// standard $6000 protocol, signature and all.
+// It reports through the standard $6000 protocol, signature and all, despite
+// belonging to the era that mostly does not - which is why it goes through
+// blargg_rom_harness.h and not nametable_screen.h.
 //
 // It passes in full.
 #include <cstdint>
@@ -23,13 +23,13 @@ namespace tests
 namespace ppu_read_buffer
 {
 
-// MEASURED: the ROM reports on frame 1266, and takes about 1.7s of wall time to
-// get there. The cap is 2x that. It is by some way the longest-running ROM in
-// the suite, but it still finishes inside the time oam_stress takes (~2.4s), so
-// with ctest running tests in parallel it does not move the total.
+// MEASURED: the ROM reports on frame 1266, and the cap is 2x that. It is by
+// some way the longest-running ROM in the suite.
 //
-// blargg's own readme says "the test will take about 20 seconds" on hardware,
-// which is the 1266 frames.
+// 1266 frames is 21.1s at 60.0988 Hz, which corroborates blargg's own readme -
+// "the test will take about 20 seconds" on hardware. That agreement is the
+// check worth having: a frame count that did not match his stated runtime
+// would mean the ROM was taking a different path through itself.
 constexpr uint64_t kMaxFrames = 2532;
 
 std::string rom_path() { return std::string(NES_TEST_FILES_DIR) + "/ppu_read_buffer/test_ppu_read_buffer.nes"; }

@@ -5,8 +5,8 @@
 // palette RAM directly, so it displayed the four cells behind
 // $3F10/$3F14/$3F18/$3F1C - storage the PPU never reads, because those
 // addresses are aliases of $3F00/$04/$08/$0C. It showed four colours the
-// hardware does not render, next to the four it does. Nothing caught it; it was
-// found by probing a running ROM by hand. Every panel was in the same position:
+// hardware does not render, next to the four it does. Every panel was in the
+// same position:
 // hand-written logic against live emulator state, with no assertion anywhere
 // near it.
 //
@@ -160,8 +160,8 @@ GTEST_TEST(frontendStep, a_backward_branch_that_is_not_self_targeted_is_not_a_tr
 // An idle loop waited on by an interrupt is not a hang, and this is the shape
 // nearly every commercial game's main loop takes: init ends on `jmp *`, and the
 // NMI handler does the work. Reporting that as a trap stopped the free-run on
-// the last instruction before the game started - found by running SMB in the
-// debugger, where it halted at $8057 on frame 3 with a blank screen.
+// the last instruction before the game started: SMB halts at $8057 on frame 3
+// with a blank screen.
 GTEST_TEST(frontendStep, a_self_jump_is_not_a_trap_while_nmi_can_break_it)
 {
     Bus console;
@@ -393,10 +393,9 @@ GTEST_TEST(frontendPalette, a_write_through_the_alias_is_what_the_panel_displays
 // because three of them agree - only one separates the two ideas.
 //
 // This is policy in debugger_state for the reason the header of this file gives:
-// main.cpp cannot be linked here, so a mute that quietly stopped working would
-// be invisible until somebody noticed the noise. Which is how it was noticed the
-// first time - run_functional.sh opens twelve frontend windows, each with a live
-// audio device.
+// main.cpp cannot be linked here, so a mute that stopped working would be
+// invisible except by ear - and run_functional.sh opens twelve frontend windows,
+// each with a live audio device.
 GTEST_TEST(frontendAudio, muting_stops_the_sampler_and_pausing_only_stops_the_device)
 {
     using nes_gui::audio_intent;

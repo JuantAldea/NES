@@ -17,8 +17,10 @@
 //     wrong: the page-cross penalty applied to stores, branches executing
 //     twice, and the (zp),Y pointer wrap.
 //
-// Layer 1 needs ~360 MB of fetched vectors and skips (loudly) without them; see
-// tests/test_files/fetch_single_step_tests.sh. Layers 2 and 3 always run.
+// Layer 1 needs ~1.1 GB of fetched vectors - all 256 opcodes, ~4 MB each - and
+// skips (loudly) without them; see tests/test_files/fetch_single_step_tests.sh.
+// CI does not fetch them, so layer 1 runs locally only. Layers 2 and 3 always
+// run.
 
 #include <gtest/gtest.h>
 
@@ -48,8 +50,8 @@ namespace
 
 // One bus access: the 6502 performs exactly one per cycle, so a trace of these
 // is equivalent to a cycle-by-cycle description of the instruction. Verified
-// against all 900,000 vectors: accesses-per-instruction always equals the
-// documented cycle count.
+// against every vector - 256 opcodes at 10,000 each: accesses-per-instruction
+// always equals the documented cycle count.
 struct BusAccess {
     uint16_t addr = 0;
     uint8_t value = 0;
@@ -666,19 +668,20 @@ TEST_P(SingleStepVectors, matches_hardware_vectors)
 // GETS THERE: the address, value and direction of the single bus access the
 // 6502 performs on each of its cycles.
 //
-// That distinction is the whole point. This core performs an instruction's
-// memory effect in two lumps -- all reads during addressing on the first cycle,
-// the rest on the last -- which lands on the correct final state via the wrong
-// accesses at the wrong times. Real hardware also issues accesses that this
-// core does not make at all: the dummy read at the un-carried address when an
-// indexed read crosses a page, and the dummy write of the OLD value that every
-// read-modify-write performs before writing the new one. Those phantom accesses
-// are observable: a dummy read of $2002 clears vblank, a dummy write to $2007
-// corrupts VRAM. They are why Blargg's PPU timing ROMs fail.
+// That distinction is the whole point, because the final state does not
+// constrain the accesses. An implementation that performed an instruction's
+// memory effect in two lumps - all the addressing reads on the first cycle, the
+// rest on the last - reaches the correct final state through the wrong accesses
+// at the wrong times, and the suite above cannot tell.
 //
-// EXPECTED TO FAIL BROADLY until the CPU is cycle-stepped. The number of
-// opcodes passing here is the scalar that work drives upward. Do NOT weaken
-// this to make the suite green.
+// The accesses hardware makes that such an implementation omits are OBSERVABLE
+// on a NES, which is why this matters here and not only in principle: the dummy
+// read at the un-carried address when an indexed read crosses a page, and the
+// dummy write of the OLD value that every read-modify-write performs before
+// writing the new one. A dummy read of $2002 clears vblank; a dummy write to
+// $2007 corrupts VRAM. Blargg's PPU timing ROMs fail without them.
+//
+// All 256 pass. Do NOT weaken this to keep them passing.
 // ---------------------------------------------------------------------------
 
 class SingleStepBusTrace : public ::testing::TestWithParam<std::string>
@@ -1397,8 +1400,9 @@ TEST(CpuInterrupts, an_nmi_hijacks_an_irq_sequence_without_setting_b)
 // and is taken after the handler's first instruction.
 //
 // Without the guard the second edge is silently swallowed, and a review found
-// that removing `servicing_nmi ||` left the entire 640-test suite passing.
-// Nothing anywhere pinned it, including all five cpu_interrupts_v2 ROMs.
+// that removing `servicing_nmi ||` left the whole suite passing - nothing
+// anywhere pinned it, including all five cpu_interrupts_v2 ROMs. This test is
+// the only thing that does.
 TEST(CpuInterrupts, an_nmi_sequence_does_not_consume_a_second_nmi_edge)
 {
     FlatMemory mem;

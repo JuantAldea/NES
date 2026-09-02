@@ -1,11 +1,11 @@
 // The PPU's address space: pattern tables, nametable mirroring, palette
 // mirroring, and the $2007 read buffer.
 //
-// These are unit tests rather than ROM checks on purpose. The ROMs that cover
-// this ground - Blargg's palette_ram, vram_access and sprite_ram - predate the
-// $6000 reporting protocol and draw their results instead of writing them, so
-// they cannot be read headlessly until there is a framebuffer. See
-// tests/test_files/fetch_ppu_address_space.sh.
+// These are unit tests as well as ROM checks, not instead of them. Blargg's
+// palette_ram, vram_access and sprite_ram cover the same ground and are run by
+// tests/blargg_ppu_2005_tests.cpp, which reads their drawn results off the
+// nametable. What a unit test adds is the address: a ROM says which subtest
+// failed, these say which location.
 //
 // Expected values are literals with their derivation stated, not expressions
 // over the implementation's own constants.

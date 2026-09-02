@@ -549,8 +549,8 @@ GTEST_TEST(testPPUScroll, ppudata_read_during_rendering_increments_the_scroll_to
 //
 // PPU::clock() does the current dot's work and then advances the counter, so
 // after this call ppu.cycle is already the following dot while the work of
-// `cycle` has just been done. Getting that backwards makes every assertion here
-// off by one - which it was, on the first attempt.
+// `cycle` has just been done. Getting that backwards puts every assertion here
+// off by one.
 void step_dot(PPU& ppu, int scanline, int cycle)
 {
     // Bounded so a wrong constant fails rather than hangs.

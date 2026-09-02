@@ -1,19 +1,22 @@
-// What DMC DMA does to the CPU - the one part of the delta modulation channel
-// that is deliberately not implemented.
+// What DMC DMA does to the CPU, and the residual this file has not closed.
 //
-// The DMC's memory reader fetches in zero cycles. On hardware it halts the CPU:
-// per NESdev's DMA page, "DMC DMA normally takes 3 or 4 cycles, depending on
-// whether alignment is needed", made of a halt cycle, an always-present dummy
-// cycle, an optional alignment cycle, and the get cycle that performs the read.
-// The halt only lands on a READ cycle - "if the CPU is writing, it ignores the
-// halt...repeating until successful" - so a read-modify-write can delay it by
-// two cycles and an interrupt by three.
+// The DMC's memory reader halts the CPU: per NESdev's DMA page, "DMC DMA
+// normally takes 3 or 4 cycles, depending on whether alignment is needed", made
+// of a halt cycle, an always-present dummy cycle, an optional alignment cycle,
+// and the get cycle that performs the read. The halt only lands on a READ cycle
+// - "if the CPU is writing, it ignores the halt...repeating until successful" -
+// so a read-modify-write can delay it by two cycles and an interrupt by three.
+// That sequence is implemented; see Bus::advance_dmc_dma.
 //
 // THE POINT OF THIS FILE IS THAT THE GAP IS MEASURED RATHER THAN ASSERTED.
 // sprdma_and_dmc_dma prints a 16-row table of DMA lengths, CRCs its own output
-// and prints a verdict. It fails today, and the numbers say why: every row
-// reads 512 or 513, the pure OAM DMA lengths, with no DMC interference at all.
-// That is the missing stall showing up as data rather than as an opinion.
+// and prints a verdict. It still fails, but no longer for the reason this file
+// opened with: the table did show a flat 512/513, the pure OAM DMA lengths with
+// no DMC interference at all, and now steps 527/528 down to 525/526 - the right
+// shape, about eleven cycles high, on rows with no collision as much as on rows
+// with one. Everything below is the record of narrowing that, in order.
+//
+// PARKED. Read the AUDIT section before trusting any figure here.
 //
 // read_write_2007 already passes and is asserted to keep passing, which is the
 // other half: a stall implementation that breaks what already works should not

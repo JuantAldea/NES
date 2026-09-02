@@ -1,10 +1,9 @@
 // Smoke tests for the two freely-licensed homebrew programs.
 //
-// These exist because of a real hole. UNROM was covered only by synthetic
-// images written in unrom_tests.cpp - my own idea of what a mapper-2 cartridge
-// looks like, checked against my own idea of how it behaves. 240pee.nes is the
-// only REAL mapper-2 image here, and until this file it was run by hand and
-// looked at, which is not a regression guard.
+// These close a hole that synthetic images cannot. unrom_tests.cpp builds its
+// own mapper-2 cartridges and checks them against its own model of the board,
+// so it cannot catch a shared misunderstanding of what a real image contains.
+// 240pee.nes is the only REAL mapper-2 image here.
 //
 // The same applied to sprite rendering. The blargg ROMs measure the overflow
 // FLAG and sprite 0 HIT; spritecans is the only thing that puts a screen full

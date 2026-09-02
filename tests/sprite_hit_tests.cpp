@@ -8,16 +8,18 @@
 // dot-exact timing of the flag. They test more of the background than of
 // sprites.
 //
-// All eleven report PASSED, and every one of them is load-bearing: with the
-// background pipeline and the hit flag in place there is no longer any ROM here
-// whose pass comes for free. 11.edge_timing used to be exactly that - all three
-// of its checks are negative ("hit time shouldn't be based on pixels under left
-// clip / at X=255 / off right edge") and a hit that never happens is never too
-// early, so it passed while the PPU could not draw a pixel. It was pinned as a
-// trap until it could be shown to FAIL, which it now can: deleting the X=255
-// exclusion from PPU::check_sprite0_hit makes it report FAILED #3 (and
-// 06.right_edge FAILED #2). Its pass counts for something now, and the
-// vacuous-pass test that guarded it has been removed.
+// All eleven report PASSED, and none of those passes is free.
+//
+// 11.edge_timing is the one that could be. All three of its checks are NEGATIVE
+// - "hit time shouldn't be based on pixels under left clip / at X=255 / off
+// right edge" - and a hit that never happens is never too early, so it passes
+// against a PPU that cannot draw a pixel at all. A ROM whose pass survives the
+// feature being absent is measuring nothing.
+//
+// VALIDATED AGAINST A KNOWN-BAD BUILD, which is the only way to tell those
+// apart: deleting `x != 255` from the sprite-0 condition in PPU::render_pixel
+// makes 11.edge_timing report FAILED #3 and 06.right_edge FAILED #2. Both go
+// red, so both passes are load-bearing now.
 #include <cstdint>
 #include <string>
 
@@ -47,8 +49,8 @@ using nametable_screen::run_one_frame;
 // than being waited out. The loop stops as soon as a verdict appears, so a
 // passing ROM never pays for the headroom.
 //
-// It was 2000 before, a number chosen when the ROMs could not pass and their
-// real budget was unknown.
+// A cap set before the ROMs could pass is not a budget - it can only be a floor
+// on time-to-first-failure - so these numbers replaced one, not refined it.
 constexpr uint64_t kMaxFrames = 134;
 
 std::string rom_path(const std::string& name)

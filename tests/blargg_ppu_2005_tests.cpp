@@ -29,7 +29,11 @@ namespace tests
 namespace blargg_2005
 {
 
-// Enough for these ROMs, which settle within ~120 frames; measured below.
+// A hang detector, not a budget. MEASURED as the frame at which each ROM's
+// result line has been unchanged for three frames: palette_ram 19,
+// vram_access 19, sprite_ram 20. The cap is 20x that, because these settle so
+// early that headroom costs nothing and a wrong cap misreports a passing ROM
+// as a dead PPU.
 constexpr uint64_t kMaxFrames = 400;
 
 std::string rom_path(const std::string& name)
@@ -38,9 +42,7 @@ std::string rom_path(const std::string& name)
 }
 
 // These ROMs print ONLY their result code, with no heading, so the first row
-// with anything on it is the whole report. The sprite-hit ROMs of the following
-// year print a title first and need the whole screen read instead - which is
-// why the shared header supplies the reading but not this rule.
+// with anything on it is the whole report.
 using nametable_screen::first_non_blank_row;
 using nametable_screen::run_one_frame;
 

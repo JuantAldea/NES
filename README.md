@@ -22,7 +22,7 @@ audio.
 | PPU address space | Pattern tables, nametable and palette mirroring, `$2007` buffer, OAM, open-bus decay |
 | PPU background | Loopy `v`/`t`/`x`/`w`, dot-exact tile pipeline, framebuffer of palette indices + emphasis |
 | Sprites | Secondary OAM, per-dot evaluation, 8-per-line, the overflow search bug, priority, 8x16, flip. Passes blargg's 5 `sprite_overflow` and 11 `sprite_hit` ROMs |
-| Cartridge | iNES **and NES 2.0**, NROM (0), MMC1 (1), UNROM (2), CNROM (3), MMC3 (4), AxROM (7), MMC2 (9), MMC4 (10), Sunsoft FME-7 (69) and TxSROM (118), CHR-ROM and CHR-RAM. All ten verified against Holy Mapperel - 21 images, every board identified, 19 of them at detail code `0000`. The two FME-7 images report `0010`, which is [the ROM's own error](#fme-7) rather than this emulator's |
+| Cartridge | iNES **and NES 2.0**, NROM (0), MMC1 (1), UNROM (2), CNROM (3), MMC3 (4), AxROM (7), MMC2 (9), MMC4 (10), GxROM (66), Sunsoft FME-7 (69), TxSROM (118) and UNROM 7408 (180), CHR-ROM and CHR-RAM. All twelve verified against Holy Mapperel - 23 images, every board identified, 21 of them at detail code `0000`. The two FME-7 images report `0010`, which is [the ROM's own error](#fme-7) rather than this emulator's |
 | MMC1 | Serial shift register, all four PRG modes, both CHR modes (ROM *and* RAM), runtime mirroring including one-screen, work-RAM disable and banking, SUROM's PRG A18, SXROM's 32KB work RAM. All nine mapper-1 Holy Mapperel images identify their board - SGROM, SFROM, SJROM, SLROM, SKROM, SUROM, SXROM - and report detail code `0000` |
 | MMC2 / MMC4 | The CHR latch: fetching tile `$FD` or `$FE` swaps that 4KB window's bank for the next fetch, which is the only mapper state here the CPU never writes. `M9` identifies as PNROM, both `M10` images as F*ROM, all `0000` |
 | AxROM | One 32KB PRG window with no fixed half, and runtime one-screen mirroring. `M7_P128K` identifies as ANROM and reports `0000` |
@@ -128,7 +128,7 @@ arming write, and the correct 257 misses that window by exactly 2.
 `tests/holy_mapperel_tests.cpp` pins both `M69` images at `0010`, so closing
 that digit, or losing any of the other three, fails and says which.
 
-That is the only non-clean row in the suite: 19 of the 21 Holy Mapperel images
+That is the only non-clean row in the suite: 21 of the 23 Holy Mapperel images
 read `0000`, and the two that do not are the pair above. Two entries that used
 to be outstanding are worth keeping, because of how each was found.
 

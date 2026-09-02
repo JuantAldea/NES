@@ -185,14 +185,12 @@ ScreenRun run_until_settled(Bus& console)
 // table in the fetch script.
 //
 // `detail` is the four-digit code, one digit each for WRAM, PRG ROM, IRQ and
-// CHR, in which zero is normal. ALL ELEVEN ROWS ARE 0000 - do not add a
-// deliberately non-zero one without saying here how many there are and why.
+// CHR, in which zero is normal. Every row is 0000 EXCEPT the two FME-7 images,
+// pinned at 0010 - see their table for why that is the ROM's error and not this
+// emulator's. Do not add another non-zero row without saying why beside it.
 //
-// This sentence has been wrong twice, both times by naming a count. It read
-// "two images are pinned at a NON-zero value" when three rows carried 0003, and
-// it survived 58f1ce6 taking those three to 0000, at which point it described a
-// set that was empty. The count is the part that rots, so it is stated once,
-// here, rather than in prose that has to be found and updated.
+// Phrased as an exception rather than a total: a total goes stale the moment an
+// image is added anywhere in this file.
 struct Expected {
     const char* name;
     const char* board;

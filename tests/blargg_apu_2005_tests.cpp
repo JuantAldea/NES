@@ -9,15 +9,13 @@
 // So everything after this point needs a different kind of verification. See
 // fetch_blargg_apu_2005.sh.
 //
-// ALL ELEVEN PASS. Nine did on first contact, 09.reset_timing among them -
-// "after reset or power-up, APU acts as if $4017 were written with $00 from 9
-// to 12 clocks before first instruction begins" - which is APU::power_on() and
-// APU::reset() confirmed by a suite that had no part in building them.
-//
-// The other two were one subject, write-versus-clock ordering in the length
-// counter, and are fixed: see LengthCounter::pending_halt and
-// APU::apply_pending_loads. They were pinned to their exact codes until then,
-// and announced themselves by failing those pins rather than by being noticed.
+// ALL ELEVEN PASS. Two of them are the only external check on write-versus-
+// clock ordering in the length counter - see LengthCounter::pending_halt and
+// APU::apply_pending_loads. 09.reset_timing is the only one on the reset
+// sequence: "after reset or power-up, APU acts as if $4017 were written with
+// $00 from 9 to 12 clocks before first instruction begins", which is
+// APU::power_on() and APU::reset() checked by a suite with no part in
+// building them.
 //
 // THESE ROMs REPORT ON SCREEN, NOT THROUGH $6000. They predate that protocol,
 // so blargg_rom_harness.h cannot read them and nametable_screen.h does. Two
@@ -50,9 +48,10 @@ std::string rom_path(const std::string& name)
 constexpr const char* kFetch = "run tests/test_files/fetch_blargg_apu_2005.sh";
 
 // Measured: every ROM shows its final code between frames 11 and 24, and none
-// changes afterwards. The budget is far above that on purpose - these are a
-// FLOOR and rise as ROMs get further, so a tight one turns progress into a
-// timeout. kSettleFrames is how long the code must hold before it is believed.
+// changes afterwards. Those are COMPLETION figures, not floors, because all
+// eleven pass - so the cap only has to absorb the emulator getting slower per
+// frame, not a ROM getting further. kSettleFrames is how long the code must
+// hold before it is believed.
 constexpr uint64_t kMaxFrames = 600;
 constexpr uint64_t kSettleFrames = 60;
 

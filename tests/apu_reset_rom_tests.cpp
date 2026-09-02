@@ -8,22 +8,22 @@
 // and the harness pressing RESET, without which the other half of every ROM
 // here was unreachable.
 //
-// ALL SIX PASS. works_immediately was the last, and it was filed under power-on
-// by its name and by this suite's own baseline - wrongly. Its source configures
-// all five channels, including $4010/$4013 and $4015 bit 4, then reads $4015
-// four times and compares the log. Bit 4 is the DMC's bytes-remaining, so it
-// was never a reset problem at all; it was waiting for the DMC, which is what
-// eventually moved it.
+// ALL SIX PASS.
 //
 // What each ROM checks, from blargg's readme - the reset column is the half
 // that only became testable when the harness learned to press the button:
 //
-//   4015_cleared      at power and reset, $4015 is cleared
-//   irq_flag_cleared  at power and reset, the frame IRQ flag is clear
-//   len_ctrs_enabled  at power and reset, length counters are enabled
-//   4017_written      at reset $4017 is rewritten with the last value written
-//   4017_timing       the 9-12 clock delay, at power and at reset; it PRINTS
-//                     the figure it measures
+//   4015_cleared       at power and reset, $4015 is cleared
+//   irq_flag_cleared   at power and reset, the frame IRQ flag is clear
+//   len_ctrs_enabled   at power and reset, length counters are enabled
+//   4017_written       at reset $4017 is rewritten with the last value written
+//   4017_timing        the 9-12 clock delay, at power and at reset; it PRINTS
+//                      the figure it measures
+//   works_immediately  NOT a reset test, despite sitting in this suite. It
+//                      configures all five channels including $4010/$4013 and
+//                      $4015 bit 4, then reads $4015 four times and compares
+//                      the log. Bit 4 is the DMC's bytes-remaining, so this
+//                      one gates on the DMC and not on reset behaviour at all.
 //
 // The ROMs are fetched, not committed, and a missing one FAILS rather than
 // skips - CI fetches them, so absence means the fetch step broke, and a skip
@@ -47,9 +47,9 @@ std::string rom_path(const std::string& name)
 }
 
 // Measured: the six report between frames 20 and 51, the later ones because a
-// run now includes the reset delay and the second half of the ROM. 600 is far
-// above that on purpose - these are a FLOOR and rise as ROMs get further, so a
-// tight budget would turn progress into a timeout.
+// run includes the reset delay and the second half of the ROM. Those are
+// COMPLETION figures, not floors, because all six pass - so 600 only has to
+// absorb the emulator getting slower per frame, not a ROM getting further.
 constexpr uint64_t kMaxFrames = 600;
 
 constexpr const char* kFetch = "run tests/test_files/fetch_apu_reset.sh";

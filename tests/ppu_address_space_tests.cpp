@@ -12,20 +12,23 @@
 //   ppu_open_bus   what the open bus returns for write-only registers and
 //                  unused bits, and how it decays
 //
-// oam_read passes. oam_stress and ppu_open_bus do not: they measure OAM under
-// stress and open-bus DECAY, neither of which is implemented. The count that
-// passes is the scalar. Do NOT weaken these assertions.
+// All three are asserted to pass, unconditionally. ppu_open_bus needs the
+// per-bit decay in PPU::decay_open_bus; oam_stress needs OAM correct under
+// access patterns well beyond a $2003/$2004 round trip. Do NOT weaken these
+// assertions to accommodate a regression in either.
 //
-// These three are what can be checked HEADLESSLY. Blargg's 2005 PPU suite -
-// palette_ram, vram_access, sprite_ram, power_up_palette - covers exactly the
-// palette and $2007-buffer behaviour this work is about, but those ROMs predate
-// the $6000 protocol and draw their results instead of writing them. Pointed at
-// a $6000 harness they report "timed out without initialising" regardless of
-// how correct the emulator is, which is worse than no coverage: it is coverage
-// that lies. They go in once there is a framebuffer to read.
+// These three are the ones that report through $6000. Blargg's 2005 PPU suite -
+// palette_ram, vram_access, sprite_ram - covers the palette and $2007-buffer
+// behaviour instead, and predates that protocol: those ROMs draw their results
+// rather than writing them, so pointed at a $6000 harness they report "timed
+// out without initialising" however correct the emulator is, which is worse
+// than no coverage because it is coverage that lies. They are read off the
+// nametable by tests/blargg_ppu_2005_tests.cpp, through
+// tests/nametable_screen.h.
 //
-// Until then, palette mirroring, nametable mirroring and the $2007 read buffer
-// are pinned by unit tests in this directory rather than by a ROM.
+// Palette mirroring, nametable mirroring and the $2007 read buffer are ALSO
+// pinned by unit tests in tests/ppu_memory_tests.cpp, which is the finer
+// instrument: a ROM says which subtest failed, a unit test says which address.
 #include <string>
 
 #include "blargg_rom_harness.h"
@@ -79,10 +82,10 @@ TEST_P(PpuAddressSpaceRoms, reports_pass)
         FAIL() << name << ": timed out after " << result.frames_run << " frames still reporting status $" << std::hex
                << static_cast<int>(result.last_status) << std::dec
                << " (running).\n"
-                  "  The ROM initialised and is waiting on the PPU. The address space is\n"
-                  "  implemented (see tests/ppu_memory_tests.cpp), so suspect what is not:\n"
-                  "  OAM behaviour beyond a plain $2003/$2004 round trip, open-bus decay,\n"
-                  "  or rendering - none of which exist yet.";
+                  "  The ROM initialised and is waiting on the PPU. All three of these\n"
+                  "  passed when last measured, so this is a REGRESSION, not a missing\n"
+                  "  feature - suspect OAM under stress, per-bit open-bus decay, or the\n"
+                  "  rendering pipeline, in that order.";
     }
 
     if (result.needs_reset) {

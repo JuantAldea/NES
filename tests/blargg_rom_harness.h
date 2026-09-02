@@ -5,8 +5,10 @@
 // differ only in which directory they load from, how long they are allowed to
 // run, and - for the cpu_reset ROMs alone - whether they start from a power-on
 // or a reset. Every suite in this repo that speaks the protocol goes through
-// here; a suite keeping its own copy of the loop is how the three copies this
-// replaced drifted apart in the first place.
+// here. A private copy of this loop drifts in ways invisible from inside the
+// suite that has it: driving no resets at all, lacking the stale-$6000 guard
+// below, or reporting a ROM's $81 reset REQUEST as "failed with code 129" - a
+// request misread as a verdict. All three have happened here.
 //
 //   $6001-$6003  validation signature $DE $B0 $61; until it reads back exactly
 //                this, $6000 holds no meaningful value
@@ -32,9 +34,6 @@ constexpr uint16_t kMessageAddr = 0x6004;
 constexpr uint8_t kSignature[3] = {0xDE, 0xB0, 0x61};
 constexpr uint8_t kStatusRunning = 0x80;
 constexpr uint8_t kStatusNeedsReset = 0x81;
-
-// One frame is 341 dots x 262 scanlines and Bus::clock ticks the PPU every 4th
-// bus cycle.
 
 struct RomResult {
     bool completed = false;  // signature appeared and status left the running state

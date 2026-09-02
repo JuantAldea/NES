@@ -338,11 +338,10 @@ GTEST_TEST(testMemory, unmapped_ranges_are_open_bus)
     // Seed a known byte in RAM to read through, as the marker below.
     console.write(0x0010, 0x5A);
 
-    // The technique had to change when open bus became real. This used to write
-    // $FF to the unmapped address and expect the read back to be 0 - but 0 was
-    // the SIMPLIFICATION, not the hardware. A write puts its value on the data
-    // bus, so on a real NES reading straight back returns $FF whether or not
-    // anything is there, and the old test could no longer tell the two apart.
+    // WRITING AND READING STRAIGHT BACK PROVES NOTHING HERE. A write puts its
+    // value on the data bus, so an unmapped address returns it whether or not
+    // anything latched it - the obvious test cannot tell a device from open
+    // bus, and expecting 0 back only worked while open bus was modelled as 0.
     //
     // So: write $FF, then read a known address to put something else on the
     // bus, THEN read the unmapped one. A device that latched the write returns

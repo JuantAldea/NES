@@ -102,17 +102,15 @@ GTEST_TEST(testPPURegisters, ppuaddr_writes_stay_within_vram)
 
     EXPECT_EQ(0x37, console.ppu.ppu_bus_read(0x3FFF));
 
-    // CHANGED: this used to expect v == $0000, on the reasoning that the
-    // address "wraps rather than running past the end of the VRAM array". The
-    // safety being described is real, but it comes from somewhere else:
-    // ppu_bus_read/write fold every access with vram_addr_mask, so VRAM cannot
-    // be over-indexed whatever v holds - which is why the assertion above
-    // still passes unchanged.
+    // $4000, NOT $0000. v is FIFTEEN bits - bits 12-14 are fine Y (NESdev,
+    // "PPU scrolling") - so $3FFF + 1 does not wrap, and discarding that carry
+    // would clear the top bit of fine Y.
     //
-    // v itself is FIFTEEN bits, because bits 12-14 are fine Y (NESdev, "PPU
-    // scrolling"). $3FFF + 1 is $4000, and discarding that carry would clear
-    // the top bit of fine Y. The old expectation conflated the register with
-    // the 14-bit bus.
+    // "It wraps rather than running past the end of the VRAM array" is the
+    // tempting reading and confuses the register with the 14-bit bus. The
+    // over-indexing it worries about is prevented elsewhere: ppu_bus_read and
+    // ppu_bus_write fold every access with vram_addr_mask, which is why the
+    // assertion above holds whatever v contains.
     EXPECT_EQ(0x4000, console.ppu.registers.PPUADDR);
 }
 
@@ -129,8 +127,8 @@ GTEST_TEST(testPPURegisters, ppuscroll_keeps_both_writes)
     EXPECT_EQ(0x7D, console.ppu.scroll_x());
     EXPECT_EQ(0x5E, console.ppu.scroll_y());
 
-    // CHANGED: this used to assert registers.PPUSCROLL == 0x7D5E, a register
-    // hardware does not have. $2005 writes into t and x:
+    // THERE IS NO PPUSCROLL REGISTER to read the two bytes back out of.
+    // $2005 writes into t and x:
     //
     //   first  ($7D = 0111 1101):  t coarse X <- 0x7D >> 3 = $0F
     //                              x          <- 0x7D & 7  = 5
@@ -216,9 +214,9 @@ GTEST_TEST(testPPURegisters, ppustatus_read_preserves_the_addresses)
     // Hardware clears only the write toggle; it leaves v and t alone.
     EXPECT_EQ(0x2108, console.ppu.registers.PPUADDR);
 
-    // CHANGED: this used to assert registers.PPUSCROLL == 0x3344. The scroll
-    // has no register of its own; the two $2005 writes went into t, on top of
-    // the $2108 the $2006 pair had just put there:
+    // The scroll has no register of its own, so the two $2005 writes land in t,
+    // on top of the $2108 the $2006 pair just put there. That accumulation is
+    // the point: t is shared, and a $2005 pair does not start from zero.
     //
     //   after $2006 $21,$08:       t = $2108
     //   $2005 first  ($33):        t coarse X <- $33 >> 3 = 6, x <- 3
@@ -354,8 +352,8 @@ GTEST_TEST(testPPURegisters, lockout_covers_mask_scroll_and_addr)
     EXPECT_EQ(0x00, console.ppu.registers.PPUMASK);
     EXPECT_FALSE(console.ppu.show_background);
 
-    // CHANGED: this used to assert registers.PPUSCROLL == 0x0000. $2005 writes
-    // into t and x, so those are what must be untouched by a locked-out write.
+    // $2005 writes into t and x, so those are what a locked-out write must
+    // leave untouched - there is no PPUSCROLL register to check instead.
     console.ppu.write(PPU::PPUSCROLL, 0xFF);
     console.ppu.write(PPU::PPUSCROLL, 0xFF);
     EXPECT_EQ(0x0000, console.ppu.temp_addr);
@@ -549,9 +547,10 @@ GTEST_TEST(testPPURegisters, ppumask_decodes_its_flags)
 
 // --- frame state machine -------------------------------------------------
 //
-// PPU::clock used to declare `scanline` as a local, reset on every call, so
-// the state machine never left scanline 1: vblank was never entered and NMI
-// never raised. These pin the frame structure that fix restored.
+// These pin the frame structure itself. A `scanline` that does not persist
+// across PPU::clock - a local reset on every call, say - leaves the state
+// machine on scanline 1 forever: no vblank, no NMI, and nothing else in the
+// suite notices because every other test drives the PPU to a dot explicitly.
 
 namespace
 {
@@ -573,12 +572,13 @@ bool clock_until_dot(PPU& ppu, int target_scanline, int target_cycle)
 
 // A frame is not a fixed number of master cycles, which is the whole reason
 // run_frame exists. 341 dots x 262 scanlines x 4 master cycles per dot is
-// 357,848 - exact for an even frame, and one dot (four master cycles) too many
+// 357,368 - exact for an even frame, and one dot (four master cycles) too many
 // for an odd one with rendering enabled, because the pre-render line drops its
 // last dot.
 //
-// Everything that needed a frame used to clock that constant. It was harmless
-// while nothing rendered and the skip never armed.
+// Clocking that constant instead is harmless right up until something renders
+// and the skip arms, at which point every frame-counted measurement drifts by
+// a dot per odd frame.
 GTEST_TEST(testBusRunFrame, a_frame_is_not_a_fixed_number_of_cycles_once_rendering_is_on)
 {
     constexpr uint64_t nominal = 341ull * 262ull * 4ull;

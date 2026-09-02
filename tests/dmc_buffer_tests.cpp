@@ -331,7 +331,7 @@ GTEST_TEST(dmcBuffer, a_finished_sample_leaves_the_buffer_full_until_it_is_playe
 // Mutating apu.cpp's `if (dmc.disable_delay != 0 && --dmc.disable_delay == 0)`
 // four ways, against every APU and DMC suite including the ROMs, left two alive:
 // `!= 0` to `== 0` on the decrement, and `== 0` to `== 1`. Both make the abort
-// fire ONE CYCLE EARLY, and nothing in 1075 tests could tell. What did die was
+// fire ONE CYCLE EARLY, and nothing in the whole suite could tell. What died was
 // the mutant that removes the abort altogether - blargg's 7-dmc_basics catches
 // that, and it is the only test in the project that reaches this code with
 // bytes still remaining, which it does five times. So the abort's EXISTENCE had
@@ -439,7 +439,7 @@ GTEST_TEST(dmcBuffer, re_enabling_does_not_call_off_a_disable_already_counting_d
 // suite, every DMC suite, every blargg ROM, the hardware-measured volume tests
 // and the SMB test, killed NOTHING: 0 of 11. Inverting which bit drives the
 // level, inverting the step direction, changing the step size, moving either
-// clamp - all eleven survived 1078 tests. A DMC decoding every sample backwards
+// clamp - all eleven survived the whole suite. A DMC decoding every sample backwards
 // was indistinguishable from a correct one.
 //
 // The comment that stood at apu.cpp:131 explained half of why and then drew the

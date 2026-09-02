@@ -204,10 +204,11 @@ std::string test_label()
 // Writes what the pipeline drew and what the reference expected, side by side
 // on disk, so a failure can be LOOKED AT.
 //
-// Nothing displays the framebuffer yet, so without this a render bug is only
-// ever a coordinate and two hex bytes. "First mismatch at (17, 43)" does not
-// distinguish a one-pixel fine-X error from a completely scrambled screen, and
-// those need entirely different investigations.
+// A headless failure is otherwise a coordinate and two hex bytes. "First
+// mismatch at (17, 43)" does not distinguish a one-pixel fine-X error from a
+// completely scrambled screen, and those need entirely different
+// investigations. The frontend can show a live frame, but not the one a failing
+// test produced.
 void dump_frames_for_inspection(PPU& ppu, const Config& config, const std::string& label)
 {
     // uint16_t to match the framebuffer's index+emphasis encoding; the

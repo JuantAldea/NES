@@ -2,10 +2,10 @@
 //
 // DMC DMA cannot halt the CPU on a write cycle - "if the CPU is writing, it
 // ignores the halt...repeating until successful" - so its state machine needs
-// to know. The CPU has no notion of it, and threading a flag through 79
-// operations and every addressing mode would be a large change to the most
-// heavily verified component here. Bus::write is the one place every access
-// already passes through, so the answer is watched there instead.
+// to know. The CPU has no notion of it, and threading a flag through every
+// operation and addressing mode would be a large change to the most heavily
+// verified component here. Bus::write is the one place every access already
+// passes through, so the answer is watched there instead.
 //
 // These tests exist because that indirection is only correct if it really does
 // identify the same cycles the CPU is writing on. The instruction timings below

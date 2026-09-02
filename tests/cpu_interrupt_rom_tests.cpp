@@ -13,14 +13,13 @@
 //   5-branch_delays_irq  a taken branch polls earlier than the uniform
 //                        penultimate-cycle rule
 //
-// All five pass. They were fetched as the instrument for three known-unfixed
-// defects, all of which have since been closed:
-//   - IRQ was a one-shot latch with no lower_IRQ; /IRQ is now a level driven by
-//     the APU frame counter.
-//   - BRK/IRQ sequences were not hijacked by an NMI arriving before cycle 4;
+// All five pass, and each of these three is theirs alone - nothing else here
+// fails if one regresses:
+//   - /IRQ is a LEVEL driven by the APU frame counter, not a one-shot latch.
+//   - An NMI arriving before cycle 4 hijacks a BRK/IRQ sequence's vector fetch;
 //     see CPU::poll_interrupt_hijack.
-//   - A taken branch polled on its own penultimate cycle where hardware does
-//     not poll before a taken branch's third cycle; see CPU::sample_interrupts.
+//   - A taken branch does NOT poll on its own penultimate cycle, where the
+//     uniform rule says it would; see CPU::sample_interrupts.
 //
 // Do NOT weaken these assertions. A ROM going from fail to pass is progress; a
 // ROM going the other way is a regression.
@@ -58,8 +57,8 @@ namespace interrupts
 // every iteration spends one frame in `begin` plus eight more in the IRQ
 // handler's `ldx #7 / delay 29831` resync loop - 4 x 10 x ~9 = ~360 frames
 // before any emulator overhead. A real NES takes the same six and a half
-// seconds. The previous cap of 300 cut it off at roughly the start of the
-// fourth sub-test, which is why it read as a hang.
+// seconds. A cap of 300 cuts it off around the start of the fourth sub-test
+// and reads as a hang, so this one has to clear 385 with room.
 constexpr uint64_t kMaxFrames = 600;
 
 std::string rom_path(const std::string& name)

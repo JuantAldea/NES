@@ -1,12 +1,13 @@
 // nestest golden-log differ.
 //
-// This is a MEASUREMENT INSTRUMENT, not a CPU fix. It compares this emulator's
-// CPU trace against the canonical nestest.log line by line and reports the
-// first line where they diverge. The CPU is known to have cycle-accuracy and
-// illegal-opcode bugs, so the harness test at the bottom of this file (the one
-// that actually clocks the CPU) is EXPECTED TO FAIL. Do not weaken the
-// assertion and do not "fix" the CPU here -- the first-divergence line number
-// is the metric another agent drives upward.
+// Compares this emulator's CPU trace against the canonical nestest.log line by
+// line and reports the FIRST line where they diverge, which is what makes a
+// failure actionable: one instruction, one field, one line number.
+//
+// ALL 8991 LINES MATCH, through the raw CPU and through the Bus. When that
+// holds, the tests additionally assert nestest's own verdict bytes at $02 and
+// $03 are zero - a full log match with a non-zero verdict would mean the log
+// and the ROM disagree, which is a broken fixture rather than a CPU bug.
 //
 // Part 1 (parser + comparator + their own unit tests) has zero dependency on
 // CPU correctness and must be airtight: an off-by-one here would masquerade
@@ -392,10 +393,12 @@ GTEST_TEST(nestestDiffer, parser_matches_every_line_of_the_real_log)
 // ---------------------------------------------------------------------------
 // Part 2: flat-memory harness.
 //
-// Deliberately independent of Bus/RAM/ROM/PPU: those have known bugs (Bus
-// mirroring, aborting asserts in ppu.cpp) that belong to a different agent's
-// lane. This harness is a plain 64KB array with iNES PRG-ROM mapped NROM-style
-// at both $8000 and $C000, wired straight into the CPU's read/write callbacks.
+// Deliberately independent of Bus/RAM/ROM/PPU, so that a divergence here
+// indicts the CPU and nothing else. A plain 64KB array with iNES PRG-ROM
+// mapped NROM-style at both $8000 and $C000, wired straight into the CPU's
+// read/write callbacks. The Bus-driven counterpart at the end of this file is
+// what makes the pair useful: a divergence there but not here is the memory
+// map, not the core.
 // ---------------------------------------------------------------------------
 
 namespace

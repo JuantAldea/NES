@@ -1,11 +1,13 @@
 // blargg's full_palette suite: the oracle for the last two PPU gaps.
 //
-// include/ppu.h has carried these as deliberate omissions since the renderer
-// was written - PPUMASK colour emphasis (bits 5-7) is not applied, and the
-// forced-backdrop case is not modelled. Neither had an oracle, which is why
-// they stayed open: there was nothing to turn red.
+// PPUMASK colour emphasis (bits 5-7) and the forced-backdrop case were both
+// deliberate omissions for as long as nothing could turn red over them. Both
+// are implemented now - emphasis is captured per pixel in PPU::render_pixel,
+// forced backdrop is the branch above it - and these ROMs are the only
+// EXTERNAL oracle for either. ppu_render_tests.cpp and frame_dump_tests.cpp
+// pin the same behaviour against this project's own model of it.
 //
-// These ROMs close that. They are not palette-lookup checks - they are built ON
+// They are not palette-lookup checks - they are built ON
 // the forced-backdrop trick, using it as their rendering technique. NESdev's
 // PPU palettes page states the rule they exploit:
 //

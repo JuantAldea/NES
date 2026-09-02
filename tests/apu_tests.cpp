@@ -1,9 +1,9 @@
 // APU frame counter.
 //
-// Audio is not implemented; the frame counter is, because it is the NES's only
-// source of maskable interrupts. Without it the CPU's whole /IRQ path was
-// unreachable: the SingleStepTests vectors carry no interrupts and the PPU only
-// drives /NMI, so nothing exercised it.
+// The frame counter is the NES's only source of maskable interrupts, so it is
+// the only thing that reaches the CPU's /IRQ path at all: the SingleStepTests
+// vectors carry no interrupts and the PPU drives /NMI. It was implemented
+// before any of the channels for that reason.
 //
 // These pin the behaviour directly. 1-cli_latency covers it end to end, but a
 // ROM failing tells you far less about where than a test does.
@@ -551,8 +551,8 @@ void advance_apu(APU& apu, const int cpu_cycles)
 // factor-of-two trap the triangle's timer carries. The 7451 rather than 7457 is
 // power_on_delay and the divider's phase.
 //
-// THE GAPS ARE NOT CONSTANT, and an earlier version of this comment said they
-// were. Measured: 7456, 7458, 7458, 7458, then 7456 again - the pattern repeats
+// THE GAPS ARE NOT CONSTANT, though four equal ones is the natural assumption.
+// Measured: 7456, 7458, 7458, 7458, then 7456 again - the pattern repeats
 // every four clocks because the real boundaries fall on APU HALF-cycles and the
 // four of them sum to 29830, the mode-0 period.
 //

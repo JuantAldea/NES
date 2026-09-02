@@ -269,7 +269,7 @@ message rather than as a ROM everyone has learned to ignore.
 `blargg_rom_harness.h` implements the shared PRG-RAM reporting protocol —
 signature at `$6001`, status at `$6000`, ASCII message at `$6004` — and drives
 a soft RESET via `Bus::reset()` when a ROM reports `$81`. A new suite must go
-through it. **Eleven do, and none forks it any more.**
+through it. **Twelve do, and none forks it any more.**
 
 The drift that made the folding worth doing is worth remembering, because it
 was never cosmetic. `blargg_ppu_tests.cpp` drove no resets at all.
@@ -291,7 +291,7 @@ grep undercounts by exactly them.
 Enumerate users this way instead, and count the lines:
 
 ```sh
-grep -rln "run_rom(" tests/          # 12 hits: the harness + 11 suites
+grep -rln "run_rom(" tests/          # 13 hits: the harness + 12 suites
 ```
 
 A private copy is a suite that runs blargg ROMs and does *not* appear in that

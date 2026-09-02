@@ -6,15 +6,19 @@
 // nametable as tile indices, and the font is ASCII-mapped, so treating each
 // byte at $2000 onwards as a character recovers the text.
 //
-// Two suites use this, and they do NOT report the same way:
+// ONLY THE READING IS SHARED. The suites that take a verdict from the screen do
+// not agree on what a finished one looks like:
 //
 //   blargg_ppu_tests_2005.09.15b  prints only a result code, "  $01"
+//   blargg_apu_2005               likewise, read through first_non_blank_row
 //   sprite_hit_tests_2005.10.05   prints a TITLE line, then "PASSED"/"FAILED #N"
 //
-// So only the reading is shared here; each suite keeps its own idea of what a
-// finished screen looks like. Sharing the terminal condition too would mean the
-// sprite-hit reader stopping on "SPRITE HIT BASICS" and never seeing the
-// verdict, which is exactly what a first attempt at it did.
+// So each keeps its own terminal condition. Sharing that too makes the
+// sprite-hit reader stop on "SPRITE HIT BASICS" and never see the verdict.
+//
+// Several other suites call read_text purely to PRINT the screen when they
+// fail. Those assert on nothing here, so a change to the reading affects their
+// diagnostics and not their results.
 #pragma once
 
 #include <cstdint>
@@ -95,9 +99,9 @@ inline std::string first_non_blank_row(Bus& console)
 inline void run_one_frame(Bus& console)
 {
     // Bus::run_frame watches the PPU's own frame counter. Clocking a fixed
-    // 341*262*4 instead - which this used to do - overshoots by a dot on every
-    // odd frame once rendering is enabled, because the pre-render line drops
-    // its last dot.
+    // 341*262*4 is the obvious alternative and overshoots by a dot on every odd
+    // frame once rendering is enabled, because the pre-render line drops its
+    // last dot.
     console.run_frame();
 }
 

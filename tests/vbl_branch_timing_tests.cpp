@@ -39,10 +39,13 @@ std::string rom_path(const std::string& name)
 
 constexpr const char* kFetch = "run tests/test_files/fetch_vbl_branch_timing.sh";
 
-// Measured: all ten settle well inside this. Read at a fixed count rather than
-// by waiting for the screen to stop changing - these ROMs sit on an unchanged
-// screen while they work, so a settle-detector stops mid-test and reports the
-// title as the verdict.
+// MEASURED as the frame each ROM first shows PASSED: the vbl_nmi_timing seven
+// land between 97 (3.even_odd_frames) and 174 (1.frame_basics), the branch
+// three between 11 and 13. So this is ~5x the slowest.
+//
+// Read at a fixed count rather than by waiting for the screen to stop changing:
+// these ROMs sit on an unchanged screen while they work, so a settle-detector
+// stops mid-test and reports the title as the verdict.
 constexpr int kFrames = 900;
 
 std::string run_and_read(const std::string& name)

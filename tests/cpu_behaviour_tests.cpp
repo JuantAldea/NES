@@ -11,7 +11,8 @@
 //
 // The unit tests below assert that directly, and the ROMs assert it against
 // hardware. Both are here on purpose: the unit tests say precisely what is
-// wrong when they fail, and the ROMs do not care what I believe the rule is.
+// wrong when they fail, and the ROMs are not written against this project's
+// reading of the rule.
 #include <cstdint>
 #include <cstring>
 #include <string>
@@ -45,15 +46,15 @@ std::string rom_path(const std::string& name)
 // Started with power_on(), not reset(), which is the one thing these ROMs need
 // that no other $6000 suite does - see blargg::Start.
 //
-// This file used to carry its own copy of the whole protocol loop for that one
-// difference, and the copy lacked the shared harness's stale-$6000 guard. That
-// cost it a 15-frame reset delay where the shared loop uses 10, because without
-// the guard registers.nes reported Failed #3 at 7 frames and only passed from
-// 12 - which read as a timing threshold and was really the race.
+// THE RESET DELAY IS NOT A TIMING THRESHOLD, and registers.nes is where that
+// looks most convincing. Without the harness's stale-$6000 guard it reports
+// Failed #3 at a 7-frame delay and only passes from 12, which invites raising
+// the delay until it goes green.
 //
-// Measured, not assumed: through the shared loop it passes at 10, and disabling
-// the guard there brings the identical Failed #3 back (2 resets driven, S=$F1
-// from the spurious one) with the delay left at 10. The delay was masking it.
+// Measured: through the shared loop it passes at 10, and disabling the guard
+// there brings the identical Failed #3 back - 2 resets driven, S=$F1 from the
+// spurious one - with the delay still at 10. Raising the delay masks the race
+// rather than fixing it.
 RomResult run_with_resets(const std::string& name)
 {
     return blargg::run_rom(rom_path(name), kMaxFrames, blargg::Start::PowerOn);

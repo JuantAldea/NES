@@ -171,9 +171,10 @@ GTEST_TEST(gxrom, a_chr_count_the_register_cannot_address_is_rejected)
 //
 // check_gxrom rejects a bad PRG size through four clauses, and they overlap: an
 // odd count, a zero count and a non-power-of-two are each caught by more than
-// one. Eight 32KB banks is the only value that reaches `banks32 > 4` on its own -
-// even, non-zero, a power of two, and too large - so it is the only image that
-// can show that clause is doing anything.
+// one. Only a value that is even, non-zero, a power of two AND too large
+// reaches `banks32 > 4` unaided, which means 8, 16 or 32 32KB banks. Eight is
+// the smallest, so it is the cheapest image that shows the clause does
+// anything.
 GTEST_TEST(gxrom, a_prg_size_beyond_the_two_bit_field_is_rejected)
 {
     GxRomImage rom("gxrom_too_much_prg.nes", 8, 4);

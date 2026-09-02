@@ -7,9 +7,10 @@
 // not fetched there, so before this the whole of CI's instruction-level
 // coverage was nestest and Klaus. These sixteen ROMs are a few hundred KB.
 //
-// The rom_singles are used rather than all_instrs.nes because the combined
-// builds are mapper 1 (MMC1), which this emulator does not support. Verified
-// from their headers.
+// The rom_singles are used rather than all_instrs.nes, which is mapper 1
+// (verified from its header). Sixteen separately-named cases name the failing
+// group in the test output; one combined ROM reports a single opcode and leaves
+// the group to be looked up.
 #include <cstdint>
 #include <string>
 
@@ -40,10 +41,8 @@ std::string rom_path(const std::string& name)
 // CPU before a cartridge was mapped, and a reset subtracts 3 from S rather than
 // reloading it.
 //
-// This used to be a private copy of the $6000 loop. It handled every status
-// except $81, so a ROM asking for a reset would have been reported as "failed
-// with code 129" - a request misread as a verdict. None of these sixteen asks
-// today, which is the only reason that never showed.
+// Through the shared harness, which answers $81. None of these sixteen ROMs
+// asks for a reset today, so a loop that mishandled $81 looks correct here.
 blargg::RomResult run_rom(const std::string& name)
 {
     return blargg::run_rom(rom_path(name), kMaxFrames, blargg::Start::PowerOn);

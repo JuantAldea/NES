@@ -172,9 +172,10 @@ GTEST_TEST(mmc3, chr_a12_inversion_swaps_the_two_halves_of_pattern_space)
 // with no PPU change - which is worth pinning, because it would otherwise look
 // like an accident.
 //
-// THE POLARITY IS THE POINT, and this test asserted it backwards for as long as
-// it existed - it was written from the implementation, so it restated the bug
-// instead of catching it. Bit 0 CLEAR is VERTICAL. That is the opposite of the
+// THE POLARITY IS THE POINT, and a test written from the implementation
+// restates the bug instead of catching it - which is what this one did until
+// its expectations came from elsewhere. Bit 0 CLEAR is VERTICAL. That is the
+// opposite of the
 // iNES header bit, which is why it is easy to get wrong in both directions at
 // once, and the wiki states it in ARRANGEMENT terms - "0: horizontal (A10);
 // 1: vertical (A11)" - where arrangement is the inverse of mirroring.

@@ -194,7 +194,7 @@ GTEST_TEST(commercialRom, holding_right_scrolls_the_playfield)
             // Sampled BELOW the status-bar split. At the frame boundary the
             // scroll reads 0, because the status bar is unscrolled and the
             // game has already rewritten t for it - measuring there says
-            // "nothing ever scrolls", which cost me a wrong diagnosis.
+            // "nothing ever scrolls".
             if (console.ppu.scanline == 150 && console.ppu.cycle == 100) {
                 coarse_mid = console.ppu.registers.PPUADDR & 0x1F;
             }

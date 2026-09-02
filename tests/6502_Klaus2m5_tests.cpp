@@ -115,21 +115,21 @@ GTEST_TEST(testCPU, 6502_Klaus2m5_funtional_test)
 //
 // The two oracles are mutually exclusive, and exactly so: gating
 // CPU::poll_interrupt_hijack to `Schedule::interrupt` (i.e. never hijacking BRK)
-// flips this test to $06F5 and flips 2-nmi_and_brk to failing, with nothing else
-// in the 640-test suite moving. Verified by doing it.
+// flips this test to $06F5 and flips 2-nmi_and_brk to failing, with nothing
+// else in the suite moving. Verified by doing it.
 //
 // The CYCLE COUNT is asserted as well as the address, and that is the load
 // bearing half.
 //
-// An earlier version of this test asserted only $075C, with a comment claiming
-// "any change that moves execution somewhere OTHER than this one known
-// disagreement fails the test". That was false. $075C sits inside nmi_trap,
-// which is shared by all six NMIs the suite fires, so the address alone cannot
-// distinguish "ran every case and hit the documented caveat in the last one"
-// from "failed at the FIRST NMI and happened to land in the same handler".
-// A review demonstrated exactly that: a change making genuine NMIs push B set
-// trapped at $075C after 1 NMI and 1646 cycles instead of 6 NMIs and 2721, and
-// the address-only assertion passed regardless.
+// ASSERTING THE ADDRESS ALONE IS NOT ENOUGH, though it reads as though it
+// should be. $075C sits inside nmi_trap, which is shared by all six NMIs the
+// suite fires, so the address cannot distinguish "ran every case and hit the
+// documented caveat in the last one" from "failed at the FIRST NMI and landed
+// in the same handler".
+//
+// DEMONSTRATED: a change making genuine NMIs push B set trapped at $075C after
+// 1 NMI and 1646 cycles instead of 6 NMIs and 2721 - and an address-only
+// assertion passed regardless.
 //
 // 2721 is the measured cycle count of a correct run. It is not derived from
 // anything in src/, so it moves if and only if execution up to the trap

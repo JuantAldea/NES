@@ -53,11 +53,8 @@ std::string rom_path(const std::string& name) { return std::string(NES_TEST_FILE
 // CPU before a cartridge was mapped, and a reset subtracts 3 from S rather than
 // reloading it.
 //
-// This used to be a private copy of the $6000 loop that handled every status
-// except $81, so a ROM asking for a reset would have been reported as "failed
-// with code 129" - a request misread as a verdict. None of these six asks
-// today, which is the only reason that never showed. It also carried a `frames`
-// field that nothing ever read; the shared RomResult::frames_run replaces it.
+// Through the shared harness, which answers $81. None of these six ROMs asks
+// for a reset today, so a loop that mishandled $81 looks correct here.
 blargg::RomResult run_rom(const std::string& name)
 {
     return blargg::run_rom(rom_path(name), kMaxFrames, blargg::Start::PowerOn);
@@ -75,13 +72,12 @@ using Result = blargg::RomResult;
 // 4-scanline_timing  the DOT the counter is clocked on, under real rendering
 // 5-MMC3             the Sharp revision's reload-to-zero behaviour
 //
-// 4-scanline_timing was pinned as a known failure here for a long time, on the
-// theory that the two garbage nametable reads of each sprite fetch group had to
-// be driven onto the PPU address bus before the A12 filter could measure from
-// the right point. THAT THEORY WAS WRONG, and it is recorded because it cost
-// the time: the reads are still not modelled and the ROM passes anyway.
+// The two garbage nametable reads of each sprite fetch group are NOT what makes
+// 4-scanline_timing pass: it passed while they were still unmodelled. They are
+// on the bus today for an unrelated reason - A12 LOW is as observable as A12
+// high.
 //
-// The actual cause was one dot. The ROM's own constants give it away - it
+// The cause is one dot. The ROM's own constants give it away - it
 // asserts the scanline-0 IRQ arrives 256 dots later with $2000=$08 than with
 // $2000=$10, i.e. that the sprite pattern fetch raises A12 exactly 256 dots
 // after the background one does. fetch_background_byte read on the first dot of

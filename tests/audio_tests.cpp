@@ -483,7 +483,7 @@ GTEST_TEST(testAudio, the_kernel_passes_the_audible_band_and_rolls_off_before_ny
     // earlier version asserted on it and was measuring its own reflection.
 }
 
-// THE STARTUP FIX HAD NO TEST, and reverting it was green across all 23 cases.
+// THE STARTUP FIX HAD NO TEST, and reverting it was green across the whole suite.
 //
 // AudioSampler begins at position = BlipSynth::width because add_delta drops any
 // transition that would index before its buffer - which, from position 0, is
@@ -827,7 +827,7 @@ GTEST_TEST(testAudio, the_sampler_is_off_unless_a_frontend_asks_for_it)
 
 // SUPER MARIO BROS. IS SILENT ON ITS TITLE SCREEN AND IN ITS DEMO, BY DESIGN.
 //
-// This looked like an audio bug for some hours and is not one. SMB's SoundEngine
+// This is not an audio bug. SMB's SoundEngine
 // at $F2D0 is, verbatim from the published disassembly:
 //
 //     SoundEngine:  lda OperMode            ; $0770 - title screen mode?

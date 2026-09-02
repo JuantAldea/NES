@@ -40,10 +40,11 @@
 // directory for the same reason.
 //
 // Wiring either in as a pass/fail oracle adds tests that are green today and
-// cannot go red, which is the failure this repo exists to prevent. If the
-// channels and the mixer get written they will be the first substantial
-// subsystem here built WITHOUT an oracle, and that should be a decision taken
-// on purpose rather than discovered afterwards.
+// cannot go red, which is the failure this repo exists to prevent.
+//
+// No ROM reaches the channels or the mixer, so nothing here is an oracle for
+// them. Mechanical mutation is what covers them - tests/run_mutants.sh, and the
+// APU section of CLAUDE.md for why a hand-written sweep is not a substitute.
 //
 // ALL EIGHT NOW PASS, and the file records how it got there rather than only
 // where it ended. It began with three passing and five pinned to their exact
@@ -81,9 +82,11 @@ namespace
 
 std::string rom_path(const std::string& name) { return std::string(NES_TEST_FILES_DIR) + "/apu_test/" + name + ".nes"; }
 
-// Measured: every ROM reports between frames 15 and 22. 600 is far above that
-// on purpose - these numbers are a FLOOR and will rise as ROMs get further, so
-// a tight budget would turn progress into a timeout.
+// Measured: every ROM reports between frames 15 and 22. Those are COMPLETION
+// figures, not floors, because all eight pass - so 600 only has to absorb the
+// emulator getting slower per frame, not a ROM getting further. The floors are
+// in fetch_apu_test.sh, which records what these reported before the APU was
+// written; those two kinds of number are not comparable.
 constexpr uint64_t kMaxFrames = 600;
 
 constexpr const char* kFetch = "run tests/test_files/fetch_apu_test.sh";

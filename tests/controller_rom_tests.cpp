@@ -42,8 +42,10 @@ struct NamedButton {
     uint8_t mask;
 };
 
-// "Select" must be tested before "Start"? No - but "A" and "B" are substrings
-// of nothing here, and the prompts are exact words, so a plain search is safe.
+// Matched by substring against the prompt row, so the order of this list would
+// matter if any name contained another. None does - and the comparison is
+// case-sensitive, which is what keeps "A" from matching the lowercase 'a' in
+// "Start". A case-insensitive search here would select the wrong button.
 constexpr NamedButton kButtons[] = {
     {"Up", Controllers::Up},       {"Down", Controllers::Down},     {"Left", Controllers::Left},
     {"Right", Controllers::Right}, {"Select", Controllers::Select}, {"Start", Controllers::Start},

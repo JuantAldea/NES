@@ -1,5 +1,6 @@
-// blargg's instr_misc rom_singles - four CPU behaviours no other oracle here
-// reaches.
+// blargg's instr_misc rom_singles - four CPU behaviours at the edges of the
+// instruction set. Only 04 is unique to this suite; see below for why the other
+// three stay anyway.
 //
 // A COMPLETENESS SWEEP, and it found nothing. All four passed on first contact,
 // which was the expected result rather than a disappointment: nestest, Klaus,

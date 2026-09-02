@@ -76,12 +76,11 @@ GTEST_TEST(frameDump, writes_a_readable_ppm_with_the_right_pixels)
 // address. Masking makes a caller bug a visible wrong colour instead of a read
 // past the end of the 64-entry table.
 //
-// THIS TEST USED TO PASS $41 AND $FF and expect $01 and $3F. That contract is
-// gone: bits 6-8 are now the emphasis field, so $41 legitimately means "index
-// $01, red emphasised" and returns an attenuated colour rather than the plain
-// one. It was rewritten rather than deleted, because the thing it guards - not
-// indexing past the table - is still worth guarding; only the choice of input
-// changed, to bits above the whole 9-bit pixel.
+// THE INPUTS HAVE TO SIT ABOVE THE WHOLE 9-BIT PIXEL, not merely above the
+// 6-bit index. $41 and $FF are the obvious probes and are wrong ones: bits 6-8
+// are the emphasis field, so $41 legitimately means "index $01, red
+// emphasised" and returns an attenuated colour, not the plain one. Only bit 9
+// and above is genuinely stray.
 GTEST_TEST(frameDump, ignores_bits_above_the_nine_bit_pixel)
 {
     EXPECT_EQ(PPU::nes_palette[0x01], nes::palette_index_to_rgb(0x0201, PPU::nes_palette, 64))

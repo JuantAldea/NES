@@ -9,8 +9,8 @@
 // timing relationship surfaces here first. A failure is a real regression, not
 // an expected gap. Do NOT weaken these assertions to make the suite green.
 //
-// Four properties these ROMs are the only tests to pin down, all of which had
-// to be right before the last seven went green:
+// Four properties these ROMs pin down, every one of which has to be right
+// before most of them report a pass at all:
 //   - /NMI is a level, not an edge. The PPU drives a line the CPU samples, so
 //     an assertion can be revoked before the CPU acts on it. That is what makes
 //     NMI suppression (06-suppression) expressible at all.
@@ -22,11 +22,10 @@
 //   - The odd-frame clock skip samples rendering state one dot before the skip
 //     rather than at it (10-even_odd_timing).
 //
-// An earlier version of this comment blamed the failures on CPU::clock applying
-// an instruction's whole memory effect on its last cycle. That was wrong - the
-// core was already cycle-stepped, one bus access per cycle. The four properties
-// above were the actual gap, which is worth remembering: a plausible diagnosis
-// that survives because nobody re-derives it is expensive.
+// What these failures are NOT is CPU::clock applying an instruction's whole
+// memory effect on its last cycle. That is the plausible diagnosis and it is
+// wrong: the core is cycle-stepped at one bus access per cycle, and has been
+// throughout. The four properties above are the gap.
 #include <cstdint>
 #include <string>
 
