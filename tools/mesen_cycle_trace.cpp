@@ -58,31 +58,33 @@
 // mode, so the window is chosen by event rather than by a number that means
 // something different on each side.
 //
-// THE dmaN LANDMARK MODE DOES NOT WORK. Measured: `--cycles ROM dma5` reaches
-// phase 2, single-steps its whole guard without ever seeing a PC frozen for 100
-// cycles, and reports that. OAM DMAs are ~178,000 cycles apart, so the window
-// should contain at least one. Either the coarse phase leaves the emulator
-// somewhere unexpected, or the stall detector does not fire the way the
-// absolute-cycle mode's does.
+// THE dmaN LANDMARK MODE WORKS, and both halves of it were wrong before. Each
+// failure is recorded at the code it belongs to; what is worth having here is
+// how they hid.
 //
-// PHASE 1 IS NOT THE SUSPECT: it completes and prints its second progress line,
-// so the failure is in phase 2 or in what phase 1 leaves behind.
+// "IT COMPLETES" IS NOT "IT WORKS". Phase 1 was cleared of suspicion because it
+// finished and printed its progress line - and it was the bug: its block test
+// compares only the endpoints of a 256-cycle window, so the ROM's init wait
+// loop at $E95C read as a halted CPU. It reported eight OAM DMAs before the
+// first frame had ended. Phase 2 then searched from cycle 10759, correctly
+// found nothing, and took the blame.
+//
+// AN INSTRUMENT CAN BE BLIND TO EXACTLY WHAT IT IS FOR. Phase 2's ring held 64
+// cycles against a freeze threshold of 100, so every entry it could ever hold
+// was already inside the DMA. It printed "64 cycles of lead-in" that were 64
+// frozen cycles - the lead-in it exists to capture was unreachable by
+// construction, and the header above it claimed the opposite.
 //
 // A STEP IS 2.01 ms, measured by differential timing - 100 vs 2000 traced
 // steps, 28.4s vs 32.2s, so ~498 steps/sec. That is the constraint on every
 // number here: the 4,000,000-step guard this carried originally would take 134
 // MINUTES to exhaust, which is why it was never observed doing so.
 //
-// The absolute-cycle mode IS verified working - it produced a correct
-// cycle-by-cycle trace at 100000 and at 2064780, instruction boundaries and
-// register changes and all. Only the landmark seek is broken.
-//
-// The guard exhausting now exits 1 with a message, so the mode fails loudly
-// instead of reporting nothing and succeeding. That makes the breakage
-// visible; it does not fix it. Still to do before trusting what it prints:
-// verify the two phases separately - print the cycle at which each of the
-// first few DMAs is detected in the coarse phase, and check the stall detector
-// against the absolute mode at a window known to contain a DMA.
+// VERIFIED END TO END: `--cycles ROM dma3 16` finds OAM DMA #3 at cycle
+// 1884544, with 192 cycles of genuine lead-in across 30 distinct PCs - the
+// seven-cycle delay loop at $E640-$E646, A decrementing by 7 a pass, which is
+// the same loop the origin note below describes. The absolute-cycle mode is
+// unchanged and still traces correctly from 100000 and 2064780.
 //
 // Usage:
 //   mesen_cycle_trace <MesenCore.so> <rom.nes> <from-cycle> [count]
@@ -211,11 +213,34 @@ int main(int argc, char** argv)
 
     if (landmarkMode) {
         // Phase 1, coarse: step in blocks and watch whether the PC moved across
-        // the block. Nothing in normal code holds the PC still for 256 cycles,
-        // so a block with an unchanged PC is inside an OAM DMA and cannot be
-        // anything else. This costs ~8000 round trips to reach the region
-        // instead of the two million single steps it would otherwise take.
+        // the block, so the region costs ~8000 round trips to reach instead of
+        // the two million single steps it would otherwise take.
+        //
+        // "NOTHING IN NORMAL CODE HOLDS THE PC STILL FOR 256 CYCLES" IS FALSE,
+        // and believing it is what broke this mode. A block test only compares
+        // the ENDPOINTS, so any loop that returns to the same address between
+        // two samples reads as frozen. MEASURED, before the confirmation below
+        // existed: eight "OAM DMAs" all at $E95C, at cycles 1031 through 10759 -
+        // gaps of 768 to 2560 where real ones are ~178,000 apart, and every one
+        // of them inside the ROM's init, before the first frame ended. Phase 2
+        // then single-stepped from there and found no DMA in 250,000 cycles,
+        // which is correct: the sweep had not started.
+        //
+        // A HALTED CPU HOLDS PC ON EVERY CYCLE, not merely at the endpoints, so
+        // a candidate is confirmed by single-stepping and requiring PC never to
+        // move. That is the rule phase 2 already applied - the two phases
+        // disagreeing is what let this sit broken.
+        //
+        // 40 is well over any loop's period and well under the ~513 cycles of an
+        // OAM DMA, so a real one passes from anywhere in its first 470 cycles.
+        // Cheap despite the single-stepping: a loop fails on the first step or
+        // two, and only a genuine DMA pays the full 40.
+        //
+        // MEASURED after: hits at $E503 from cycle 1233596, gap #2 to #3 of
+        // 177999 - the documented spacing, at frame ~41 where the ROM is
+        // actually running its sweep.
         constexpr uint32_t kProbe = 256;
+        constexpr int kConfirmCycles = 40;
         int seen = 0;
         bool inDma = false;
         std::fprintf(stderr, "seeking to OAM DMA #%d...\n", wantDma);
@@ -224,23 +249,47 @@ int main(int argc, char** argv)
             const uint16_t before = cpu.PC;
             stepCycles(kProbe);
             GetCpuState(cpu, kCpuTypeNes);
-            const bool nowInDma = (cpu.PC == before);
+
+            bool nowInDma = false;
+            if (cpu.PC == before) {
+                const uint16_t held = cpu.PC;
+                nowInDma = true;
+                for (int i = 0; i < kConfirmCycles; ++i) {
+                    stepCycles(1);
+                    GetCpuState(cpu, kCpuTypeNes);
+                    if (cpu.PC != held) {
+                        nowInDma = false;
+                        break;
+                    }
+                }
+            }
+
             if (nowInDma && !inDma) {
                 ++seen;
             }
             inDma = nowInDma;
         }
 
-        // Phase 2, exact: single-step into the next DMA, keeping the last 64
-        // cycles so the window BEFORE it is available. The DMC fetch being
-        // hunted happens shortly before the transfer starts, so a trace that
-        // began at the transfer would miss the entire point.
+        // Phase 2, exact: single-step into the next DMA, keeping a ring so the
+        // window BEFORE it is available. The DMC fetch being hunted happens
+        // shortly before the transfer starts, so a trace that began at the
+        // transfer would miss the entire point.
+        //
+        // THE RING MUST BE LONGER THAN THE FREEZE THRESHOLD, and at 64 against a
+        // threshold of 100 it was not - so every entry it held was already
+        // inside the DMA and the lead-in it exists to capture could not appear.
+        // MEASURED: dma3 printed "64 cycles of lead-in" that were 64 consecutive
+        // frozen cycles at $E503. The instrument was structurally blind to the
+        // one thing it was built to show.
+        //
+        // 192 leaves ~92 cycles genuinely before the halt, which covers the
+        // 3-or-4 cycle DMC sequence and the instruction that provoked it.
         struct Rec {
             uint64_t cycle;
             uint16_t pc;
             uint8_t a, x, y, sp, ps;
         };
-        constexpr size_t kRing = 64;
+        constexpr size_t kRing = 192;
         std::vector<Rec> ring;
         ring.reserve(kRing);
         size_t head = 0;
