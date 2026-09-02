@@ -1,7 +1,5 @@
 #include "../include/cpu.h"
 
-#include <iostream>
-
 #include "../include/instruction.h"
 
 uint8_t low_byte(const uint16_t twobytes) { return static_cast<uint8_t>(twobytes); }
@@ -1799,22 +1797,4 @@ void CPU::AXS()
     set_flag(FLAGS::C, lhs >= rhs);
     set_flag(FLAGS::Z, result == 0);
     set_flag(FLAGS::N, result & 0x80);
-}
-
-std::ostream& operator<<(std::ostream& os, const CPU& cpu)
-{
-    os << std::hex << "A:" << static_cast<unsigned>(cpu.registers.A) << " X:" << static_cast<unsigned>(cpu.registers.X)
-       << " Y:" << static_cast<unsigned>(cpu.registers.Y) << " P:" << static_cast<unsigned>(cpu.registers.P)
-       << " PC:" << cpu.registers.PC << " SP:" << static_cast<unsigned>(cpu.registers.SP) << std::endl;
-
-    os << "C:" << (cpu.get_flag(CPU::FLAGS::C) ? "x" : "o") << " Z:" << (cpu.get_flag(CPU::FLAGS::Z) ? "x" : "o")
-       << " I:" << (cpu.get_flag(CPU::FLAGS::I) ? "x" : "o") << " D:" << (cpu.get_flag(CPU::FLAGS::D) ? "x" : "o")
-       << " B:" << (cpu.get_flag(CPU::FLAGS::B) ? "x" : "o") << " U:" << (cpu.get_flag(CPU::FLAGS::U) ? "x" : "o")
-       << " V:" << (cpu.get_flag(CPU::FLAGS::V) ? "x" : "o") << " N:" << (cpu.get_flag(CPU::FLAGS::N) ? "x" : "o")
-       << std::endl;
-
-    os << "Instruction : " << InstructionSet::Table[cpu.read(cpu.registers.PC)].name
-       << " Mid-instruction: " << (cpu.cycles_left != 0 ? "yes" : "no") << std::endl;
-
-    return os;
 }

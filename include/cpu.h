@@ -11,7 +11,6 @@ http://6502.org/tutorials/interrupts.html
 #pragma once
 
 #include <functional>
-#include <ostream>
 #include <valarray>
 
 #include "addressing_types.h"
@@ -117,8 +116,6 @@ public:
     bool page_crossed = false;
 
     uint64_t total_cycles = 0;
-
-    friend std::ostream& operator<<(std::ostream& os, const CPU& cpu);
 
 public:
     // Advances the CPU by exactly one cycle, performing exactly one bus access.
