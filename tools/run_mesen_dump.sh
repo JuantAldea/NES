@@ -22,7 +22,7 @@
 #   make core -j"$(nproc)"          # InteropDLL only; no .NET, no UI
 #
 # Usage:
-#   tools/run_mesen_dump.sh [--screen] [ROM] [SECONDS]
+#   tools/run_mesen_dump.sh [--screen|--cycles] [ROM] [SECONDS]
 #
 #   default    tools/mesen_event_dump.cpp     - per-frame DMA event sweep
 #              LOSSY: it samples frames on a wall clock and drops rows. Prefer
@@ -55,10 +55,14 @@ fi
 
 ROM=${1:-$REPO/tests/test_files/dmc_dma/sprdma_and_dmc_dma.nes}
 
-# 20s, because the sweep is 16 rows and a SHORT TABLE LOOKS LIKE A COMPLETE ONE.
-# A 10s run returned 13 rows with no indication that three were missing, and
-# those three were compared against our full 16 as though they lined up. The
-# tool now prints *** INCOMPLETE below 16; do not read a table that says so.
+# The sweep is 16 rows and A SHORT TABLE LOOKS LIKE A COMPLETE ONE - a run once
+# returned 13 with no indication that three were missing, and those three were
+# compared against our full 16 as though they lined up. The tool now prints
+# *** INCOMPLETE below 16; do not read a table that says so.
+#
+# 20s is a default, NOT a fix: measured, 20s caught 12 rows and 60s caught 13,
+# so the limit is the sampling rate and not the duration. Use --cycles for
+# anything that has to be complete.
 SECONDS_TO_RUN=${2:-20}
 
 # --cycles reuses the same two positional slots for a start cycle and a count.

@@ -58,24 +58,31 @@
 // mode, so the window is chosen by event rather than by a number that means
 // something different on each side.
 //
-// THE dmaN LANDMARK MODE DOES NOT WORK YET. Measured: `--cycles ROM dma5` runs
-// its whole 4,000,000-cycle guard without ever seeing a PC frozen for 100
-// cycles, and exits 0 having printed nothing. OAM DMAs are ~178,000 cycles
-// apart, so ~22 should have been inside that window. Either the coarse counter
-// leaves the emulator somewhere unexpected, or the stall detector does not fire
-// the way the absolute-cycle mode's does.
+// THE dmaN LANDMARK MODE DOES NOT WORK. Measured: `--cycles ROM dma5` reaches
+// phase 2, single-steps its whole guard without ever seeing a PC frozen for 100
+// cycles, and reports that. OAM DMAs are ~178,000 cycles apart, so the window
+// should contain at least one. Either the coarse phase leaves the emulator
+// somewhere unexpected, or the stall detector does not fire the way the
+// absolute-cycle mode's does.
+//
+// PHASE 1 IS NOT THE SUSPECT: it completes and prints its second progress line,
+// so the failure is in phase 2 or in what phase 1 leaves behind.
+//
+// A STEP IS 2.01 ms, measured by differential timing - 100 vs 2000 traced
+// steps, 28.4s vs 32.2s, so ~498 steps/sec. That is the constraint on every
+// number here: the 4,000,000-step guard this carried originally would take 134
+// MINUTES to exhaust, which is why it was never observed doing so.
 //
 // The absolute-cycle mode IS verified working - it produced a correct
 // cycle-by-cycle trace at 100000 and at 2064780, instruction boundaries and
 // register changes and all. Only the landmark seek is broken.
 //
-// Two things to fix before trusting anything it prints:
-//   1. the guard exhausting MUST be an error, not a silent return 0. A tool
-//      that reports nothing and succeeds is the exact failure this file's
-//      header was written to warn about.
-//   2. verify the two phases separately - print the cycle at which each of the
-//      first few DMAs is detected in the coarse phase, and check the stall
-//      detector against the absolute mode at a window known to contain a DMA.
+// The guard exhausting now exits 1 with a message, so the mode fails loudly
+// instead of reporting nothing and succeeding. That makes the breakage
+// visible; it does not fix it. Still to do before trusting what it prints:
+// verify the two phases separately - print the cycle at which each of the
+// first few DMAs is detected in the coarse phase, and check the stall detector
+// against the absolute mode at a window known to contain a DMA.
 //
 // Usage:
 //   mesen_cycle_trace <MesenCore.so> <rom.nes> <from-cycle> [count]
@@ -242,7 +249,17 @@ int main(int argc, char** argv)
         bool first = true;
 
         std::fprintf(stderr, "single-stepping to OAM DMA #%d...\n", wantDma);
-        for (uint64_t guard = 0; guard < 4000000; ++guard) {
+        // MEASURED: one Step()+IsPaused() round trip costs 2.01 ms (differential
+        // timing, 100 vs 2000 traced steps: 28.4s vs 32.2s), so ~498 steps/sec.
+        // The 4,000,000 that stood here is 134 MINUTES - long enough that nobody
+        // reaches it, which makes it a hang rather than a guard.
+        //
+        // Sized from the spacing instead: OAM DMAs are ~178,000 CPU cycles apart,
+        // so one full gap plus margin is all this phase can need. 250,000 steps
+        // is ~8 minutes worst case and terminates with a verdict either way.
+        bool found = false;
+        constexpr uint64_t kGuard = 250000;
+        for (uint64_t guard = 0; guard < kGuard; ++guard) {
             GetCpuState(cpu, kCpuTypeNes);
             const Rec r{cpu.CycleCount, cpu.PC, cpu.A, cpu.X, cpu.Y, cpu.SP, cpu.PS};
             if (ring.size() < kRing) {
@@ -256,6 +273,7 @@ int main(int argc, char** argv)
             first = false;
 
             if (frozen >= 100) {
+                found = true;
                 std::printf("OAM DMA #%d found; %zu cycles of lead-in, then the transfer:\n", wantDma, ring.size());
                 for (size_t i = 0; i < ring.size(); ++i) {
                     const Rec& e = ring[(head + i) % ring.size()];
@@ -268,6 +286,22 @@ int main(int argc, char** argv)
         }
 
         Stop();
+
+        // Exhausting the guard is a FAILURE, not an empty result. OAM DMAs are
+        // ~178,000 cycles apart, so a window this size should contain ~22 of
+        // them; finding none means the seek or the detector is wrong, and this
+        // tool exists because its predecessor reported nothing and succeeded.
+        if (!found) {
+            std::fprintf(stderr,
+                         "no OAM DMA found in %llu cycles after the coarse seek to #%d.\n"
+                         "The stall detector never saw a PC frozen for 100 cycles. OAM DMAs\n"
+                         "are ~178,000 cycles apart, so a window this size should contain at\n"
+                         "least one. Do not read this as 'the ROM performs no DMA' - the\n"
+                         "absolute-cycle mode is verified working, so compare against it at a\n"
+                         "window known to contain one.\n",
+                         static_cast<unsigned long long>(kGuard), wantDma);
+            return 1;
+        }
         return 0;
     }
 
