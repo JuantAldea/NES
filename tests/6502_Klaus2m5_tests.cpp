@@ -84,7 +84,7 @@ Klaus2m5Result klaus2m5_test(Klaus2m5Suite suite)
     return {};
 }
 
-GTEST_TEST(testCPU, 6502_Klaus2m5_funtional_test)
+GTEST_TEST(testCPU, 6502_Klaus2m5_functional_test)
 {
     Klaus2m5Suite suite{0x0000, 0x336d, "6502_functional_test.bin"};
     EXPECT_EQ(suite.target_trap, klaus2m5_test(suite).trap_pc);
