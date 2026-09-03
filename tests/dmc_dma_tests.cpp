@@ -15,6 +15,52 @@
 // sweep offset. Only row 05, the transition, is sensitive to it - an
 // implementation can be wrong throughout and match everywhere but the boundary.
 //
+// WHAT THE SWEEP VARIES, from blargg's own source (sprdma.s and dma_timing.inc in
+// nes-test-roms). The row index n is split across delay_a_25_clocks(255-n) before
+// the timed block and delay_a_25_clocks(n) after, so the measured span is fixed
+// while the DMC's free-running fetch - period 3424 = 428*8 - slides 25 CPU cycles
+// per row against the `sta $4014` that starts the OAM DMA. 25 is ODD, which is the
+// entire reason consecutive rows alternate: every row flips get/put parity.
+//
+// So the reference table is two facts, not sixteen: +1 on odd rows, and one -2
+// regime step. We reproduce both regimes' values AND the parity; only the step's
+// position differs, ours at 05/06 against the reference's 04/05.
+//
+// NINTENDULATOR SPLITS THE ARRIVAL THREE WAYS AND WE SPLIT IT TWO. 0.980 - named by
+// Fiskbit (nesdev t=14319) as the only emulator then getting DMC halt/parity right -
+// branches in HandleDMA (src/CPU.cpp) on the DMC arriving before the sprite DMA, at
+// exactly its start (DoPCM=1, the fetch goes first), or after its alignment read
+// (DoPCM=2, the fetch waits for a sprite write). bus.cpp has
+// `ppu.dma_in_progress() ? Align : Halt`.
+//
+//   ROW 05 IS NOT THE "AT EXACTLY THE START" ARRIVAL. Logging the request against
+//   the OAM DMA start per row gives a delta walking +1 a row, and at row 05 the
+//   request is 5 cycles BEFORE the start. The -2 matching a halt+dummy pair is
+//   arithmetic that fits a wrong mechanism - and a two-cycle gap in a machine full
+//   of two-cycle quantities, so fitting it is nearly no evidence at all.
+//
+// MEASURED, logging the fetch cycle relative to the OAM DMA start (rows 00-0F): the
+// fetch lands at -6 -5 -4 -3 -2 for rows 00-04, at -1 for row 05, and inside the
+// transfer from 06 on. ROW 05 MISSES THE COLLISION BY ONE CYCLE. One cycle later it
+// lands on the OAM DMA's first cycle, where "DMC DMA wins", putting row 05 in the
+// inside regime at 526; row 04 moves -2 to -1 and stays outside; every other row is
+// far from its boundary. So a uniform one-cycle shift moves row 05 ALONE - which is
+// what lets such a shift survive fifteen matching rows, not what makes it unlikely.
+//
+// THE DEFERRAL ASKS ABOUT THE WRONG CYCLE. bus.cpp tests cpu_wrote_this_cycle at the
+// end of cycle N - "was the cycle that just ended a write". Mesen reaches
+// ProcessPendingDma only from NesCpu::MemoryRead and Nintendulator only from
+// MemGetCPU, so neither can halt anywhere but on a read: their question is "is the
+// cycle about to run a read". A write at N followed by a read at N+1 halts at N+1
+// for both and at N+2 for us. REAL, BUT NOT ROW 05's CAUSE - that trace shows the
+// request accepted with no deferral at all.
+//
+// MESEN'S SIDE HAS SINCE BEEN MEASURED, once the lockstep harness was made
+// symmetric - see the retraction further down. The fetches coincide and the two
+// cycles are spent after them, so nothing above about WHERE our fetch lands is the
+// defect; the "misses the collision by one cycle" reading of it was another
+// mechanism that fit.
+//
 // --- the hardware model, from documentation ------------------------------
 //
 // The DMC's memory reader halts the CPU for a halt cycle, an always-present
@@ -150,28 +196,116 @@
 //
 // Everything below is a within-trace comparison and needs no alignment.
 //
-// THE TWO CPUs ARE CYCLE-IDENTICAL INTO THE STORE. Sixteen cycles from $E3AE to
-// $E503, with $E3AF and $E3B0 each held 4, on both sides:
+// MEASURED IN LOCKSTEP, which is the only way this was ever going to be settled.
+// tools/lockstep_compare.cpp links this emulator's static libraries AND Mesen's
+// InteropDLL into one process, aligns them on CONTENT - a PC value plus a
+// matching register file - and then steps both one CPU cycle at a time. There is
+// no offset arithmetic anywhere in it.
 //
-//   ours    $E3AE 2064776 ... $E503 2064792
-//   Mesen   $E3AE 2244095 ... $E503 2244111
+// At row 05, aligned on $E4FE, they agree for 523 cycles and then:
 //
-// THEY DIVERGE AT $E503, WHICH IS THE STORE. We insert a 4-cycle DMC halt there
-// and then start the OAM DMA at 2064797, so the DMC is entirely OUTSIDE the
-// transfer: 528. Mesen has no DMC halt at $E503 at all - it goes straight into
-// the long freeze, so its DMC lands INSIDE the transfer: 526.
+//   our DMC get   2064795            Mesen's is ONE CYCLE LATER
+//   our resume    2065312            Mesen resumes TWO CYCLES EARLIER
+//   get->resume   ours 517           Mesen 514, which is 1 (the store's
+//                                    write) + 513 (its OAM DMA)
+//   our OAM DMA   514 cycles, and remaining_dma_cycles was requested as 514
 //
-// SO THE DMC FIRES EARLY RELATIVE TO THE CPU, and it is a PHASE error, not a
-// rate one - the 3424-cycle byte period is measured exact above. One cycle the
-// other way and the order inverts: the store completes, the OAM DMA begins, and
-// the halt lands inside it. That is the whole of the -5 -> +2 discontinuity and
-// the whole of 528 against 526.
+// The two-cycle resume difference is exactly the ROM's 528 against 526.
 //
-// WHAT IS LEFT IS THE OUTPUT UNIT, not the DMA. A reload is requested the
-// instant the sample buffer empties, so the reload's timing is set by when the
-// output unit empties it - and every part of the DMA machinery downstream of
-// that request is now measured correct. That is a different subsystem from
-// anything eliminated above, and it is where the next attempt should start.
+// A TRACE CANNOT TELL A DMC STALL FROM AN OAM DMA, and an earlier version of
+// this section concluded from separate traces that "Mesen has no DMC halt at
+// $E503 at all". That is withdrawn: PC is frozen during ANY halt, so both look
+// identical from outside. Mesen's DMC fetch is visible only through
+// ApuDmcState::BytesRemaining, which is what the lockstep reads.
+//
+// THE OBVIOUS FIX WAS TESTED AND IS WRONG. If our DMC sequence ends a cycle
+// early, lengthening it by one should move the store's write onto the other
+// parity, give a 513-cycle OAM DMA, and step row 05 to 526 while leaving the
+// other fifteen alone - the fetch script's own note says only row 05 is
+// sensitive to the sweep offset.
+//
+// Measured, by inserting exactly one cycle before the halt: EVERY ROW MOVED, by
+// +2 and +3, and the crossing stayed at 05/06. Baseline 527/528 stepping to
+// 525/526 became 529/530 stepping to 528/529.
+//
+// That is the same signature the fetch script already records for a different
+// edit - "removing the get/put gate moved ALL SIXTEEN rows by +1 and left row
+// 05's crossing exactly where it was" - so the class is now confirmed twice from
+// two directions. THE CROSSING'S POSITION IS NOT SET BY THE DMC'S DURATION.
+// Changing it moves the whole table and leaves the boundary alone.
+//
+// THE "+1 PHASE OFFSET" WAS THE INSTRUMENT, AND IS RETRACTED. A table here read
+//
+//   row  regime      our get   mesen   delta
+//   04   uncollided     +7       +8     +1
+//   05   uncollided     +8       +9     +1
+//   06   collided       +9      +10     +1
+//
+// and concluded Mesen's fetch lands one cycle later than ours, constantly. But
+// "our get" there was DERIVED as the DMA start plus 3, while Mesen's was MEASURED
+// from BytesRemaining - two different events, so the constant +1 was the length of
+// our halt sequence's derivation and not a disagreement. A constant offset is
+// evidence about the instrument until proven otherwise, and this one never was.
+//
+// WITH BOTH SIDES READING THEIR OWN FETCH CYCLE, THE FETCHES COINCIDE. At row 05
+// ours is 2064796 and Mesen's 2065894, both landmark+9. Cross-checked against the
+// NES_DMA_TRACE instrumentation, which independently puts our fetch at 2064796 -
+// two instruments, one number.
+//
+//   row 04   fetch -> resume  ours 516  mesen 516    frozen span  515 / 515
+//   row 05   fetch -> resume  ours 516  mesen 514    frozen span  520 / 518
+//
+// The two agree exactly on the row that prints correctly and differ by exactly 2 on
+// the row that does not, with the DMC read on the same cycle in both. SO THE TWO
+// CYCLES ARE SPENT AFTER THE FETCH, and DMC timing is not where this defect lives.
+// Mesen shortens row 05 by 2 against its own row 04; we run both at 516.
+//
+//   WHERE THE TWO CYCLES GO, located by OAM TRANSFER PROGRESS. PC and the register
+//   file are frozen for the whole transfer, so they can only differ at the resume
+//   and cannot say where the difference accrued. The OAM address advances once per
+//   byte written, on both sides, and comparing that gives, relative to the
+//   alignment cycle:
+//
+//     row 04   OAM progress never differs anywhere in the window
+//     row 05   first differs at +11: ours $00, mesen $01
+//
+//   Our fetch is at +9 and our OAM DMA begins at +10, so at +10 we are spending a
+//   halt cycle and at +11 an alignment cycle, while MESEN HAS ALREADY WRITTEN ITS
+//   FIRST SPRITE BYTE. Our row 05 OAM DMA is 514 = halt + align + 512; Mesen spends
+//   neither, because the DMC DMA that ended at +9 is adjacent to it and already
+//   stopped the CPU and aligned the bus. At row 04 there is a cycle between the two
+//   (fetch 1886948, OAM 1886950), the CPU comes back, the OAM DMA pays its own halt
+//   at 513, and the two agree - which is what makes row 04 a control rather than
+//   just another matching row.
+//
+// AND OUR OAM LENGTH IS NOT INDEPENDENTLY WRONG. It alternates as the parity
+// rule says it should - 514 at row 03, 513 at row 04, 514 at row 05 - and rows
+// 03 and 04 print 528 and 527, matching the reference exactly. Only row 05 is
+// wrong.
+//
+// TWO FLAWS IN THE HARNESS, because its numbers should not be trusted blind:
+//
+//   The halted PC was hardcoded to $E503, which is row 05's store. Other rows
+//   halt elsewhere - $E501 at row 03, $E502 at row 04 - so the resume test fired
+//   immediately and reported a zero-length span. Fixed by taking the PC from
+//   where the halt actually begins.
+//
+//   The resume test still compares Mesen's PC against OUR halted PC, and the two
+//   are not at the same instruction once they diverge. Mesen's "resumes" figures
+//   are therefore only meaningful where both happen to halt at the same address,
+//   which is rows 05 and 06. Row 03's +49 is the same class of problem on the
+//   fetch side: BytesRemaining changes for reasons other than the fetch being
+//   looked for, and at row 03 it caught one of them.
+//
+// WHY THIS DOES NOT CONTRADICT THE PROBE ABOVE. That probe LENGTHENED the stall;
+// this offset is about WHEN the fetch lands. They are different quantities, and
+// only the second moves phase - which is why lengthening moved every row and
+// left the crossing alone.
+//
+// So the measurements above are real and none of them is the cause: they are all
+// downstream of whatever decides which iteration the crossing falls on.
+// Anything that only lengthens or shortens the stall is answering the wrong
+// question, and this file now has two experiments saying so.
 //
 // --- traps ---------------------------------------------------------------
 //
