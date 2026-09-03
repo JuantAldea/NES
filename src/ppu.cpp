@@ -1226,7 +1226,8 @@ void PPU::ppu_bus_write(const uint16_t addr, const uint8_t data)
 
 // 513 cycles, or 514 when the write to $4014 landed on an odd CPU cycle: the
 // transfer is 256 read/write pairs plus a halt cycle, and needs one more to
-// realign when it would otherwise start on the wrong phase.
+// realign when it would otherwise start on the wrong phase. 512 in the one case
+// below, where a DMC DMA has already paid for both.
 //
 // The parity is the CPU's, not the PPU's. Taking it from the dot counter made
 // it effectively arbitrary.
@@ -1237,9 +1238,32 @@ void PPU::ppu_bus_write(const uint16_t addr, const uint8_t data)
 // cycles behind the real bus and every later DMA picks the wrong phase. That
 // is invisible in a test that runs one DMA from reset and fatal in a ROM that
 // runs several.
+// A DMC DMA THAT ENDED ON THE PREVIOUS CYCLE PAYS FOR BOTH. The halt exists to
+// stop the CPU and the alignment to reach a get cycle, and a DMC DMA immediately
+// before this has just done both - so the transfer starts straight away and costs
+// 512. Neither reference emulator charges them here: Mesen and Nintendulator both
+// run the two DMAs in ONE loop, where the cycles are spent once by whichever unit
+// needs them first.
+//
+// MEASURED in lockstep against Mesen at the row that needs it, by comparing OAM
+// transfer progress rather than PC - the CPU is frozen throughout, so PC can only
+// differ at the resume and cannot say where the difference accrued. At row 05 of
+// sprdma_and_dmc_dma the two first differ 11 cycles past the landmark, ours $00
+// against Mesen's $01: our fetch is at +9 and this is entered at +10, so we spent
+// +10 halting and +11 aligning while Mesen had already written a sprite byte.
+// Row 04 is the control - a cycle separates its fetch from this call, the CPU does
+// come back, the halt is genuinely needed, and OAM progress never differs there.
+//
+// AND 512 IS A CONSTANT HERE WHERE THE LENGTH ABOVE IS PARITY-DEPENDENT, which is
+// not an oversight: the DMC's read only ever happens on a get, so the cycle after
+// it is always a put and there is nothing left to decide. Measured rather than
+// assumed - across all sixteen rows of sprdma_and_dmc_dma the fetch lands on an
+// even Bus::cpu_cycles, 16 of 16, so no row reaches this line on the other phase.
 void PPU::request_OAM_DMA()
 {
-    remaining_dma_cycles = 513 + (bus->cpu_cycles % 2);
+    const bool dmc_just_finished =
+        bus->dmc_fetch_cycle != Bus::kNoDmcFetch && bus->cpu_cycles == bus->dmc_fetch_cycle + 1;
+    remaining_dma_cycles = dmc_just_finished ? 512 : static_cast<uint16_t>(513 + (bus->cpu_cycles % 2));
     dma_current_memory_source_addr = registers.OAMDMA << 8;
 }
 

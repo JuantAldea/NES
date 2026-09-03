@@ -396,6 +396,7 @@ bool Bus::clock()
         // The one cycle of the sequence that touches memory. Samples live in
         // PRG-ROM, where a read has no side effect.
         apu.dmc_deliver_sample_byte(read(apu.dmc_sample_address()));
+        dmc_fetch_cycle = cpu_cycles;
     } else if (cpu_tick && ppu.dma_in_progress() && !dmc_dma_holds_the_bus()) {
         ppu.perform_OAM_DMA_cycle();
     }

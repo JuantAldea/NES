@@ -57,6 +57,14 @@ public:
     // see the comment in Bus::clock.
     bool cpu_wrote_this_cycle = false;
 
+    // The cycle the DMC's read happened on, or a sentinel meaning "no fetch yet".
+    // An OAM DMA requested on the very next cycle skips its halt and alignment,
+    // because the DMC DMA has already stopped the CPU and left the bus on a get -
+    // see PPU::request_OAM_DMA. Zero would be a real cycle number, and the first
+    // DMA of a run is exactly where an off-by-one would hide.
+    static constexpr uint64_t kNoDmcFetch = UINT64_MAX;
+    uint64_t dmc_fetch_cycle = kNoDmcFetch;
+
     // The cartridge currently inserted, and whether anything has written to its
     // work RAM since it was loaded.
     //

@@ -472,12 +472,19 @@ TEST_P(SprdmaAndDmcDma, is_blocked_on_the_cpu_stall)
            "  pass. Full screen:\n"
         << screen;
 
-    EXPECT_TRUE(screen_says(screen, "Failed"))
-        << name
-        << " now PASSES. The DMC's CPU stall must be implemented: delete this pin\n"
-           "  and assert the pass instead. Full screen:\n"
-        << screen;
-
+    // ONE OF THESE PASSES AND ONE DOES NOT, and both are asserted exactly - the
+    // pattern this repository already uses for opcode $AB in instr_test_roms.cpp
+    // and for 6-MMC3_alt. sprdma_and_dmc_dma passes since the OAM DMA stopped
+    // re-paying a halt and alignment a DMC DMA on the previous cycle had already
+    // paid; that is worth more than a table match, because the ROM self-checks with
+    // check_crc $FBADA48D, a value blargg computed on hardware. An emulator
+    // producing a WRONG table that lands on the right 32-bit CRC is a 2^-32
+    // coincidence, so the pass means these sixteen values ARE the hardware's.
+    //
+    // sprdma_and_dmc_dma_512 still fails and stays pinned. Do not read its pin as
+    // the same kind of statement: it is what we currently produce, not what
+    // hardware does.
+    //
     // The failure is pinned to its CAUSE, not just its verdict: every row of the
     // table is asserted at the value this emulator currently produces.
     //
@@ -496,10 +503,10 @@ TEST_P(SprdmaAndDmcDma, is_blocked_on_the_cpu_stall)
     // fail on exactly its subtest. Neither is "ignored"; both are nailed down so
     // that any MOVEMENT surfaces.
     //
-    // So these tables are the divergence, recorded. Hardware would give 512 or
-    // 513 with no DMC interference and a correct stall gives documented longer
-    // figures; this gives neither. Any change to the DMC's timing shifts a row
-    // and fails here with the row named, which is the signal worth having.
+    // So the _512 table is the divergence, recorded. Any change to the DMC's timing
+    // shifts a row and fails here with the row named, which is the signal worth
+    // having - and the same assertion on the ROM that now passes is what stops a
+    // later change quietly walking it back off the hardware values.
     //
     // Each row is parsed, rather than searching the whole screen for "512" and
     // "513" as an earlier version did. That search passed on any screen
@@ -507,12 +514,21 @@ TEST_P(SprdmaAndDmcDma, is_blocked_on_the_cpu_stall)
     // and 513 satisfied it - and let a wrong stall through undetected in an
     // adversarial review.
     //
-    // MEASURED 2026-08-29. Delete the whole pin when the stall is implemented
-    // properly, and assert the pass instead; do not "update" these numbers to
-    // make a red run green without understanding which row moved and why.
-    static const std::map<std::string, std::vector<int>> kMeasured = {
-        {"sprdma_and_dmc_dma", {527, 528, 527, 528, 527, 528, 525, 526, 525, 526, 525, 526, 525, 526, 525, 526}},
-        {"sprdma_and_dmc_dma_512", {525, 526, 525, 526, 525, 526, 525, 526, 527, 528, 527, 528, 527, 528, 527, 528}},
+    // Do not "update" these numbers to make a red run green without understanding
+    // which row moved and why. The one row that has ever moved here took four
+    // measured attempts and three wrong mechanisms to move correctly.
+    struct Expectation {
+        bool passes;  // whether the ROM's own CRC check succeeds
+        std::vector<int> table;
+    };
+    static const std::map<std::string, Expectation> kExpected = {
+        // HARDWARE'S OWN VALUES, via check_crc $FBADA48D. Verified 2026-09-03.
+        {"sprdma_and_dmc_dma",
+         {true, {527, 528, 527, 528, 527, 526, 525, 526, 525, 526, 525, 526, 525, 526, 525, 526}}},
+        // OURS, not hardware's - a recorded divergence. MEASURED 2026-08-29,
+        // unchanged by the row 05 fix.
+        {"sprdma_and_dmc_dma_512",
+         {false, {525, 526, 525, 526, 525, 526, 525, 526, 527, 528, 527, 528, 527, 528, 527, 528}}},
     };
 
     const std::vector<int> lengths = table_lengths(screen);
@@ -520,17 +536,26 @@ TEST_P(SprdmaAndDmcDma, is_blocked_on_the_cpu_stall)
                                    << ". Full screen:\n"
                                    << screen;
 
-    const auto expected = kMeasured.find(name);
-    ASSERT_NE(kMeasured.end(), expected) << name << " has no recorded table; add one rather than skipping the check";
+    const auto expected = kExpected.find(name);
+    ASSERT_NE(kExpected.end(), expected) << name << " has no recorded table; add one rather than skipping the check";
+
+    EXPECT_EQ(expected->second.passes, screen_says(screen, "Passed"))
+        << name << (expected->second.passes ? " no longer passes." : " now passes.")
+        << "\n  The verdict is asserted in BOTH directions on purpose: this ROM's CRC is a\n"
+           "  hardware value, so losing a pass here is a regression against hardware and\n"
+           "  gaining one means the recorded divergence below is stale. Full screen:\n"
+        << screen;
 
     for (size_t row = 0; row < lengths.size(); ++row) {
-        EXPECT_EQ(expected->second[row], lengths[row])
-            << name << " row " << row << " reads " << lengths[row] << ", not the recorded " << expected->second[row]
-            << ".\n"
-               "  This is the parked DMC/OAM collision divergence, and a row moving means the\n"
-               "  DMC's timing changed. Hardware gives 512 or 513 with no interference; if the\n"
-               "  stall is now correct, delete this pin and assert the ROM's pass instead.\n"
-               "  Full screen:\n"
+        EXPECT_EQ(expected->second.table[row], lengths[row])
+            << name << " row " << row << " reads " << lengths[row] << ", not the expected "
+            << expected->second.table[row] << ".\n"
+            << (expected->second.passes
+                    ? "  These are hardware's values, confirmed by the ROM's own CRC - a row moving\n"
+                      "  here is a regression in the DMC/OAM collision, not a divergence to record.\n"
+                    : "  This is the remaining DMC/OAM collision divergence, and a row moving means\n"
+                      "  the DMC's timing changed. Check it against Mesen before re-pinning it.\n")
+            << "  Full screen:\n"
             << screen;
     }
 }
