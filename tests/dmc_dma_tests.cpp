@@ -88,6 +88,21 @@
 //
 // Each of these was measured, not argued. Redoing one is a day.
 //
+//   the write-cycle rule   whichever way it resolves, it cannot move row 05.
+//                          Instrumented every DMC acceptance over 200 frames:
+//                          the write gate fires ONCE in 349, and at none of the
+//                          four boundary rows. Worth knowing before spending a
+//                          day on the deferred-versus-cheaper question, which
+//                          two files here answered oppositely.
+//   the collision latch    Bus::advance_dmc_dma samples ppu.dma_in_progress()
+//                          once, at the Idle transition, and never revisits it -
+//                          so an OAM DMA starting DURING the halt window would
+//                          be charged as standalone. It does not happen: at row
+//                          05 the DMC ends at cycle 2064796 and the OAM DMA
+//                          starts at 2064797. They miss by one.
+//   load/reload at the     all four boundary acceptances are reloads at cost 4,
+//   boundary               uniformly. A misclassification would have supplied
+//                          exactly the missing cycle, and it is not there.
 //   fetch count            counted end to end from the $4010 = $00 that opens
 //                          the timed section: exactly 1 per iteration, walking
 //                          from before the OAM DMA to inside it at iteration 6.
@@ -117,6 +132,46 @@
 // EXISTS TO PREVENT. It cannot distinguish a lucky number from a correct one.
 // The 4-cycle version is the one the documentation and the shape both support;
 // what is left needs an explanation, not a fitted parameter.
+//
+// --- where row 05 actually diverges --------------------------------------
+//
+// Traced on both emulators and aligned on the INSTRUCTION STREAM. Never on cycle
+// numbers: Mesen's counter has no fixed origin, because the emulator is already
+// running on its own thread when the debugger attaches and the first Step pauses
+// it wherever the scheduler left it. Measured across three identical runs: 27279,
+// 27279, 14914.
+//
+// So an offset between the two counters measures the scheduler. Comparing two
+// separately-captured traces by cycle number produced a "34182-cycle drift"
+// between sweep rows and an argument from offset parity that this emulator's
+// get/put labelling is inverted; both were artefacts of two processes starting
+// at different random points, and both are withdrawn. See the origin note in
+// tools/mesen_cycle_trace.cpp.
+//
+// Everything below is a within-trace comparison and needs no alignment.
+//
+// THE TWO CPUs ARE CYCLE-IDENTICAL INTO THE STORE. Sixteen cycles from $E3AE to
+// $E503, with $E3AF and $E3B0 each held 4, on both sides:
+//
+//   ours    $E3AE 2064776 ... $E503 2064792
+//   Mesen   $E3AE 2244095 ... $E503 2244111
+//
+// THEY DIVERGE AT $E503, WHICH IS THE STORE. We insert a 4-cycle DMC halt there
+// and then start the OAM DMA at 2064797, so the DMC is entirely OUTSIDE the
+// transfer: 528. Mesen has no DMC halt at $E503 at all - it goes straight into
+// the long freeze, so its DMC lands INSIDE the transfer: 526.
+//
+// SO THE DMC FIRES EARLY RELATIVE TO THE CPU, and it is a PHASE error, not a
+// rate one - the 3424-cycle byte period is measured exact above. One cycle the
+// other way and the order inverts: the store completes, the OAM DMA begins, and
+// the halt lands inside it. That is the whole of the -5 -> +2 discontinuity and
+// the whole of 528 against 526.
+//
+// WHAT IS LEFT IS THE OUTPUT UNIT, not the DMA. A reload is requested the
+// instant the sample buffer empties, so the reload's timing is set by when the
+// output unit empties it - and every part of the DMA machinery downstream of
+// that request is now measured correct. That is a different subsystem from
+// anything eliminated above, and it is where the next attempt should start.
 //
 // --- traps ---------------------------------------------------------------
 //

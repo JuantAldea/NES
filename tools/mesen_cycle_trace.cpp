@@ -44,12 +44,36 @@
 // coarse seek therefore uses the SAME CpuCycleStep with a large count, so the
 // position is exact rather than approximate; nothing here is frame-scoped.
 //
-// THE CYCLE COUNTERS DO NOT SHARE AN ORIGIN. MEASURED, not assumed: our own
-// trace has the row-05 DMC halt accepted at cycle 2064792, and Mesen at its own
-// 2064792 is in a seven-cycle delay loop at $E640-$E646 with A decrementing by 7
-// per pass, with no stall of any kind in the surrounding 45 cycles. Mesen counts
-// from a different zero, so ABSOLUTE CYCLE NUMBERS ARE NOT COMPARABLE and
-// lining the two traces up by number produces fiction.
+// THE CYCLE COUNTERS DO NOT SHARE AN ORIGIN, AND MESEN'S IS NOT EVEN THE SAME
+// TWICE. This is stronger than it was first written and the difference matters.
+//
+// InitializeEmu and LoadRom start Mesen on its own thread. It is already
+// executing by the time InitializeDebugger attaches, so the first Step pauses it
+// wherever the scheduler happened to leave it. MEASURED across three identical
+// invocations: cycle 27279 at pc $EA2B, 27279 at $EA2B, then 14914 at $E95C.
+// The starting point is nondeterministic.
+//
+// SO AN OFFSET BETWEEN THE TWO COUNTERS IS AN ARTEFACT OF THE SCHEDULER, and
+// nothing may be concluded from it - not its value, and not its parity. A
+// retraction is recorded here because that trap has already been walked into:
+// offsets of 145137 and 179319 were measured at two sweep rows, their difference
+// read as 34182 cycles of "drift", and their shared oddness used to argue that
+// this emulator's get/put labelling is inverted relative to Mesen2's. Those were
+// two SEPARATE PROCESSES with independent random origins. There was no drift and
+// the parity was noise.
+//
+// What survives that retraction is anything compared WITHIN one trace: the
+// instruction stream approaching row 05 is 16 cycles from $E3AE to $E503 on both
+// sides, with $E3AF and $E3B0 each held 4, and then this emulator inserts a
+// 4-cycle DMC halt at $E503 where Mesen inserts none. That is structural and
+// needs no alignment at all.
+//
+// ALIGN ON CONTENT, NEVER ON A NUMBER. The Nth OAM DMA works because the
+// handover lands around 15000-27000 cycles and the ROM's first OAM DMA is past
+// 1.2 million, so Mesen cannot have passed one before the debugger attached and
+// both sides count the same transfers. A tool that aligns this way is immune to
+// where the thread happened to stop; one that takes a cycle pair from a previous
+// run is measuring the scheduler.
 //
 // Align on a LANDMARK instead. The obvious one is the Nth OAM DMA, visible on
 // both sides as a ~513-cycle run with the PC frozen - our diagnostic numbers
@@ -268,6 +292,44 @@ int main(int argc, char** argv)
                 ++seen;
             }
             inDma = nowInDma;
+        }
+
+        // STEP OUT OF THE DMA JUST COUNTED, or phase 2 re-detects it.
+        //
+        // Confirming a candidate leaves the emulator ~40 cycles inside the
+        // transfer, and phase 2 looks for the NEXT freeze from wherever it is
+        // handed. Left inside, it finds this same DMA immediately and every
+        // entry in its ring is a frozen cycle - so it reports a lead-in that
+        // contains none.
+        //
+        // MEASURED, and the reason this is not a theoretical tidy-up: `dma5`
+        // printed "101 cycles of lead-in" across ONE distinct PC, $E503, while
+        // `dma3` on the same build printed 192 across 30. Whether the ring holds
+        // real context depended on where the coarse blocks happened to land, so
+        // the mode worked for some N and silently did not for others - which is
+        // worse than failing outright, and is what made a broken trace look like
+        // a verified one.
+        //
+        // 1200 bounds it at roughly twice the ~513 cycles of an OAM DMA. Failing
+        // to leave in that many is not something to continue past.
+        GetCpuState(cpu, kCpuTypeNes);
+        const uint16_t heldPc = cpu.PC;
+        bool steppedOut = false;
+        for (int i = 0; i < 1200; ++i) {
+            stepCycles(1);
+            GetCpuState(cpu, kCpuTypeNes);
+            if (cpu.PC != heldPc) {
+                steppedOut = true;
+                break;
+            }
+        }
+        if (!steppedOut) {
+            std::fprintf(stderr,
+                         "the PC never moved in 1200 cycles after OAM DMA #%d, so the emulator is not\n"
+                         "where the coarse phase thinks it is - a trace from here would be meaningless.\n",
+                         wantDma);
+            Stop();
+            return 1;
         }
 
         // Phase 2, exact: single-step into the next DMA, keeping a ring so the
