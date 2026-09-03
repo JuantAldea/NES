@@ -461,14 +461,24 @@ void Bus::advance_dmc_dma()
             // bounds the delay at 3 cycles - a read-modify-write has two
             // consecutive writes, an interrupt has three.
             //
-            // A longer comment here used to assert the opposite: that a write
-            // makes the DMA cheaper rather than later, and that the rule
-            // inverts between loads and reloads. It contradicted both the line
-            // below it and the paragraph in bus.h, and it was wrong. What this
-            // state machine produces - 3 or 4 cycles standalone, 2 during an
-            // OAM DMA - is measured correct, and so is the placement: the sync
-            // loops in sprdma_and_dmc_dma run at blargg's designed 433 and 3423
-            // cycles, which they only can if the DMA lands where this puts it.
+            // Mesen2 enforces this structurally rather than with a test:
+            // ProcessPendingDma is called only from NesCpu::MemoryRead, so a
+            // halt cannot fire on a write cycle at all.
+            //
+            // "A WRITE MAKES THE DMA CHEAPER" IS A TRUE OBSERVATION WITH THE
+            // WRONG CAUSE, and reading it as an alternative to this deferral is
+            // what sent several attempts at the DMC stall wrong. Get and put
+            // alternate, so deferring the halt flips which phase the dummy cycle
+            // lands on, which is what decides whether the alignment cycle is
+            // spent. Same page: "load DMAs take 3 cycles and reload DMAs take 4
+            // unless the halt is delayed by an odd number of cycles". The 3-vs-4
+            // outcome falls out of the deferral; it does not replace it.
+            //
+            // What this state machine produces - 3 or 4 cycles standalone, 2
+            // during an OAM DMA - is measured correct, and so is the placement:
+            // the sync loops in sprdma_and_dmc_dma run at blargg's designed 433
+            // and 3423 cycles, which they only can if the DMA lands where this
+            // puts it.
             if (cpu_wrote_this_cycle) {
                 break;
             }
