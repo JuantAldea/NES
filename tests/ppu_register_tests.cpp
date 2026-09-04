@@ -9,6 +9,18 @@ namespace tests
 {
 namespace
 {
+// One `lda $2007` as a CPU issues it - see the note on read_ppudata in
+// tests/ppu_memory_tests.cpp. The buffer refill lands a few dots after the read
+// returns, so reads with nothing between them are a sequence no CPU produces.
+uint8_t read_ppudata(PPU& ppu)
+{
+    const uint8_t value = ppu.read(PPU::PPUDATA);
+    for (int i = 0; i < 12; ++i) {
+        ppu.clock();
+    }
+    return value;
+}
+
 // Writes to PPUCTRL/PPUMASK/PPUSCROLL/PPUADDR are ignored until the reset
 // lockout expires, so most tests have to run the PPU past it first.
 void run_past_reset_lockout(PPU& ppu)
@@ -298,10 +310,10 @@ GTEST_TEST(testPPURegisters, ppudata_read_and_write_use_the_same_step)
         // INCREMENT, so the priming read gets its own address setup and the
         // increment is measured across the second one alone.
         write_addr(console.ppu, 0x20, 0x00);
-        console.ppu.read(PPU::PPUDATA);  // priming read: fills the latch
+        read_ppudata(console.ppu);  // priming read: fills the latch
 
         write_addr(console.ppu, 0x20, 0x00);
-        EXPECT_EQ(0xEE, console.ppu.read(PPU::PPUDATA)) << "ctrl " << std::hex << (unsigned)ctrl;
+        EXPECT_EQ(0xEE, read_ppudata(console.ppu)) << "ctrl " << std::hex << (unsigned)ctrl;
         const uint16_t after_read = console.ppu.registers.PPUADDR;
 
         EXPECT_EQ(0x2000 + step, after_write) << "ctrl " << std::hex << (unsigned)ctrl;
@@ -476,10 +488,10 @@ GTEST_TEST(testPPURegisters, reads_refresh_the_open_bus)
     // second. What reaches the open bus is the value the read RETURNED, not the
     // one it fetched.
     write_addr(console.ppu, 0x20, 0x00);
-    console.ppu.read(PPU::PPUDATA);  // priming read
+    read_ppudata(console.ppu);  // priming read
 
     write_addr(console.ppu, 0x20, 0x00);
-    EXPECT_EQ(0x6B, console.ppu.read(PPU::PPUDATA));
+    EXPECT_EQ(0x6B, read_ppudata(console.ppu));
 
     // The value just read is now what a write-only register hands back.
     EXPECT_EQ(0x6B, console.ppu.read(PPU::PPUMASK));

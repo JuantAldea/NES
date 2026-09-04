@@ -1,12 +1,10 @@
 #!/bin/sh
-# Fetches the two suites that measure what DMC DMA does to the CPU - the one
-# part of the delta modulation channel that is deliberately not implemented.
+# Fetches the two suites that measure what DMC DMA does to the CPU.
 #
-# The DMC's memory reader currently fetches in zero cycles. On hardware it halts
-# the CPU: per the NESdev DMA page, "DMC DMA normally takes 3 or 4 cycles,
-# depending on whether alignment is needed", built from a halt cycle, an always
-# -present dummy cycle, an optional alignment cycle, and the get cycle that
-# performs the read. The halt only lands on a READ cycle - "if the CPU is
+# The DMC's memory reader halts the CPU: per the NESdev DMA page, "DMC DMA
+# normally takes 3 or 4 cycles, depending on whether alignment is needed", built
+# from a halt cycle, an always-present dummy cycle, an optional alignment cycle,
+# and the get cycle that performs the read. The halt only lands on a READ cycle - "if the CPU is
 # writing, it ignores the halt...repeating until successful" - so a
 # read-modify-write can delay it 2 cycles and an interrupt 3.
 #
@@ -30,28 +28,95 @@
 #                           D84F6815 and stops. It is a compare-by-eye ROM, not
 #                           self-checking, so it cannot be an automatic oracle
 #                           without a known-good CRC from hardware.
-#   dma_2007_read           BLANK, and alive
-#   dma_2007_write          BLANK, and alive
-#   dma_4016_read           BLANK, and alive
+#   dma_2007_read           prints, from frame 8
+#   dma_2007_write          prints, from frame 9
+#   dma_4016_read           prints, from frame 11
 #
-# THE BLANK ONES ARE NOT HUNG, which is worth recording because "blank screen"
-# and "crashed" look identical from outside. Measured over 300 frames each: the
-# CPU runs 8.9M cycles and the PC oscillates over two or three addresses around
-# $E066, i.e. a tight wait loop. Do not treat them as fixtures that failed to
-# load.
+# RUN THEM WITH cpu.reset() AFTER load_cartridge, OR THEY LOOK HUNG AND ARE NOT.
+# PC comes from $FFFC, which is open bus until a cartridge is present, and Bus's
+# constructor resets before one is - so without a second reset the CPU starts at
+# $0000. It then BRK-slides through zeroed RAM and through the $00 padding ahead
+# of blargg's `.align 64` routines, two bytes at a time, into the IRQ handler at
+# $E742 (`bit $4015` / `rti`) and back out. A PC oscillating over a few addresses
+# is indistinguishable from a wait loop from outside, so this reads as "blank,
+# and alive" rather than as a harness fault.
 #
-# WHAT THEY ARE WAITING FOR IS NOW KNOWN, and it is not the stall: they test
-# PHANTOM READS. While the CPU is halted for a DMA it repeatedly reads whatever
-# address is on the bus - with $4016/$4017 triggering only on the halt cycle and
-# other registers on every no-op cycle. erspicu/AprNes names "$4016 phantom read
-# not implemented" as the cause of dma_4016_read specifically.
+# It also swallows a whole instruction, which is what makes it look DMC-shaped:
+# the last BRK before sync_dmc consumes its own padding byte and $E040 with it,
+# so execution resumes at $E041 - one byte into `lda #$80` - and `sta $4010`
+# never runs. The DMC timer period stays 0, clock_dmc returns early forever, and
+# $4015 bit 4 never clears, so the ROM sits in sync_dmc waiting on a channel that
+# cannot finish.
 #
-# double_2007_read is a PPU bug rather than a DMC one, and the evidence is
-# exact: the D84F6815 above is the same CRC AprNes reported before fixing a
-# missing ~6-dot cooldown after a $2007 read, during which a second read returns
-# open bus without swapping the buffer or incrementing the VRAM address. Its
-# expected CRCs are 85CFD627, F018C287, 440EF923 or E52F41A5 - four, because
-# CPU/PPU sync varies.
+# MEASURED with the CPU stall implemented and phantom reads not, which is what
+# each ROM printed before the repeats followed the CPU's attempted access:
+#
+#   dma_2007_write          PASSED. Prints 11 11 AA 33 44 55 66 77 five times
+#                           and its own name. Already correct then and now.
+#   dma_4016_read           FAILED, printing 08 08 08 08 08 and CRC FBF7C7B1.
+#                           NOW PASSES on 08 08 07 08 08 and check_crc $F0AB808C.
+#   dma_2007_read           printed 11 22 on all five rows, CRC 498C5C5F. NOW
+#                           prints 44 55 on the third and CRC 5E3DF9C4, one of
+#                           the two AprNes accepts - the 4-cycle alignment, where
+#                           Mesen lands on the 3-cycle one and gives 33 44 with
+#                           159A7A8F. Both are correct; which one an emulator
+#                           sees depends on CPU/PPU sync at reset.
+#   double_2007_read        unchanged at D84F6815, and still a PPU problem
+#                           rather than a DMC one - see below.
+#
+# WHAT THEY ARE WAITING FOR: PHANTOM READS. NESdev's DMA page, verbatim - "When
+# RDY is deasserted, the 6502 core repeats the last read cycle indefinitely,
+# making no forward progress nor handling interrupts. On 2A03 CPUs, these
+# repeated reads are externally visible on any no-operation DMA cycle, causing
+# data loss if reading a register with side effects." The no-operation cycles
+# are the halt, the DMC's dummy and the optional alignment.
+#
+# It is the LAST READ CYCLE that repeats - the address the CPU was reading when
+# it was halted - and NOT simply whatever sits on the bus, which gets the
+# ordering right by accident and the address wrong. The controllers are the
+# exception and the reason dma_4016_read is its
+# own ROM: "Joypads are clocked via direct lines from the CPU, called joypad 1
+# /OE and joypad 2 /OE, rather than going over the address bus", giving 0-4
+# extra reads rather than one per no-op cycle. erspicu/AprNes names "$4016
+# phantom read not implemented" as the cause of dma_4016_read specifically.
+#
+# double_2007_read is a PPU problem rather than a DMC one, and its source says
+# what it tests: `lda $20F7,x` with x=$10 crosses a page, so the CPU reads $2007
+# TWICE in succession - the dummy read at the unfixed address and then the real
+# one. With x=$00 it reads once. Both mirror to $2007.
+#
+# We print 22 33 44 55 66 for the single read, which is right, and 33 44 55 66 77
+# for the double, which is not: we apply BOTH reads in full. Every one of
+# blargg's four accepted second lines starts 22, 02 or 32, so hardware ignores
+# the extra read or applies it partially. Its expected CRCs are 85CFD627,
+# F018C287, 440EF923 or E52F41A5 - four, because CPU/PPU sync varies.
+#
+# THE MECHANISM IS A LATCH PIPELINE, NOT A COOLDOWN, which AprNes is often cited
+# for and does not implement. Its ppu_r_2007 returns the buffer, advances 7
+# master clocks, and then SETS AN SR
+# LATCH, leaving a per-dot state machine - PD_RB, ReadALE, PPU_READ, TStep - to
+# refill the buffer and increment the address afterwards. It is a port of
+# TriCNES. A second read arriving mid-flight sees a pipeline that has not
+# updated, which is why the result depends on alignment and has four answers.
+#
+# IMPLEMENTED as the one consequence that pipeline has here: the REFILL lands a
+# few dots after the read returns, and the address increment does not. That gives
+# 22 44 55 66 77 and CRC 85CFD627, the first of the four. Delaying the increment
+# too would give 22 33 44 55 66 instead - also accepted, and a different ROM
+# alignment - so the split between the two is what the answer turns on.
+#
+# THE DELAY IS BRACKETED BY TWO HARDWARE-CRC ORACLES rather than chosen, and the
+# whole admissible window is 4, 5 and 6 dots. Below 4 this ROM's two reads are 3
+# dots apart and the second sees a refreshed buffer, so its CRC never moves off
+# D84F6815. At 7 and above dma_2007_read breaks, its DMA repeats being a cycle
+# apart. Swept at 2,3,4,5,6,7,8,9,12,15,20,40,80,200: past 15 the damage is broad
+# - ppuReadBuffer, vram_access, cpu_dummy_writes_ppumem and every HolyMapperel
+# board - and past 39 the CRC leaves the accepted set. See
+# PPU::kReadBufferRefillDots.
+#
+# Five PPU unit tests read $2007 two or three times with ZERO dots between them,
+# which no CPU can issue - even the page-crossing double read is 3 dots apart and
+# an ordinary pair is 12. They now advance the PPU between reads.
 #
 # THE FULL SET OF ACCEPTED CRCs is catalogued in erspicu/AprNes'
 # unittest/run_tests.py, per ROM:
@@ -61,33 +126,54 @@
 #
 # Ours prints D84F6815, in neither set - the value that emulator reported before
 # fixing the $2007 cooldown. christopherpow/nes-test-roms' status.txt carries
-# the same 5E3DF9C4 and confirms these ROMs never print "Passed".
+# the same 5E3DF9C4 and confirms dma_2007_read and double_2007_read never print
+# "Passed" - they are compare-by-eye ROMs. dma_2007_write and dma_4016_read do.
 #
 # dma_2007_write, dma_4016_read and read_write_2007 carry NO crc list there,
 # because they do print a verdict. sprdma_and_dmc_dma carries none either: it
 # self-checks with check_crc $FBADA48D internally and prints Passed on its own.
-# So no expected table for it is published anywhere, which is exactly why
-# recovering one from the checksum was worth attempting.
+# So no expected table for it is published anywhere. Do not try to recover one
+# from the checksum - see the trap in tests/dmc_dma_tests.cpp, where ~657 tables
+# satisfy the 32-bit constraint.
 #
 # The four dmc_tests ROMs are absent from that catalogue entirely, and
 # nes-test-roms' status.txt marks them "???? Not sure yet" - so an emulator
 # sitting at 174/174 does not run them either. Leaving them unfetched here turns
 # out to be the same call, independently made.
 #
-# THAT IS NOW MEASURED RATHER THAN INHERITED. buffer_retained, latency, status
-# and status_irq were fetched and run for 600 frames each: all four report
-# NOTHING by any of the three mechanisms - no nametable text, no $6000, no
-# background colour - while being demonstrably alive, 17.8M cycles with the PC
-# parked in the same $E14x-$E16x wait loop the blank ROMs above sit in. They are
-# waiting on phantom reads, not on anything about DMC fetch timing.
+# buffer_retained, latency, status AND status_irq CANNOT BE ORACLES HERE, and
+# that is measured rather than inherited. All four are NROM, 16KB PRG + CHR-RAM,
+# and there is no source or readme for them upstream.
 #
-# buffer_retained is the tempting one, because the load-versus-reload split is
-# exactly the open question. It does not answer it.
+# Run with cpu.reset(), they RUN TO COMPLETION and park - they are not waiting on
+# anything. Each ends on a deliberate exit that disables NMI and rendering, then
+# configures pulse 1 and plays a continuous tone:
 #
-# SO THE USABLE ORACLE IS sprdma_and_dmc_dma. It self-checks by CRC over its own
-# printed output and prints Passed or Failed, it fails today, and the numbers it
-# prints say why. read_write_2007 passes and is asserted to keep passing, which
-# guards against a stall implementation that breaks what already works.
+#   sei / lda #$00 / sta $2000 / sta $2001
+#   lda #$82 / sta $4000 / lda #$01 / sta $4002 / sta $4015
+#   lda #$09 / sta $4003 / jmp *
+#
+# The tone is the whole report. Nothing is written to either nametable page - all
+# 2048 bytes stay $00 - no $6000 signature is set, and the background palette
+# stays 0. A=9 at the halt is that `lda #$09` for $4003, not a result code.
+#
+# SILENCE DOES NOT MEAN PASS, checked against a known-bad reference rather than
+# assumed. Forcing $4015 bit 4 to 0 - a break severe enough to fail 7-dmc_basics
+# and 8-dmc_rates - leaves all four of these byte-identical: same blank
+# nametable, same terminal loop, same registers. They cannot separate a correct
+# DMC from a badly broken one through any channel this emulator reads, so
+# fetching them would add four tests that pass unconditionally.
+#
+# That matches the catalogue: nes-test-roms' status.txt marks them "???? Not sure
+# yet" and AprNes does not list them. buffer_retained is the tempting one,
+# because the load-versus-reload split is exactly the open question, and it
+# answers nothing here.
+#
+# SO THE USABLE ORACLES ARE THE TWO sprdma_and_dmc_dma ROMS. Each self-checks by
+# CRC over its own printed output and prints Passed or Failed, and the numbers it
+# prints say why when it fails. read_write_2007 passes and is asserted to keep
+# passing, which guards against a stall implementation that breaks what already
+# works.
 #
 # WHAT sprdma_and_dmc_dma ACTUALLY DOES, and what it expects. Its source is NOT
 # in this mirror; it is in koute/pinky at
@@ -123,15 +209,18 @@
 #     02 525   06 526   0A 526   0E 527
 #     03 526   07 527   0B 527   0F 528
 #
-# WE DIVERGE ON SIX ROWS HERE, not one: 04, 05, 06, 07, 0A and 0B. Ours reads
-# 525 526 525 526 for 04-07 and 527 528 for 0A-0B. Note Mesen emits 524 at row
-# 04, a value our implementation never produces at all.
+# BOTH TABLES NOW MATCH, ROW FOR ROW, AND BOTH ROMS PASS THEIR OWN CRC. Two
+# independent oracles agreeing: Mesen's dumped values and the hardware constants
+# blargg compiled into the ROMs ($FBADA48D and $F1A58F55). The pins live in
+# tests/dmc_dma_tests.cpp.
 #
-# This matters because the DMC stall work was described as "15 of 16 rows
-# exact" while that was only ever true of the FIRST ROM. The second was failing
-# the same not-yet-implemented pin, so nobody had looked past its verdict. The
-# two ROMs differ in OAM DMA alignment, so the second is the harder case and is
-# where the remaining work actually is - not in the single row 05 of the first.
+# The _512 ROM was the harder case and was where the last of the work was - not
+# in the single row 05 of the first. It diverged on six rows: 04-07 to the
+# collision's boundary costs, and 0A-0B to the write refusal and the parity gate
+# being served as two delays for one cause. The DMC stall work was described as
+# "15 of 16 rows exact" while that was only ever true of the FIRST ROM; the
+# second was failing a not-yet-implemented pin, so nobody had looked past its
+# verdict.
 #
 #   This header used to say "the expected table is around 515-517". That was an
 #   estimate, written here where it then read as measured fact, and it is wrong:
@@ -148,40 +237,31 @@
 #   than they look: an implementation can be wrong throughout and still match
 #   everywhere except the boundary.
 #
-#   WHERE THIS IMPLEMENTATION STANDS: row 05 only, reading 528 where the
-#   reference reads 526. Our outside->inside crossing happens one iteration
-#   late. Everything else measured correct - OAM DMA 513/514, collision cost
-#   exactly 2, standalone 3/4, the ROM's sync loops running at blargg's designed
-#   433 and 3423, load/reload classification matching the NESdev DMA page.
+#   ELIMINATED ALONG THE WAY, so nobody spends another day on them:
 #
-#   ALREADY ELIMINATED, so nobody spends another day on them:
-#
-#   * Halt-entry timing. Removing the get/put gate in Bus::advance_dmc_dma moved
-#     ALL SIXTEEN rows by +1 and left row 05's crossing exactly where it was.
-#     The gate is what produces the 3-cycle load and 4-cycle reload; it is right.
+#   * Halt-entry timing. Removing the get/put gate in Bus::advance_dmc_dma moves
+#     every row of BOTH ROMs by +1 - all 32, uniformly - and leaves row 05's
+#     crossing exactly where it was. The gate is load-bearing three ways: it
+#     produces the 3-cycle load and 4-cycle reload, it decides which cycles the
+#     write refusal is reached on, and it puts acceptance on the odd
+#     remaining_dma_cycles values the collision costs are keyed to.
 #   * Any +-1 cycle theory about when the DMC transfer is REQUESTED. The parity
 #     gate quantises it: a reload waits for a put cycle, so shifting the request
 #     by one cycle just shortens the idle wait and the halt still lands on the
 #     same cycle. Deferring only the reload produced a byte-identical table and
 #     an identical CRC. This class of hypothesis is unfalsifiable here - three of
-#     four wrong guesses in one session were in it.
+#     four wrong guesses in one session were in it, and four more followed.
+#   * Supplying the gate's effect as a delay elsewhere. A flat one-cycle wait
+#     before accepting, and a deferred reload in apu.cpp, BOTH HANG BOTH ROMS.
+#     The gate is not a delay, so nothing that only delays can replace it.
 #   * Moving clock_dmc() relative to the CPU access. It shifts the DMC's timer
 #     and its request together, so their offset never changes. A void test.
 #   * The timer arithmetic, the sample-buffer occupancy and the load/reload
 #     split. All measured correct. The "+11 constant" that implicated them was
 #     an artefact of subtracting the 512/513 baseline, which is invalid.
 #
-#   WHAT IS LEFT is an interaction, not either DMA alone, which is why every
-#   single-mechanism hypothesis failed. The sweep runs OAM-10, -9 ... -5 and then
-#   jumps straight to OAM+2, skipping seven cycles: a DMC DMA landing just before
-#   the store delays the store by its own 4 cycles and drags the OAM DMA start
-#   along with it. Row 05 sits exactly in that discontinuity. Seeing it needs a
-#   cycle-level trace of row 05 from BOTH emulators - Mesen's via the event
-#   viewer's DmcDmaRead/DmaRead types - rather than more reasoning from the
-#   printed totals. See tools/mesen_reference_dump.cpp.
-#
-#   It self-checks with check_crc $FBADA48D, so the whole table has to be right;
-#   there is no partial credit and no need to guess which row is wrong.
+#   Each ROM self-checks by CRC, so the whole table has to be right; there is no
+#   partial credit and no need to guess which row is wrong.
 #
 #   dma_timing.inc delays 3424 cycles between events, which is 8 x 428 - one
 #   byte at rate index 0, the slowest. That is the intended DMA frequency and a

@@ -27,6 +27,20 @@ OAMDMA 	    $4014   aaaa aaaa 	OAM DMA high address
 class PPU : public Device
 {
 public:
+    // How many dots after a $2007 read its buffer refill lands.
+    //
+    // BRACKETED BY TWO HARDWARE-CRC ORACLES, and the whole admissible window is
+    // 4, 5 and 6 - this is the midpoint. Below 4, double_2007_read's two reads
+    // are 3 dots apart (a page-crossing `lda $20F7,x`) and the second sees a
+    // refreshed buffer, so its CRC never leaves D84F6815. At 7 and above,
+    // dma_2007_read breaks: its DMA repeats are a cycle apart and they stop
+    // seeing refreshed buffers between them.
+    //
+    // Swept the full suite at 2,3,4,5,6,7,8,9,12,15,20,40,80,200 to establish
+    // that. Past 15 the damage is broad - ppuReadBuffer, vram_access,
+    // cpu_dummy_writes_ppumem and every HolyMapperel board - and past 39 the
+    // ROM's own CRC leaves the accepted set entirely.
+    static constexpr uint8_t kReadBufferRefillDots = 5;
     PPU(Bus* b) : Device{b} {};
     void write(const uint16_t addr, const uint8_t data);
     uint8_t read(const uint16_t addr);
@@ -182,6 +196,24 @@ public:
     // the exception - they come back immediately, while the latch is still
     // refilled from the nametable underneath.
     uint8_t vram_read_buffer = 0;
+
+    // The refill a $2007 read has started but not yet completed. Hardware does
+    // not update the buffer at the moment the read returns: AprNes' ppu_r_2007,
+    // a port of TriCNES, returns the buffer, advances 7 master clocks and then
+    // sets an SR latch, leaving a per-dot state machine to do the refill. A
+    // second read arriving before that lands sees the OLD buffer, which is what
+    // double_2007_read measures - `lda $20F7,x` with x=$10 crosses a page and so
+    // reads $2007 twice, one CPU cycle apart.
+    //
+    // Only the refill is late. The address increment is not, which is what
+    // distinguishes the accepted answer 22 44 55 66 77 - buffer stale, address
+    // advanced twice - from 22 33 44 55 66, where the whole second read is lost.
+    //
+    // Both initial values are unobservable, which is why mutating either
+    // survives: nothing commits until a read has set them, and a spurious commit
+    // of 0 into a buffer that already reads 0 changes nothing.
+    uint8_t pending_read_buffer = 0;
+    uint8_t pending_read_buffer_dots = 0;
 
 private:
     uint16_t nametable_offset(const uint16_t addr) const;

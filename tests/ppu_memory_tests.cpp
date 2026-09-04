@@ -59,6 +59,20 @@ void run_past_reset_lockout(PPU& ppu)
     }
 }
 
+// One `lda $2007` as a CPU issues it: the read, then the dots before the next
+// one. The buffer refill lands a few dots AFTER the read returns - see
+// PPU::kReadBufferRefillDots - so back-to-back reads with nothing between them
+// are a sequence no CPU can produce, and would see a stale buffer. 12 dots is
+// the 4 CPU cycles a second `lda $2007` takes to come round.
+uint8_t read_ppudata(PPU& ppu)
+{
+    const uint8_t value = ppu.read(PPU::PPUDATA);
+    for (int i = 0; i < 12; ++i) {
+        ppu.clock();
+    }
+    return value;
+}
+
 void set_ppu_addr(PPU& ppu, uint16_t addr)
 {
     ppu.read(PPU::PPUSTATUS);  // reset the address latch
@@ -271,7 +285,7 @@ GTEST_TEST(testPPUMemory, palette_reads_take_their_top_two_bits_from_the_open_bu
     // the address setup would only overwrite.
     set_ppu_addr(console.ppu, 0x3FC1);
 
-    EXPECT_EQ(0xD5, console.ppu.read(PPU::PPUDATA))
+    EXPECT_EQ(0xD5, read_ppudata(console.ppu))
         << "expected $15 from palette RAM in bits 0-5 and $C0 from the open bus in bits 6-7";
 }
 
@@ -287,11 +301,11 @@ GTEST_TEST(testPPUMemory, greyscale_masks_palette_reads)
 
     console.ppu.write(PPU::PPUMASK, 0x00);  // greyscale off
     set_ppu_addr(console.ppu, 0x3F01);
-    EXPECT_EQ(0x3F, console.ppu.read(PPU::PPUDATA) & 0x3F) << "without greyscale the full colour comes back";
+    EXPECT_EQ(0x3F, read_ppudata(console.ppu) & 0x3F) << "without greyscale the full colour comes back";
 
     console.ppu.write(PPU::PPUMASK, 0x01);  // greyscale on
     set_ppu_addr(console.ppu, 0x3F01);
-    EXPECT_EQ(0x30, console.ppu.read(PPU::PPUDATA) & 0x3F) << "greyscale clears the low four bits";
+    EXPECT_EQ(0x30, read_ppudata(console.ppu) & 0x3F) << "greyscale clears the low four bits";
 }
 
 // --- pattern tables ----------------------------------------------------------
@@ -349,11 +363,11 @@ GTEST_TEST(testPPUMemory, reads_below_3f00_are_delayed_by_one)
 
     // The first read returns whatever the latch held - not $2000's contents -
     // and refills the latch from $2000. This is why software reads $2007 twice.
-    const uint8_t first = console.ppu.read(PPU::PPUDATA);
+    const uint8_t first = read_ppudata(console.ppu);
     EXPECT_NE(0xC1, first) << "the first read after setting the address must be the stale latch";
 
-    EXPECT_EQ(0xC1, console.ppu.read(PPU::PPUDATA)) << "the second read returns what the first fetched";
-    EXPECT_EQ(0xC2, console.ppu.read(PPU::PPUDATA)) << "and reads then stream one byte behind";
+    EXPECT_EQ(0xC1, read_ppudata(console.ppu)) << "the second read returns what the first fetched";
+    EXPECT_EQ(0xC2, read_ppudata(console.ppu)) << "and reads then stream one byte behind";
 }
 
 // Palette reads are NOT buffered - they come back immediately - but the latch
@@ -369,12 +383,12 @@ GTEST_TEST(testPPUMemory, palette_reads_are_immediate_and_refill_the_latch_from_
     console.ppu.ppu_bus_write(0x2F00, 0x9D);
 
     set_ppu_addr(console.ppu, 0x3F00);
-    EXPECT_EQ(0x21, console.ppu.read(PPU::PPUDATA)) << "a palette read is immediate, not delayed";
+    EXPECT_EQ(0x21, read_ppudata(console.ppu)) << "a palette read is immediate, not delayed";
 
     // The latch now holds the byte from underneath, so a read from ordinary
     // VRAM immediately afterwards hands that back rather than the palette byte.
     set_ppu_addr(console.ppu, 0x2400);
-    EXPECT_EQ(0x9D, console.ppu.read(PPU::PPUDATA)) << "a palette read refills the latch from the nametable beneath it";
+    EXPECT_EQ(0x9D, read_ppudata(console.ppu)) << "a palette read refills the latch from the nametable beneath it";
 }
 
 // --- OAM ---------------------------------------------------------------------
@@ -528,7 +542,7 @@ GTEST_TEST(testPPUMemory, a_palette_read_does_not_refresh_the_top_two_open_bus_b
     clock_ppu_for(console.ppu, 3'000'000);
 
     // The palette read refreshes bits 0-5 only.
-    console.ppu.read(PPU::PPUDATA);
+    read_ppudata(console.ppu);
 
     // Past the point where the untouched bits expire, short of where the
     // refreshed ones would.

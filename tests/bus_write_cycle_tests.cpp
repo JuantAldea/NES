@@ -125,5 +125,38 @@ GTEST_TEST(busWriteCycle, writes_from_outside_a_cpu_cycle_do_not_count)
     EXPECT_FALSE(console.cpu_wrote_this_cycle) << "write_ram is not a CPU write cycle either";
 }
 
+// THE REFUSAL LATCH MUST NOT OUTLIVE THE REQUEST THAT SET IT. When a halt is
+// refused because the cycle it would land on is a write, Bus::advance_dmc_dma
+// records that so the retry can skip the phase wait - the two are the same
+// one-cycle deferral, and serving both would delay the halt twice.
+//
+// The request can then disappear without the halt ever being accepted: a $4015
+// DMC disable clears transfer_requested from the APU side, via the disable_delay
+// path in clock_dmc. A latch left standing would make the NEXT request - a load,
+// possibly seconds later - skip the phase wait and take 4 cycles where hardware
+// gives 3.
+//
+// No ROM here covers this. Instrumented across the whole test binary, the
+// cancel-during-refusal sequence occurs 0 times, which is why it needs a test
+// written against the invariant rather than an oracle: with no transfer
+// requested, the latch is clear.
+GTEST_TEST(busWriteCycle, the_halt_refusal_latch_does_not_outlive_its_request)
+{
+    Bus console;
+    ASSERT_FALSE(console.apu.dmc_wants_sample_byte()) << "the DMC is disabled at power-on, so nothing is requested";
+
+    // Strand the latch, as a request cancelled mid-refusal would.
+    console.halt_refused_for_write = true;
+
+    const uint64_t before = console.cpu.total_cycles;
+    while (console.cpu.total_cycles == before) {
+        console.clock();
+    }
+
+    EXPECT_FALSE(console.halt_refused_for_write)
+        << "a refusal latched with no transfer requested survived a CPU cycle. The next\n"
+           "  DMC request would skip the phase wait and take the wrong number of cycles.";
+}
+
 }  // namespace bus_write_cycle
 }  // namespace tests

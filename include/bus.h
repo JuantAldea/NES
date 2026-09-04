@@ -48,14 +48,40 @@ public:
     // a power cycle and the second half of every apu_reset ROM would never run.
     void reset();
 
-    // Whether the CPU cycle that just ran performed a WRITE. The DMC's DMA halt
-    // is refused on a write cycle and retried, so its state machine needs this;
-    // nothing else does yet.
+    // Whether the CPU cycle that just ran performed a WRITE, observed at
+    // Bus::write rather than reported by the CPU - see the comment in
+    // Bus::clock. Reads back meaningfully only immediately after a CPU cycle.
     //
-    // Reads back meaningfully only immediately after a CPU cycle. It is watched
-    // at Bus::write rather than reported by the CPU, which has no notion of it -
-    // see the comment in Bus::clock.
+    // The DMC halt asks CPU::next_cycle_is_write() instead, because the cycle
+    // it cares about is the one the halt would land on rather than the one that
+    // just ended. This remains as the independent observation of the same fact:
+    // one derived from the CPU's schedule, one seen on the bus.
     bool cpu_wrote_this_cycle = false;
+
+    // The joypads are NOT clocked by the address bus. NESdev's DMA page: "Joypads
+    // are clocked via direct lines from the CPU, called joypad 1 /OE and joypad 2
+    // /OE, rather than going over the address bus", and the NES-001 and AV
+    // Famicom clock once per CONTIGUOUS SET of reads rather than once per read.
+    // Only a DMA's repeated reads put two controller reads back to back, so this
+    // is what stops each repeat clocking the pad. Set by Bus::read before the
+    // device sees the access.
+    bool controller_read_is_continuation = false;
+    bool prev_bus_read_was_controller = false;
+
+    // The address of the last read the CPU performed. A DMA's no-operation
+    // cycles re-issue it - see the phantom-read block in Bus::clock.
+    //
+    // The initial value is unobservable, and mutating it survives for that
+    // reason rather than because nothing tests it: a DMC DMA cannot happen
+    // before the CPU has read at least once, the reset vector fetch being a
+    // read, so this is always overwritten before anything repeats it.
+    uint16_t last_cpu_read_addr = 0;
+
+    // Whether a DMC halt has already been refused because the cycle it would
+    // land on is a write. The retry then skips the phase wait in
+    // advance_dmc_dma: both are the same one-cycle deferral, and serving them
+    // in sequence delays the halt twice for one cause.
+    bool halt_refused_for_write = false;
 
     // The cycle the DMC's read happened on, or a sentinel meaning "no fetch yet".
     // An OAM DMA requested on the very next cycle skips its halt and alignment,
@@ -156,12 +182,20 @@ public:
     // read cycles. If the CPU is writing, it ignores the halt...repeating until
     // successful". So the wait happens in Idle, before any cycle is stolen,
     // rather than as a Halting state that burns cycles while it retries.
-    enum class DmcDma { Idle, Halt, Dummy, Align, Get };
+    // Extend exists only for a DMC read landing on an OAM transfer's LAST cycle,
+    // where the collision costs 3 rather than 2 - it is the one extra cycle, and
+    // spending it before Align keeps the read itself on a get. See
+    // advance_dmc_dma.
+    enum class DmcDma { Idle, Halt, Dummy, Align, Extend, Get };
     DmcDma dmc_dma = DmcDma::Idle;
 
     bool dmc_dma_holds_the_bus() const { return dmc_dma != DmcDma::Idle; }
 
     void advance_dmc_dma();
+
+    // Puts the access the CPU is ATTEMPTING back on the bus without letting it
+    // progress - what a DMA's no-operation cycles do. Shared by both DMAs.
+    void repeat_halted_cpu_access();
 
     // Passed to CPU::clock, which prints one line per instruction to stdout.
     // Off by default so the headless harnesses stay silent; the frontend's

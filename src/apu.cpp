@@ -103,7 +103,7 @@ void APU::clock_dmc()
         dmc.transfer_requested = false;
     }
     if (dmc.transfer_start_delay != 0 && --dmc.transfer_start_delay == 0) {
-        dmc_start_transfer(true);  // scheduled by the $4015 write
+        dmc_start_transfer(dmc.delayed_transfer_is_load);
     }
 
     // A period of 0 means no rate has been selected yet, and must not free-run.
@@ -760,6 +760,7 @@ void APU::write(const uint16_t addr, const uint8_t data)
             // dmc_dma_start_test measures, and it is the one mechanism this
             // implementation was missing entirely.
             dmc.transfer_start_delay = (apu_cycles % 2 == 0) ? 2 : 3;
+            dmc.delayed_transfer_is_load = true;  // a $4015 enable, by definition
         }
         break;
 
@@ -955,8 +956,7 @@ uint8_t APU::read(const uint16_t addr)
     // Bits 0-3 report whether each length counter is still running - the
     // COUNTER, not the enable. A channel enabled at $4015 with a counter that
     // has reached zero reads back as 0, which is how a program waits for a note
-    // to finish. Bit 4 would be the DMC's bytes-remaining and bit 7 its
-    // interrupt; neither exists yet.
+    // to finish.
     uint8_t status = frame_irq_flag ? 0x40 : 0x00;
     for (int channel = 0; channel < length_channels; ++channel) {
         if (lengths[channel].value > 0) {

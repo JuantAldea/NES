@@ -238,6 +238,11 @@ GTEST_TEST(frontendController, peeking_does_not_shift_the_register_under_the_gam
                 (void)nes_gui::peek_controller(console, 0);
             }
             bits |= static_cast<uint8_t>((console.read(0x4016) & 1) << i);
+
+            // The opcode fetch a game's next `lda $4016` would make. Without it
+            // the eight reads are one contiguous set on the bus, which clocks
+            // the pad once - see tests/controller_tests.cpp's read_port.
+            console.read(0x0000);
         }
         return bits;
     };

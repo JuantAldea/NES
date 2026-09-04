@@ -1,6 +1,7 @@
 #include "../include/bus.h"
 
 #include <algorithm>
+#include <cassert>
 #include <fstream>
 #include <iostream>
 
@@ -272,7 +273,22 @@ void Bus::write_ram(const uint16_t start_addr, const size_t n_bytes, const uint8
 
 uint8_t Bus::read(const uint16_t addr)
 {
+    // Same gate as cpu_wrote_this_cycle, and for the same reason: Bus::read is
+    // public, so the cartridge loader, the tests and the debugger all reach it
+    // and none of them is a CPU read cycle. A DMA's no-op cycles repeat this
+    // address, so letting a debugger peek set it would make the phantom read
+    // depend on whether anyone was looking.
+    if (watching_cpu_access) {
+        last_cpu_read_addr = addr;
+    }
+
     const DecodedAddress d = decode(addr, Access::Read);
+
+    // See controller_read_is_continuation: /OE clocks once per contiguous set.
+    const bool is_controller = d.device == &controllers;
+    controller_read_is_continuation = is_controller && prev_bus_read_was_controller;
+    prev_bus_read_was_controller = is_controller;
+
     if (d.device) {
         cpu_open_bus = d.device->read(d.effective_addr);
         return cpu_open_bus;
@@ -398,7 +414,68 @@ bool Bus::clock()
         apu.dmc_deliver_sample_byte(read(apu.dmc_sample_address()));
         dmc_fetch_cycle = cpu_cycles;
     } else if (cpu_tick && ppu.dma_in_progress() && !dmc_dma_holds_the_bus()) {
+        // The OAM DMA's leading halt, and its alignment cycle when it has one,
+        // are no-operation cycles like the DMC's: perform_OAM_DMA_cycle returns
+        // without touching the bus on them. It decrements first and then tests
+        // >= 512, so 513 and above are the ones that steal a cycle without using
+        // it, and the CPU repeats its access through them exactly as it does for
+        // a DMC halt.
+        //
+        // NO ROM HERE REACHES IT, which is a property of the ROMs. An OAM DMA
+        // starts from `sta $4014`, so the CPU is at an instruction boundary and
+        // the access it repeats is the next opcode fetch: instrumented across
+        // the suite, 2000 repeats and NONE in $2000-$401F, where one would be
+        // visible. The oracle is a unit test that puts the fetch on $2007 and
+        // counts VRAM address steps - see
+        // oamDmaTiming.the_no_operation_cycles_repeat_the_cpus_opcode_fetch.
+        const bool no_operation_cycle = ppu.remaining_dma_cycles >= 513;
         ppu.perform_OAM_DMA_cycle();
+        if (no_operation_cycle) {
+            repeat_halted_cpu_access();
+        }
+    } else if (cpu_tick && dmc_dma_holds_the_bus()) {
+        // PHANTOM READS. The halt, the dummy and the optional alignment steal
+        // the bus without using it, and the 6502 does not idle through them.
+        // NESdev's DMA page: "When RDY is deasserted, the 6502 core repeats the
+        // last read cycle indefinitely, making no forward progress nor handling
+        // interrupts. On 2A03 CPUs, these repeated reads are externally visible
+        // on any no-operation DMA cycle, causing data loss if reading a register
+        // with side effects."
+        //
+        // It is the access the CPU is ATTEMPTING that repeats, not the last one
+        // it completed. Measured in Mesen with tools/mesen_2007_trace.cpp: a
+        // stall landing after a $2007 read leaves the read buffer and the VRAM
+        // address untouched for its whole length, because by then the CPU is
+        // waiting on an opcode fetch and the repeats land in ROM. A stall
+        // landing on the read gives three reads of $2007, and the CPU keeps the
+        // LAST.
+        //
+        // Reading last_cpu_read_addr gets both of those wrong at once - it
+        // re-reads $2007 in the rows hardware does not touch it, and it keeps
+        // the first value in the row where it does.
+        //
+        // So the CPU is asked rather than predicted: run it for one cycle and
+        // un-run it. The access goes out on the bus with its side effects, the
+        // CPU makes no forward progress, and it attempts the same access again
+        // next cycle - which is what "repeats the last read cycle indefinitely"
+        // describes. Predicting the address instead would mean a second model of
+        // every addressing mode's arithmetic, since it comes from PC and
+        // fetched_operand rather than from (Schedule, cycle) the way
+        // cycle_writes does.
+        //
+        // This is deliberately a real read() with its side effects: that IS the
+        // behaviour under test. blargg's dmc_dma_during_read4 measures exactly
+        // the damage - $2007 swapping the buffer and stepping the VRAM address,
+        // $2002 clearing vblank, $4015 acknowledging.
+        //
+        // dmc_dma_holds_the_bus() here is REDUNDANT AND KEPT, an equivalent
+        // mutant rather than a hole. cpu_cycle is `cpu_tick && !(OAM || DMC)`,
+        // so reaching this last branch with cpu_tick set already implies a DMA
+        // holds the bus, and the two branches above have taken the DMC's get
+        // cycle and every OAM cycle the DMC is not overriding. What is left is
+        // exactly the DMC's no-op cycles. It stays because it names the
+        // condition the block is about.
+        repeat_halted_cpu_access();
     }
 
     if (cpu_tick) {
@@ -435,6 +512,32 @@ void Bus::clock_PPU()
 // Runs after the cycle it describes, because two of its transitions depend on
 // what that cycle turned out to be: whether the CPU wrote (Halting), and which
 // half of the APU clock the next cycle falls on (Dummy).
+// NESdev's DMA page: "When RDY is deasserted, the 6502 core repeats the last read
+// cycle indefinitely, making no forward progress nor handling interrupts. On 2A03
+// CPUs, these repeated reads are externally visible on any no-operation DMA
+// cycle, causing data loss if reading a register with side effects."
+//
+// It is the access the CPU is ATTEMPTING that repeats, not the last one it
+// completed - measured in Mesen with tools/mesen_2007_trace.cpp, where a stall
+// landing after a $2007 read leaves the read buffer untouched for its whole
+// length because by then the CPU is waiting on an opcode fetch. So the CPU is run
+// and un-run rather than predicted: the access goes out with its side effects,
+// the CPU makes no forward progress, and it attempts the same access again next
+// cycle.
+void Bus::repeat_halted_cpu_access()
+{
+    // Never a write: a halt is only accepted when the cycle it lands on is a
+    // read, and an OAM DMA begins after `sta $4014`'s write has completed, so
+    // the CPU is at an instruction boundary facing an opcode fetch. Asserted
+    // rather than assumed, because repeating a WRITE would corrupt memory
+    // silently.
+    assert(!cpu.next_cycle_is_write());
+
+    const CPU before_repeat = cpu;
+    clock_CPU();
+    cpu = before_repeat;
+}
+
 void Bus::advance_dmc_dma()
 {
     switch (dmc_dma) {
@@ -442,7 +545,24 @@ void Bus::advance_dmc_dma()
         // The wait for a read cycle happens HERE, before anything is stolen. A
         // halt refused on a write cycle costs the CPU nothing; only once it is
         // accepted does the four-cycle sequence begin.
-        if (apu.dmc_wants_sample_byte()) {
+        if (!apu.dmc_wants_sample_byte()) {
+            // No request, so nothing is deferred. Without this the refusal latch
+            // outlives the request that set it: a $4015 DISABLE landing inside
+            // the 1-3 cycle refusal window clears transfer_requested from the
+            // APU side (the disable_delay path in clock_dmc) without the halt
+            // ever being accepted here, and the next request - possibly a load,
+            // possibly seconds later - would then skip the phase wait and take
+            // the wrong length.
+            //
+            // LATENT, NOT OBSERVED: instrumented across the whole test binary,
+            // that sequence happens 0 times, so no oracle here covers it. It is
+            // reachable all the same - nothing stops a game disabling the DMC on
+            // the cycle after a refused halt - and the guard costs one branch.
+            // tests/bus_write_cycle_tests.cpp pins the invariant instead.
+            halt_refused_for_write = false;
+            break;
+        }
+        {
             // The halt lands on a specific PHASE, and the 3-or-4 cycle length
             // falls out of it: a load halts on a get, so its dummy lands on a
             // put and the following get needs no alignment; a reload halts on a
@@ -452,8 +572,29 @@ void Bus::advance_dmc_dma()
             // advance_dmc_dma runs at the END of a cycle and sets the state for
             // the next one, so "the next cycle is a get" is cpu_cycles being
             // odd here.
+            //
+            // The placement is measured, not just the length: the sync loops in
+            // sprdma_and_dmc_dma run at blargg's designed 433 and 3423 cycles,
+            // which they only can if the DMA lands where this puts it.
+            //
+            // Skipped once a write has already deferred this halt: the two
+            // waits are the same one-cycle deferral expressed twice, and
+            // serving both delays the halt twice for one cause. Serving both
+            // makes rows 0A and 0B of sprdma_and_dmc_dma_512 read 527 and 528
+            // against hardware's 526 and 527, and leaves the other fourteen
+            // rows correct.
+            //
+            // THE GATE CANNOT SIMPLY BE DELETED INSTEAD. It is load-bearing
+            // three times over: it picks the DMA's
+            // length, it decides which cycles the write refusal below is even
+            // reached on, and it is what puts acceptance on the ODD
+            // remaining_dma_cycles values that the collision costs further down
+            // are calibrated against. Removing it moves every row of both ROMs
+            // by +1 - all 32, uniformly - where a pure timing shift would be
+            // phase-dependent. A uniform shift is the signature of the
+            // calibration moving, not of a delay.
             const bool next_is_get = (cpu_cycles % 2) != 0;
-            if (next_is_get != apu.dmc_transfer_is_load()) {
+            if (!halt_refused_for_write && next_is_get != apu.dmc_transfer_is_load()) {
                 break;  // wrong phase - wait for the right one
             }
             // A halt is refused on a write cycle and retried. NESdev's DMA
@@ -475,14 +616,35 @@ void Bus::advance_dmc_dma()
             // unless the halt is delayed by an odd number of cycles". The 3-vs-4
             // outcome falls out of the deferral; it does not replace it.
             //
-            // What this state machine produces - 3 or 4 cycles standalone, 2
-            // during an OAM DMA - is measured correct, and so is the placement:
-            // the sync loops in sprdma_and_dmc_dma run at blargg's designed 433
-            // and 3423 cycles, which they only can if the DMA lands where this
-            // puts it.
-            if (cpu_wrote_this_cycle) {
+            // THE CYCLE THE HALT WOULD LAND ON, not the one that just ended.
+            // This tested cpu_wrote_this_cycle, which is the wrong cycle: the
+            // halt runs on the NEXT one, and asking about the previous is only
+            // ever right when consecutive cycles happen to match. Measured on
+            // sprdma_and_dmc_dma_512 row 0A, where the decision is taken at the
+            // end of a read and the halt then lands on `sta $100`'s write - a
+            // cycle hardware refuses, and refusing it is what makes such a DMA
+            // cost 3 rather than 4, per blargg's own dma_timing.inc.
+            //
+            // Guarded on the OAM DMA because the CPU is frozen through one, so
+            // its schedule and cycle describe an instruction that is not
+            // running and the next cycle is not the CPU's to write.
+            //
+            // THE GUARD IS UNREACHABLE TODAY, AND THAT IS WHY IT IS ASSERTED
+            // RATHER THAN DELETED. An OAM DMA begins on the cycle after `sta
+            // $4014`'s write COMPLETES, so the CPU freezes at an instruction
+            // boundary and its schedule points at the next opcode fetch, which
+            // is a read. Instrumented across the whole test binary: the two
+            // conditions are never true together, 0 hits. Dropping the clause
+            // therefore survives mutation, which is an equivalent mutant and
+            // not a hole. The assert is what makes an OAM DMA that ever starts
+            // mid-instruction surface here instead of silently changing every
+            // DMC collision cost.
+            assert(!(ppu.dma_in_progress() && cpu.next_cycle_is_write()));
+            if (!ppu.dma_in_progress() && cpu.next_cycle_is_write()) {
+                halt_refused_for_write = true;
                 break;
             }
+            halt_refused_for_write = false;
 
             // Half price during an OAM DMA. The halt and dummy cycles exist to
             // stop the CPU and give it time to let go of the bus - and the CPU
@@ -490,7 +652,28 @@ void Bus::advance_dmc_dma()
             // itself collides: "DMA units don't interfere with each other
             // unless they're both trying to access on the same cycle, in which
             // case DMC DMA wins", which costs the OAM DMA 2 cycles, not 4.
-            dmc_dma = ppu.dma_in_progress() ? DmcDma::Align : DmcDma::Halt;
+            //
+            // AND 2 ONLY IN THE MIDDLE. NESdev and AprNes both give 1 at the
+            // second-to-last put and 3 at the last, where the DMC's read extends
+            // past the end of the transfer. remaining_dma_cycles counts down, so
+            // 1 IS the transfer's last cycle and 3 is the write of the
+            // second-to-last read/write pair - the two positions the rule names.
+            //
+            // Measured, on sprdma_and_dmc_dma_512, which is the only ROM here
+            // that sweeps the DMC through the tail: acceptance lands on rem 7, 5,
+            // 3 and 1 at rows 00-07 and on 0 for the other 325 fetches in the
+            // run, and Mesen appends exactly 1 cycle after the transfer's last
+            // OAM write at rows 04-05 and exactly 3 at rows 06-07 while appending
+            // none at the other twelve rows. A flat 2 is wrong at both ends.
+            if (!ppu.dma_in_progress()) {
+                dmc_dma = DmcDma::Halt;
+            } else if (ppu.remaining_dma_cycles == 3) {
+                dmc_dma = DmcDma::Get;  // the second-to-last put: 1 cycle
+            } else if (ppu.remaining_dma_cycles == 1) {
+                dmc_dma = DmcDma::Extend;  // the last: 3 cycles
+            } else {
+                dmc_dma = DmcDma::Align;  // the middle: 2 cycles
+            }
         }
         break;
 
@@ -504,6 +687,10 @@ void Bus::advance_dmc_dma()
         // frame counter align to - so its low bit is the phase, and a cycle is
         // spent on alignment only when the next one is not a get.
         dmc_dma = (cpu_cycles % 2 != 0) ? DmcDma::Get : DmcDma::Align;
+        break;
+
+    case DmcDma::Extend:
+        dmc_dma = DmcDma::Align;
         break;
 
     case DmcDma::Align:

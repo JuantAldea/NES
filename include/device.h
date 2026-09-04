@@ -24,4 +24,9 @@ protected:
     // anywhere else. Defined in device.cpp rather than inline, because reaching
     // into Bus needs its definition and bus.h already includes this header.
     uint8_t open_bus() const;
+
+    // Whether this read CONTINUES a contiguous run of controller reads, which
+    // only a DMA's repeated reads produce. Defined in device.cpp for the same
+    // reason open_bus() is - see Bus::controller_read_is_continuation.
+    bool continues_a_run() const;
 };

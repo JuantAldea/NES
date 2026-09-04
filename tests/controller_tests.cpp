@@ -38,6 +38,14 @@ void latch(Bus& console)
 // Reads the eight button bits back as a mask in the same bit order the
 // Button enum uses, so an expected value can be written as a set of buttons
 // rather than as a bit sequence.
+//
+// The read of $0000 between them is not padding. The pad is clocked by /OE once
+// per CONTIGUOUS SET of reads, not once per read, so eight back-to-back reads on
+// the bus would clock it ONCE - and a game never produces them: every `lda
+// $4016` is separated by the next instruction's opcode fetch. This stands in for
+// that fetch, which is what makes the sequence one a CPU could actually issue.
+// Only a DMA's repeated reads put two controller reads back to back; see
+// Bus::controller_read_is_continuation.
 uint8_t read_port(Bus& console, const uint16_t addr)
 {
     uint8_t mask = 0;
@@ -45,8 +53,18 @@ uint8_t read_port(Bus& console, const uint16_t addr)
         if (console.read(addr) & 0x01) {
             mask |= static_cast<uint8_t>(1 << i);
         }
+        console.read(0x0000);
     }
     return mask;
+}
+
+// One `lda $4016` as a CPU issues it: the port read, then the next
+// instruction's opcode fetch. See read_port for why the fetch is not padding.
+uint8_t read_pad(Bus& console, const uint16_t addr)
+{
+    const uint8_t value = console.read(addr);
+    console.read(0x0000);
+    return value;
 }
 
 }  // namespace
@@ -59,11 +77,11 @@ GTEST_TEST(controllers, report_the_buttons_in_the_documented_order)
     console.controllers.set_port(0, Controllers::A | Controllers::Start);
     latch(console);
 
-    EXPECT_EQ(0x01, console.read(0x4016) & 1) << "bit 0 is A";
-    EXPECT_EQ(0x00, console.read(0x4016) & 1) << "bit 1 is B";
-    EXPECT_EQ(0x00, console.read(0x4016) & 1) << "bit 2 is Select";
-    EXPECT_EQ(0x01, console.read(0x4016) & 1) << "bit 3 is Start";
-    EXPECT_EQ(0x00, console.read(0x4016) & 1) << "bit 4 is Up";
+    EXPECT_EQ(0x01, read_pad(console, 0x4016) & 1) << "bit 0 is A";
+    EXPECT_EQ(0x00, read_pad(console, 0x4016) & 1) << "bit 1 is B";
+    EXPECT_EQ(0x00, read_pad(console, 0x4016) & 1) << "bit 2 is Select";
+    EXPECT_EQ(0x01, read_pad(console, 0x4016) & 1) << "bit 3 is Start";
+    EXPECT_EQ(0x00, read_pad(console, 0x4016) & 1) << "bit 4 is Up";
 }
 
 GTEST_TEST(controllers, every_button_round_trips)
@@ -93,12 +111,12 @@ GTEST_TEST(controllers, while_the_strobe_is_high_every_read_returns_button_a)
     console.write(0x4016, 0x01);  // strobe high and left there
 
     for (int i = 0; i < 5; ++i) {
-        EXPECT_EQ(0x00, console.read(0x4016) & 1)
+        EXPECT_EQ(0x00, read_pad(console, 0x4016) & 1)
             << "read " << i << " should still be reporting A (not pressed), not shifting on to B";
     }
 
     console.controllers.press(0, Controllers::A);
-    EXPECT_EQ(0x01, console.read(0x4016) & 1) << "while strobing, the register reloads continuously";
+    EXPECT_EQ(0x01, read_pad(console, 0x4016) & 1) << "while strobing, the register reloads continuously";
 }
 
 GTEST_TEST(controllers, reads_after_the_eighth_report_one)
@@ -108,10 +126,10 @@ GTEST_TEST(controllers, reads_after_the_eighth_report_one)
     latch(console);
 
     for (int i = 0; i < 8; ++i) {
-        EXPECT_EQ(0x00, console.read(0x4016) & 1) << "real button bit " << i << " should be 0";
+        EXPECT_EQ(0x00, read_pad(console, 0x4016) & 1) << "real button bit " << i << " should be 0";
     }
     for (int i = 8; i < 12; ++i) {
-        EXPECT_EQ(0x01, console.read(0x4016) & 1) << "read " << i << " past the end must report 1";
+        EXPECT_EQ(0x01, read_pad(console, 0x4016) & 1) << "read " << i << " past the end must report 1";
     }
 }
 
@@ -124,14 +142,14 @@ GTEST_TEST(controllers, a_press_after_the_latch_is_not_visible_until_the_next_la
     console.controllers.set_port(0, 0);
     latch(console);
 
-    console.read(0x4016);  // consume the A bit
+    read_pad(console, 0x4016);  // consume the A bit
     console.controllers.press(0, Controllers::B);
 
-    EXPECT_EQ(0x00, console.read(0x4016) & 1) << "B was pressed after the latch and must not appear yet";
+    EXPECT_EQ(0x00, read_pad(console, 0x4016) & 1) << "B was pressed after the latch and must not appear yet";
 
     latch(console);
-    EXPECT_EQ(0x00, console.read(0x4016) & 1) << "A still not pressed";
-    EXPECT_EQ(0x01, console.read(0x4016) & 1) << "B is visible after the next latch";
+    EXPECT_EQ(0x00, read_pad(console, 0x4016) & 1) << "A still not pressed";
+    EXPECT_EQ(0x01, read_pad(console, 0x4016) & 1) << "B is visible after the next latch";
 }
 
 GTEST_TEST(controllers, the_two_ports_are_independent_but_share_one_strobe)
@@ -159,12 +177,12 @@ GTEST_TEST(controllers, writing_4017_drives_the_apu_and_not_the_controller)
     // A write to $4017 is the APU frame counter. If it were routed to the
     // controllers it would act as a strobe and re-latch, which is observable:
     // the shift register would rewind to bit 0.
-    console.read(0x4017);  // consume bit 0 (A, not pressed)
+    read_pad(console, 0x4017);  // consume bit 0 (A, not pressed)
     console.write(0x4017, 0x80);
 
-    EXPECT_EQ(0x00, console.read(0x4017) & 1) << "bit 1 is B; a rewind here would mean $4017 wrote the controller";
-    EXPECT_EQ(0x00, console.read(0x4017) & 1) << "bit 2 is Select";
-    EXPECT_EQ(0x01, console.read(0x4017) & 1) << "bit 3 is Start - the sequence continued rather than restarting";
+    EXPECT_EQ(0x00, read_pad(console, 0x4017) & 1) << "bit 1 is B; a rewind here would mean $4017 wrote the controller";
+    EXPECT_EQ(0x00, read_pad(console, 0x4017) & 1) << "bit 2 is Select";
+    EXPECT_EQ(0x01, read_pad(console, 0x4017) & 1) << "bit 3 is Start - the sequence continued rather than restarting";
 }
 
 // NESdev: the top bits "are not driven, and so retain the bits of the previous
@@ -186,16 +204,16 @@ GTEST_TEST(controllers, the_undriven_bits_follow_the_cpu_data_bus)
 
     // A write drives its value onto the bus. $E0 sets all three undriven bits.
     console.write(0x0000, 0xE0);
-    EXPECT_EQ(0xE1, console.read(0x4016)) << "A pressed (bit 0), plus the bus value in bits 5-7";
+    EXPECT_EQ(0xE1, read_pad(console, 0x4016)) << "A pressed (bit 0), plus the bus value in bits 5-7";
 
     // A different bus value must give a different answer.
     console.write(0x0000, 0x20);
-    EXPECT_EQ(0x20, console.read(0x4016)) << "B not pressed, plus the new bus value";
+    EXPECT_EQ(0x20, read_pad(console, 0x4016)) << "B not pressed, plus the new bus value";
 
     // Bits 1-4 are never driven by a standard controller and must stay clear
     // regardless of what is on the bus.
     console.write(0x0000, 0xFF);
-    EXPECT_EQ(0x00, console.read(0x4016) & 0x1E) << "bits 1-4 are not part of the standard controller";
+    EXPECT_EQ(0x00, read_pad(console, 0x4016) & 0x1E) << "bits 1-4 are not part of the standard controller";
 }
 
 // A write to $4016 must not be observable as memory, and reading must not

@@ -10,3 +10,5 @@
 // loading without a whole machine around it. None of those reaches a register
 // read, but a crash there would be a confusing way to find that out.
 uint8_t Device::open_bus() const { return bus != nullptr ? bus->cpu_open_bus : 0; }
+
+bool Device::continues_a_run() const { return bus != nullptr && bus->controller_read_is_continuation; }

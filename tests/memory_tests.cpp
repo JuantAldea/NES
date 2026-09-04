@@ -14,6 +14,17 @@
 
 namespace tests
 {
+// One `lda $2007` as a CPU issues it - see the note on read_ppudata in
+// tests/ppu_memory_tests.cpp. The buffer refill lands a few dots after the read
+// returns, so reads with nothing between them are a sequence no CPU produces.
+uint8_t read_ppudata(PPU& ppu)
+{
+    const uint8_t value = ppu.read(PPU::PPUDATA);
+    for (int i = 0; i < 12; ++i) {
+        ppu.clock();
+    }
+    return value;
+}
 
 static_assert(SystemRAM::SIZE == 2048, "internal RAM must be 2048 bytes (2KB), not 64KB");
 
@@ -64,6 +75,13 @@ GTEST_TEST(testMemory, ppu_register_mirroring_reaches_2007_mirror_at_3fff)
     console.write(PPU::PPUADDR, 0x00);
     console.write(PPU::PPUADDR, 0x10);
     console.read(0x3FFF);  // priming read, also through the mirror
+
+    // The refill lands a few dots after the read returns - see
+    // PPU::kReadBufferRefillDots - and PPUADDR writes do not advance the PPU, so
+    // without this the read below sees the buffer the priming read started with.
+    for (int i = 0; i < 12; ++i) {
+        console.ppu.clock();
+    }
 
     console.write(PPU::PPUADDR, 0x00);
     console.write(PPU::PPUADDR, 0x10);

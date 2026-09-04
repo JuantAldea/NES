@@ -549,6 +549,15 @@ private:
         // parity. A disable landing on a pending transfer cancels it.
         uint8_t transfer_start_delay = 0;
         uint8_t disable_delay = 0;
+
+        // Which kind of transfer the countdown above will start. Only a $4015
+        // load uses that countdown today, so this is always true in practice -
+        // it exists so that it STAYS true by construction. A hardcoded `load` in
+        // that countdown turns any reload routed through it into a load
+        // silently: 3 cycles rather than 4, and dmc_transfer_is_load() then
+        // answers the DMC halt's parity gate with the wrong value. Delaying
+        // a reload is the next thing anyone will try here.
+        bool delayed_transfer_is_load = true;
     };
 
     void clock_dmc();

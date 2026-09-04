@@ -166,6 +166,20 @@ void PPU::clock()
 {
     ++total_cycles;
 
+    // The $2007 read buffer refill, landing some dots after the read returned -
+    // see PPU::pending_read_buffer.
+    //
+    // TWO MUTATIONS SURVIVE HERE AND NEITHER IS A HOLE. Comparing against 1
+    // rather than 0 commits a dot early, which is the same as a delay of 4 - and
+    // 4, 5 and 6 are all admissible, so no oracle can separate them; that slack
+    // IS the measured window, not a gap in the tests. Dropping the != 0 guard
+    // lets the counter wrap and re-commit every 256 dots, which is idempotent:
+    // by then vram_read_buffer already holds pending_read_buffer, and any new
+    // read resets the counter before it matters.
+    if (pending_read_buffer_dots != 0 && --pending_read_buffer_dots == 0) {
+        vram_read_buffer = pending_read_buffer;
+    }
+
     decay_open_bus();
 
     // OAM DMA is NOT driven from here. It steals CPU cycles, so it advances at
@@ -1567,7 +1581,8 @@ uint8_t PPU::read(const uint16_t addr)
         uint8_t result;
         if (addr < 0x3F00) {
             result = vram_read_buffer;
-            vram_read_buffer = fetched;
+            pending_read_buffer = fetched;
+            pending_read_buffer_dots = kReadBufferRefillDots;
         } else {
             // Palette RAM drives only bits 0-5 of the bus. Bits 6-7 are left
             // to whatever the open bus already held, so a palette read does not
@@ -1582,7 +1597,8 @@ uint8_t PPU::read(const uint16_t addr)
             // The latch is still refilled, from the nametable UNDERNEATH the
             // palette. Routed through ppu_bus_read so the decode stays in one
             // place: $3F00-$3FFF folds onto $2F00-$2FFF.
-            vram_read_buffer = ppu_bus_read(static_cast<uint16_t>(addr & 0x2FFF));
+            pending_read_buffer = ppu_bus_read(static_cast<uint16_t>(addr & 0x2FFF));
+            pending_read_buffer_dots = kReadBufferRefillDots;
         }
 
         advance_vram_address();

@@ -306,29 +306,45 @@ few thousand frames, and every mapper beyond 0, 2, 3 and 4.
         with its `$4015` bit 4 and bit 7. This closed the last three pinned
         ROMs - `7-dmc_basics`, `8-dmc_rates` and `works_immediately` - and
         **every APU ROM in the repository now passes**.
-    *   **What the DMC does not do yet is stall the CPU.** Its memory reader
-        fetches in zero cycles. Everything a program can observe by polling is
-        implemented; the timing distortion the DMA imposes on the CPU is not,
-        and it is deliberately absent rather than approximated - a wrong number
-        of stolen cycles looks implemented while being wrong, which is worse
-        than none. `dmc_dma_during_read4` and `sprdma_and_dmc_dma` are the
-        oracles for that, and are the next step.
+    *   **The DMC's DMA stalls the CPU**, at the documented 3 or 4 cycles
+        standalone and 1, 2 or 3 where it collides with an OAM DMA depending on
+        how near the transfer's end it lands. The halt is refused on a write
+        cycle and retried, and the 3-versus-4 length falls out of the phase the
+        halt lands on rather than being applied as a rule of its own. Both
+        `sprdma_and_dmc_dma` ROMs pass, each self-checking against a CRC blargg
+        computed on hardware - `$FBADA48D` and `$F1A58F55` - so their
+        thirty-two swept values are hardware's rather than a match against
+        another emulator. **Phantom reads** are implemented too: while halted the
+        CPU repeats the access it is *attempting*, so a DMA landing on a `$2007`
+        read costs the program two or three extra reads and it keeps the last,
+        while one landing a cycle later is invisible. `dma_4016_read` passes on
+        `check_crc $F0AB808C` and `dma_2007_read` prints a catalogued CRC. The
+        OAM DMA's own halt and alignment cycles repeat too. **No ROM here reaches
+        that**: an OAM DMA starts from `sta $4014`, so the access repeated is
+        always the next opcode fetch - 2000 of them across the suite and none in
+        register space, where it would show. The oracle is a unit test that
+        points that fetch at `$2007` and counts VRAM address steps.
+    *   **The `$2007` read buffer refills a few dots after the read returns**,
+        while the address increment does not. That is the one consequence the
+        PPU's `$2007` latch pipeline has that a ROM here can see: two reads a
+        cycle apart - a page-crossing `lda $2007,x` - leave the second holding a
+        buffer the first has not refilled. `double_2007_read` prints `85CFD627`,
+        the first of its four accepted CRCs. The delay is bracketed at 4 to 6
+        dots by two hardware-CRC ROMs pulling in opposite directions.
     *   Two DMC details are **spec-derived and unverified**, labelled as such in
         `src/apu.cpp`: the sample address wrapping to `$8000` rather than
         `$0000`, and the output level clamping at 127. Every ROM here passes
         with either behaviour, because their samples never reach `$FFFF` and
         nothing reads the level back.
-    *   **Still no audio output.** No envelope, sweep or linear counter, no
-        channel waveforms and no mixer.
-    *   **There is no oracle for the envelope, sweep or linear counter, and
+    *   **There is no ROM oracle for the envelope, sweep or linear counter, and
         that is not a gap in this repo's fixtures.** blargg's own `tests.txt`
         states his suite "does not test clocking of the envelope, sweep, or
         triangle's linear counter", and his readme adds that he never
         characterised that hardware either. `apu_mixer` and `volume_tests`
         verify by cancelling to silence and by comparing audio recordings,
-        neither of which a CPU can check. So that work will need a different
-        kind of verification, and the DMC - which has six ROMs waiting - is the
-        better next step.
+        neither of which a CPU can check. Those units are covered instead by
+        unit tests, cited documentation and mutation, and the mixer by
+        `volume_tests`' recording from a real console - see the table above.
 
 ### Frontend and debugger (`nes_frontend`)
 An SDL2 window hosting Dear ImGui panels:
@@ -469,6 +485,7 @@ tests/test_files/fetch_read_joy3.sh           #   ~48 KB  controller ROM
 tests/test_files/fetch_visual_roms.sh         #  ~100 KB  homebrew visual checks
 tests/test_files/fetch_single_step_tests.sh   #   1.1 GB  SingleStepTests vectors
 ```
+
 
 Each verifies a pinned SHA256 (the vectors are validated structurally instead,
 since upstream regenerates them wholesale) and skips anything already present,

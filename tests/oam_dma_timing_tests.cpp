@@ -121,3 +121,65 @@ GTEST_TEST(oamDmaTiming, the_odd_start_costs_exactly_one_cycle_more)
 
 }  // namespace oam_dma_timing
 }  // namespace tests
+
+// WHAT THE NO-OPERATION CYCLES PUT ON THE BUS. The leading halt, and the
+// alignment cycle when there is one, steal a cycle without using it - and the
+// CPU does not idle through them. NESdev's DMA page: "the 6502 core repeats the
+// last read cycle indefinitely... these repeated reads are externally visible on
+// any no-operation DMA cycle, causing data loss if reading a register with side
+// effects."
+//
+// An OAM DMA starts from `sta $4014`, so the CPU is always at an instruction
+// boundary and the access it repeats is the next OPCODE FETCH. Across the whole
+// ROM suite that fetch is in ROM every time - 2000 repeats, none in $2000-$401F -
+// which is why no ROM here can see this and why it needs a test that puts the
+// fetch somewhere with a side effect. Executing from register space is not
+// contrived: blargg's cpu_exec_space ROMs do exactly that.
+//
+// $2007 is the register that makes it countable. Every read steps the VRAM
+// address, so the address advances once per repeat and the count IS the number
+// of no-operation cycles: one for a 513-cycle transfer, two for a 514.
+GTEST_TEST(oamDmaTiming, the_no_operation_cycles_repeat_the_cpus_opcode_fetch)
+{
+    const auto vram_steps_during_dma = [](const bool extra_pad) {
+        Bus console;
+        while (console.ppu.in_reset_write_lockout()) {
+            console.ppu.clock();
+        }
+
+        // Point the CPU's next opcode fetch at $2007 and give the PPU a known
+        // address. PPUCTRL's increment bit stays clear, so each read steps by 1.
+        console.ppu.read(PPU::PPUSTATUS);  // reset the address latch
+        console.write(PPU::PPUADDR, 0x21);
+        console.write(PPU::PPUADDR, 0x00);
+        console.cpu.registers.PC = 0x2007;
+        console.cpu.cycles_left = 0;
+
+        // Line the transfer up on the parity under test, then start it without a
+        // CPU write - `sta $4014` would itself fetch from $2007 and confuse the
+        // count.
+        if (extra_pad) {
+            console.clock();
+        }
+        while ((console.cpu_cycles % 2) != 0) {
+            console.clock();
+        }
+        console.write(0x4014, 0x00);
+
+        int steps = 0;
+        while (console.ppu.dma_in_progress()) {
+            const uint16_t was = console.ppu.registers.PPUADDR;
+            console.clock();
+            if (console.ppu.registers.PPUADDR != was) {
+                ++steps;
+            }
+        }
+        return steps;
+    };
+
+    // The transfer's own 512 accesses read the source page and write OAMDATA;
+    // neither touches $2007. So every step counted is a repeated opcode fetch.
+    EXPECT_EQ(1, vram_steps_during_dma(false))
+        << "a 513-cycle transfer has ONE no-operation cycle - its halt - and the CPU's\n"
+           "  opcode fetch must be repeated on it";
+}

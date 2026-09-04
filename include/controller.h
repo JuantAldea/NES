@@ -75,7 +75,14 @@ public:
 
         const uint8_t bit = static_cast<uint8_t>(shift[port] & 0x01);
 
-        if (!strobe) {
+        // Not on a read that CONTINUES a contiguous run - /OE clocks the pad
+        // once per run, and only a DMA's repeated reads produce a run at all.
+        //
+        // Dropping the !strobe half survives mutation, and is equivalent rather
+        // than a hole: while strobe is high reload() runs at the top of every
+        // read and overwrites both shift registers from buttons, so a shift here
+        // is discarded before anything can observe it.
+        if (!strobe && !continues_a_run()) {
             // Shifting a 1 in at the top is not a trick to save a counter: it
             // is what the hardware reports. "After 8 bits are read, all
             // subsequent bits will report 1 on a standard NES controller."
