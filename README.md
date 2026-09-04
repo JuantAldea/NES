@@ -499,8 +499,21 @@ older revision of the `v5` above.
 ONE of them was dismissed as redundant and was not, which is why the assumption
 is worth distrusting rather than repeating. `blargg_nes_cpu_test5` looked like it
 overlapped `instr_test-v5` and is in fact built the opposite way round - it is in
-the list above because that guess was checked. Adding coverage from here means
-implementing a mapper that brings its own oracles, not finding an unwired suite.
+the list above because that guess was checked.
+
+**That survey covered one repository, and the mapper oracles come from another.**
+Holy Mapperel is fetched from `koute/pinky`, which ships 26 boards to the 23
+above: `M28_P512K`, `M34_P128K_H` and `M78.3_P128K_C64K` are unwired because
+mappers 28, 34 and 78 are not implemented. They self-check like the rest of that
+suite, so each is an oracle waiting for the board it tests.
+
+**A mapper does not automatically come with one.** MMC5's three suites are a
+copper-bars demo and two compare-by-eye ROMs - `mmc5test_v2` is driven by the
+D-pad, toggling EXRAM and fill mode for a human to watch - with no readme, no
+`$6000` protocol and no verdict string between them. `m22chrbankingtest` (VRC)
+ships a reference PNG, and `fdsirqtests` ships `.fds` disk images this emulator
+cannot load at all. So MMC5, VRC and FDS would be built against screenshots,
+where 28, 34 and 78 are built against a ROM that reports.
 
 
 Each verifies a pinned SHA256 (the vectors are validated structurally instead,
