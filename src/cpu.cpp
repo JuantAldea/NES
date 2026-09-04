@@ -1,3 +1,4 @@
+#include <cassert>
 #include "../include/cpu.h"
 
 #include "../include/instruction.h"
@@ -6,8 +7,16 @@ uint8_t low_byte(const uint16_t twobytes) { return static_cast<uint8_t>(twobytes
 
 uint8_t high_byte(const uint16_t twobytes) { return static_cast<uint8_t>(twobytes >> 8); }
 
+// The write callback is wrapped rather than stored as given, so that every write
+// this CPU performs records the cycle it happened on. That is what lets clock()
+// assert cycle_writes() against reality on each cycle instead of trusting a second
+// model of the schedules to stay in step with step(). One wrapper rather than an
+// assert at each of the write sites, which would be nineteen places to forget.
 CPU::CPU(std::function<uint8_t(uint16_t)> read_callback, std::function<void(uint16_t, uint8_t)> write_callback)
-    : read{read_callback}, write{write_callback}
+    : read{read_callback}, write{[this, write_callback](uint16_t addr, uint8_t value) {
+          wrote_this_cycle = true;
+          write_callback(addr, value);
+      }}
 {
 }
 
@@ -260,6 +269,51 @@ bool CPU::branch_is_taken() const
 // plain reads: the stores, and the read-modify-writes. Everything else - loads,
 // compares, ALU operations, and the undocumented NOPs that still fetch an
 // operand they discard - reads.
+// Which cycles of each schedule drive a write. Derived from the switch in step()
+// and asserted against it there, so the two cannot drift apart unnoticed - see
+// the declaration in cpu.h for why a second model of the schedules exists at all.
+//
+// The shape is regular: a *_write schedule writes on its LAST cycle, a *_rmw on
+// its last TWO - the dummy write of the unmodified value, then the result - and
+// the stack sequences write on the cycles that push. Everything else reads.
+bool CPU::cycle_writes(const Schedule s, const uint8_t c)
+{
+    switch (s) {
+    case Schedule::zero_page_write:
+        return c == 3;
+    case Schedule::zero_page_indexed_write:
+    case Schedule::absolute_write:
+        return c == 4;
+    case Schedule::absolute_indexed_write:
+        return c == 5;
+    case Schedule::indexed_indirect_write:
+    case Schedule::indirect_indexed_write:
+        return c == 6;
+
+    case Schedule::zero_page_rmw:
+        return c == 4 || c == 5;
+    case Schedule::zero_page_indexed_rmw:
+    case Schedule::absolute_rmw:
+        return c == 5 || c == 6;
+    case Schedule::absolute_indexed_rmw:
+        return c == 6 || c == 7;
+    case Schedule::indexed_indirect_rmw:
+    case Schedule::indirect_indexed_rmw:
+        return c == 7 || c == 8;
+
+    case Schedule::push:
+        return c == 3;
+    case Schedule::jump_subroutine:
+        return c == 4 || c == 5;
+    case Schedule::software_interrupt:
+    case Schedule::interrupt:
+        return c == 3 || c == 4 || c == 5;
+
+    default:
+        return false;
+    }
+}
+
 CPU::Schedule CPU::schedule_for(const uint8_t opcode)
 {
     const Instruction& instruction = InstructionSet::Table[opcode];
@@ -365,8 +419,25 @@ bool CPU::clock(bool trace)
 
     ++cycle;
 
+    // Captured BEFORE step(), which is where cycle 1 installs the new schedule -
+    // reading it afterwards would ask the incoming instruction about a cycle the
+    // outgoing one ran.
+    const Schedule predicted_for = schedule;
+    const uint8_t predicted_cycle = cycle;
+    wrote_this_cycle = false;
+
     const bool completed = step();
     completed_instruction_this_cycle = completed;
+
+    // THE SECOND MODEL OF THE SCHEDULES, CHECKED AGAINST THE FIRST. cycle_writes()
+    // exists because DMC DMA has to know whether the cycle it is about to steal is
+    // a write, which the cycle that just ended cannot answer. Asserting it here
+    // turns any disagreement into a failed test rather than into DMA timing that
+    // is quietly wrong on one addressing mode. Cycle 1 is exempt: it is always the
+    // opcode fetch, and `schedule` still describes the PREVIOUS instruction until
+    // step() replaces it.
+    assert((predicted_cycle == 1 || cycle_writes(predicted_for, predicted_cycle) == wrote_this_cycle) &&
+           "CPU::cycle_writes disagrees with what this cycle actually did");
 
     // When a Bus is driving this CPU it samples the interrupt lines itself,
     // one PPU dot after this access - see Bus::clock, which is where that dot

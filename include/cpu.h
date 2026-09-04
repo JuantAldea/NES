@@ -26,6 +26,12 @@ public:
 
     void register_update_signal_callback(std::function<void(void)> callback);
 
+    // Whether the cycle ABOUT TO RUN drives a write. Bus::advance_dmc_dma needs
+    // it: a DMC halt is refused on a write cycle, and the cycle that just ended
+    // cannot answer for the next one. `cycle` names the one that just ran by the
+    // time the bus asks, so the next is cycle + 1.
+    bool next_cycle_is_write() const { return cycle_writes(schedule, static_cast<uint8_t>(cycle + 1)); }
+
     std::function<uint8_t(uint16_t)> read{nullptr};
     std::function<void(uint16_t, uint8_t)> write{nullptr};
     std::function<void(void)> signal_update{[] {}};
@@ -293,6 +299,23 @@ private:
         "Schedule read/write/rmw forms must stay adjacent in that order");
 
     static Schedule schedule_for(const uint8_t opcode);
+
+    // Does cycle `c` of schedule `s` drive a WRITE? DMC DMA needs this about the
+    // cycle it is ABOUT to steal: a halt is refused on a write, and that refusal
+    // is what makes such a DMA cost 3 cycles instead of 4. A rule keyed on the
+    // cycle that just ENDED cannot express it - see tests/dmc_dma_tests.cpp,
+    // where the halt landing on `sta $100` is measured.
+    //
+    // A SECOND MODEL OF THE SCHEDULES CAN DRIFT FROM THE FIRST SILENTLY, which is
+    // the reason not to write one. It is checked rather than trusted: every real
+    // write asserts that this predicted it, so an entry disagreeing with the
+    // implementation fails the suite instead of quietly moving DMA timing. Keep
+    // the two adjacent in cpu.cpp and change them together.
+    static bool cycle_writes(Schedule s, uint8_t c);
+
+    // Set by the wrapped write callback, cleared each cycle - see CPU::CPU. Only
+    // the assert in clock() reads it.
+    bool wrote_this_cycle = false;
 
     // Performs this cycle's single bus access and advances the schedule.
     // Returns true when the access just made was the instruction's last.
