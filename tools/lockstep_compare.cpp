@@ -68,19 +68,19 @@ struct Sample {
     uint16_t pc;
     uint8_t a, x, y, sp;
 };
-
-bool differs(const Sample& a, const Sample& b)
-{
-    return a.pc != b.pc || a.a != b.a || a.x != b.x || a.y != b.y || a.sp != b.sp;
-}
 }  // namespace
 
 int main(int argc, char** argv)
 {
-    if (argc < 3) {
-        std::fprintf(stderr, "usage: %s <MesenCore.so> <rom.nes> <our-cycle> <landmark-pc-hex> [max-cycles]\n",
+    // argv[3] and argv[4] are both read below, so this guarded too few: at argc 3
+    // or 4 it read past the end of argv rather than printing the usage.
+    if (argc < 5) {
+        std::fprintf(stderr, "usage: %s <MesenCore.so> <rom.nes> <our-cycle> <landmark-pc-hex|OAM> [max-cycles]\n",
                      argv[0]);
-        std::fprintf(stderr, "  e.g. ... sprdma_and_dmc_dma.nes 2064787 E4FE 400\n");
+        std::fprintf(stderr, "  landmark: ... sprdma_and_dmc_dma.nes 2064787 E4FE 400\n");
+        std::fprintf(stderr, "  structural: ... sprdma_and_dmc_dma_512.nes 1945390 OAM 900\n");
+        std::fprintf(stderr, "    OAM aligns both sides on the next OAM DMA after the given cycle,\n");
+        std::fprintf(stderr, "    which needs no shared clock - pass the transfer's start cycle.\n");
         return 2;
     }
 
@@ -200,11 +200,68 @@ int main(int argc, char** argv)
                 static_cast<unsigned long long>(ourSample().cycle), mesenSample().pc,
                 static_cast<unsigned long long>(mesenSample().cycle));
 
+    // ALIGNING ON A CYCLE NUMBER ASSUMES A SHARED ORIGIN, AND THERE IS NONE.
+    // Mesen's counter starts wherever it starts - 27279, 27279 and 14914 across
+    // three runs of one ROM - so seeding its seek from OUR cycle is only ever
+    // approximately right, and the error is not even constant between ROMs:
+    // measured +1098 on sprdma_and_dmc_dma and -3810 on the _512 variant. A
+    // forward-only walk from a hint that is already PAST the target cannot find
+    // it, which is how a control row came back "aligned" on the wrong moment,
+    // reporting mesen resumes 0 - no 515-cycle freeze anywhere in the window,
+    // because Mesen was not at a transfer at all.
+    //
+    // Passing OAM as the landmark aligns STRUCTURALLY instead: both sides seek to
+    // a point comfortably before the transfer, then each advances to the next
+    // long PC freeze BY THE SAME RULE. An OAM DMA is the only thing that holds PC
+    // still for hundreds of cycles, transfers are ~178000 apart, and the backoff
+    // below is 20000 - so both sides land on the same one for any origin error
+    // under that, without either needing to know the other's clock.
+    // THE BACKOFF IS PAID IN MESEN ROUND TRIPS, WHICH IS THE WHOLE COST HERE.
+    // Our side runs 2M cycles in about a second; Mesen's Step()+IsPaused() is
+    // ~2 ms whether it is asked for 1 cycle or 20000, because the cost is the
+    // asynchronous call and not the emulation. So everything coarse is chunked
+    // and only this window is single-stepped. Its size IS the call count, so it
+    // is the whole cost of a row: 8000 calls, not the 20000 a coarse chunk uses.
+    //
+    // 8000 has to cover Mesen's origin error, measured at +1098 and -3810 on the
+    // two ROMs here. It is not bounded in principle, so a miss is reported rather
+    // than silently aligning on the wrong transfer - which is the failure this
+    // whole change exists to remove.
+    constexpr uint64_t kBackoff = 8000;
+    constexpr uint64_t kEnterFreeze = 20;  // over any instruction, far under a DMA
+    const bool structural = std::string(argv[4]) == "OAM";
+
+    // Advances one side to kEnterFreeze cycles into its next long PC freeze.
+    // Our side gets a generous bound because its steps are free.
+    auto toNextFreeze = [&](bool mesen) -> bool {
+        uint16_t prev = mesen ? mesenSample().pc : ourSample().pc;
+        uint64_t held = 0;
+        const uint64_t bound = mesen ? 2 * kBackoff : 40 * kBackoff;
+        for (uint64_t i = 0; i < bound; ++i) {
+            if (mesen) {
+                mesenStep(1);
+            } else {
+                ourStep();
+            }
+            const uint16_t pc = mesen ? mesenSample().pc : ourSample().pc;
+            if (pc == prev) {
+                if (++held == kEnterFreeze) {
+                    return true;
+                }
+            } else {
+                held = 0;
+                prev = pc;
+            }
+        }
+        return false;
+    };
+
     // Our side seeks by cycle, which is exact - our origin is zero.
-    while (console.cpu_cycles < ourStart) {
+    const uint64_t ourSeek = structural && ourStart > kBackoff ? ourStart - kBackoff : ourStart;
+    while (console.cpu_cycles < ourSeek) {
         ourStep();
     }
-    if (ourSample().pc != landmarkPc) {
+    if (!structural && ourSample().pc != landmarkPc) {
         std::fprintf(stderr, "our cycle %llu holds pc $%04X, not the landmark $%04X\n",
                      static_cast<unsigned long long>(ourStart), ourSample().pc, landmarkPc);
         Stop();
@@ -216,7 +273,20 @@ int main(int argc, char** argv)
     // instead of per cycle turns a forty-minute seek into a fraction of a
     // second, and only the final approach is single-stepped.
     constexpr uint32_t kChunk = 20000;
-    const uint64_t hint = ourStart > kCoarseMargin ? ourStart - kCoarseMargin : 0;
+
+    // MESEN'S ORIGIN IS LARGE AND MUST BE SUBTRACTED. Its counter already reads
+    // ~20005 when it has executed no program cycles, because it is running before
+    // the debugger attaches. So OUR cycle X is Mesen's X + origin, and seeking
+    // Mesen to X leaves it a whole origin too EARLY - 20005 cycles, which no
+    // forward search sized for a few thousand recovers. A control row then aligns
+    // on the wrong moment and reports no transfer at all.
+    //
+    // Subtracting it leaves only the boot jitter for the search to absorb, which
+    // is the few thousand cycles the "+1098 / -3810" figures measure - the
+    // residue after this term, not the whole error.
+    const uint64_t mesenOrigin = mesenSample().cycle;
+    const uint64_t base = structural ? ourSeek : (ourStart > kCoarseMargin ? ourStart - kCoarseMargin : 0);
+    const uint64_t hint = base + mesenOrigin;
     while (mesenSample().cycle + kChunk < hint) {
         mesenStep(kChunk);
     }
@@ -233,10 +303,33 @@ int main(int argc, char** argv)
     //
     // So the landmark is the PC *and* the register file. Walk forward until all
     // of them agree, rather than stopping at the first PC match.
+    if (structural) {
+        if (!toNextFreeze(false)) {
+            std::fprintf(stderr, "our side found no OAM DMA after cycle %llu\n",
+                         static_cast<unsigned long long>(ourSeek));
+            Stop();
+            return 1;
+        }
+        if (!toNextFreeze(true)) {
+            std::fprintf(stderr,
+                         "Mesen found no OAM DMA within %llu cycles of the seek - its origin error\n"
+                         "exceeds the backoff, so the two would be on different transfers. Raise\n"
+                         "kBackoff rather than trusting anything measured from here.\n",
+                         static_cast<unsigned long long>(2 * kBackoff));
+            Stop();
+            return 1;
+        }
+        std::printf(
+            "aligned structurally on the next OAM DMA (%llu cycles into it):\n"
+            "  ours cyc %llu pc $%04X | mesen cyc %llu pc $%04X\n",
+            static_cast<unsigned long long>(kEnterFreeze), static_cast<unsigned long long>(ourSample().cycle),
+            ourSample().pc, static_cast<unsigned long long>(mesenSample().cycle), mesenSample().pc);
+    }
+
     const Sample o0 = ourSample();
     uint64_t walked = 0;
     int pcHits = 0;
-    for (;;) {
+    while (!structural) {
         const Sample m = mesenSample();
         if (m.pc == landmarkPc) {
             ++pcHits;
@@ -257,9 +350,11 @@ int main(int argc, char** argv)
     }
 
     const Sample m0 = mesenSample();
-    std::printf("aligned on pc $%04X + registers: ours cyc %llu | mesen cyc %llu (walked %llu, %d PC hits)\n",
-                landmarkPc, static_cast<unsigned long long>(o0.cycle), static_cast<unsigned long long>(m0.cycle),
-                static_cast<unsigned long long>(walked), pcHits);
+    if (!structural) {
+        std::printf("aligned on pc $%04X + registers: ours cyc %llu | mesen cyc %llu (walked %llu, %d PC hits)\n",
+                    landmarkPc, static_cast<unsigned long long>(o0.cycle), static_cast<unsigned long long>(m0.cycle),
+                    static_cast<unsigned long long>(walked), pcHits);
+    }
 
     // DECOMPOSE BOTH FROZEN SPANS. Runs the compare window while recording, per
     // cycle, what each side is actually doing - our DMA state directly, Mesen's
@@ -426,52 +521,4 @@ int main(int argc, char** argv)
         Stop();
         return 0;
     }
-
-    // A short history so a divergence can be read in context rather than as a
-    // single line - the cycle it is first VISIBLE on is rarely the cycle the
-    // cause is on.
-    constexpr size_t kHistory = 24;
-    std::vector<Sample> ourHist, mesenHist;
-
-    for (uint64_t i = 0; i < maxCycles; ++i) {
-        const Sample o = ourSample();
-        const Sample m = mesenSample();
-
-        if (ourHist.size() == kHistory) {
-            ourHist.erase(ourHist.begin());
-            mesenHist.erase(mesenHist.begin());
-        }
-        ourHist.push_back(o);
-        mesenHist.push_back(m);
-
-        if (differs(o, m)) {
-            std::printf("\nFIRST DIVERGENCE after %llu compared cycles\n", static_cast<unsigned long long>(i));
-            std::printf("  ours   cyc %llu pc $%04X a $%02X x $%02X y $%02X sp $%02X\n",
-                        static_cast<unsigned long long>(o.cycle), o.pc, o.a, o.x, o.y, o.sp);
-            std::printf("  mesen  cyc %llu pc $%04X a $%02X x $%02X y $%02X sp $%02X\n",
-                        static_cast<unsigned long long>(m.cycle), m.pc, m.a, m.x, m.y, m.sp);
-            std::printf("\n  last %zu cycles, ours | mesen:\n", ourHist.size());
-            for (size_t k = 0; k < ourHist.size(); ++k) {
-                std::printf("    %8llu $%04X a%02X x%02X y%02X sp%02X | %8llu $%04X a%02X x%02X y%02X sp%02X%s\n",
-                            static_cast<unsigned long long>(ourHist[k].cycle), ourHist[k].pc, ourHist[k].a,
-                            ourHist[k].x, ourHist[k].y, ourHist[k].sp,
-                            static_cast<unsigned long long>(mesenHist[k].cycle), mesenHist[k].pc, mesenHist[k].a,
-                            mesenHist[k].x, mesenHist[k].y, mesenHist[k].sp,
-                            differs(ourHist[k], mesenHist[k]) ? "   <-- differs" : "");
-            }
-            Stop();
-            return 1;
-        }
-
-        ourStep();
-        mesenStep(1);
-
-        if ((i % 20000) == 0 && i) {
-            std::fprintf(stderr, "  %llu cycles agree (pc $%04X)\n", static_cast<unsigned long long>(i), o.pc);
-        }
-    }
-
-    std::printf("\nno divergence in %llu compared cycles\n", static_cast<unsigned long long>(maxCycles));
-    Stop();
-    return 0;
 }
