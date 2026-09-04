@@ -113,6 +113,9 @@ tests/test_files/cpu_exec_space
 # Blargg MMC3 IRQ ROMs, fetched by tests/test_files/fetch_mmc3.sh
 tests/test_files/mmc3
 
+# Blargg's nes_cpu_test5, fetched by tests/test_files/fetch_cpu_test5.sh
+tests/test_files/cpu_test5
+
 # Holy Mapperel mapper-1 builds, fetched by tests/test_files/fetch_holy_mapperel.sh
 tests/test_files/holy_mapperel
 

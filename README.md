@@ -475,6 +475,7 @@ tests/test_files/fetch_sprite_hit.sh          #  ~224 KB  sprite 0 hit ROMs
 tests/test_files/fetch_sprite_overflow.sh     #  ~104 KB  sprite overflow ROMs
 tests/test_files/fetch_mmc3.sh                #  ~268 KB  MMC3 scanline IRQ ROMs
 tests/test_files/fetch_dmc_dma.sh             #  ~272 KB  DMC DMA versus the CPU
+tests/test_files/fetch_cpu_test5.sh           #  ~528 KB  every instruction, by checksum
 tests/test_files/fetch_cpu_timing.sh          #  ~112 KB  instruction and branch timing
 tests/test_files/fetch_vbl_branch_timing.sh   #  ~204 KB  vblank/NMI and branch ROMs
 tests/test_files/fetch_apu_test.sh            #  ~356 KB  APU frame counter and length
@@ -485,6 +486,21 @@ tests/test_files/fetch_read_joy3.sh           #   ~48 KB  controller ROM
 tests/test_files/fetch_visual_roms.sh         #  ~100 KB  homebrew visual checks
 tests/test_files/fetch_single_step_tests.sh   #   1.1 GB  SingleStepTests vectors
 ```
+
+**There is nothing else upstream left to wire.** christopherpow/nes-test-roms
+carries 64 directories, of which 26 are named by no fetch script here. Those were
+checked one by one: demos and visual toys, PAL-only suites, hardware this
+emulator does not implement (MMC5, FDS, VRC, paddles), audio recordings rather
+than ROMs, or the same tests under a second name - `mmc3_irq_tests` is the
+`mmc3_test_2` singles already fetched, `nes_instr_test` is
+`blargg_nes_cpu_test5/cpu.nes` split into eleven ROMs, and `instr_test-v3` is the
+older revision of the `v5` above.
+
+ONE of them was dismissed as redundant and was not, which is why the assumption
+is worth distrusting rather than repeating. `blargg_nes_cpu_test5` looked like it
+overlapped `instr_test-v5` and is in fact built the opposite way round - it is in
+the list above because that guess was checked. Adding coverage from here means
+implementing a mapper that brings its own oracles, not finding an unwired suite.
 
 
 Each verifies a pinned SHA256 (the vectors are validated structurally instead,

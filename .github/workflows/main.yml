@@ -48,6 +48,7 @@ jobs:
           tests/test_files/fetch_instr_misc.sh
           tests/test_files/fetch_cpu_exec_space.sh
           tests/test_files/fetch_mmc3.sh
+          tests/test_files/fetch_cpu_test5.sh
           tests/test_files/fetch_holy_mapperel.sh
           tests/test_files/fetch_full_palette.sh
           tests/test_files/fetch_apu_test.sh
@@ -150,6 +151,7 @@ jobs:
           tests/test_files/fetch_instr_misc.sh
           tests/test_files/fetch_cpu_exec_space.sh
           tests/test_files/fetch_mmc3.sh
+          tests/test_files/fetch_cpu_test5.sh
           tests/test_files/fetch_holy_mapperel.sh
           tests/test_files/fetch_full_palette.sh
           tests/test_files/fetch_apu_test.sh
