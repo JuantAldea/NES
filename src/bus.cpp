@@ -30,6 +30,15 @@ Bus::Bus()
 // re-writes $4017 and burns the 9-12 cycle delay, and that has to be settled
 // before the CPU fetches from the reset vector.
 //
+// A DMA IN FLIGHT IS NOT CONSIDERED, because a reset never lands on one.
+// dmc_dma and the OAM transfer both survive this call, so a reset taken
+// mid-transfer would leave the state machine stealing cycles from the CPU it
+// just reset. Instrumented across the whole test binary: 17 resets, none with
+// either DMA active. Every caller is at a frame boundary - the blargg harness
+// drives one when a ROM reports $81, the frontend from its button - so the case
+// does not arise, and what hardware does about it is unestablished. Clearing
+// them here would be a guess about behaviour nothing here can check.
+//
 // The PPU is deliberately NOT reset here. Hardware does clear PPUCTRL, PPUMASK
 // and the write latch, but nothing in this repo measures it: the apu_reset ROMs
 // re-initialise the PPU themselves, and len_ctrs_enabled passes across a reset
